@@ -36,9 +36,10 @@ func RoutingContext(r *http.Request) *routingContext {
 }
 
 type Router struct {
-	statePath   string
-	services    *ServiceMap
-	serviceLock sync.RWMutex
+	statePath    string
+	services     *ServiceMap
+	serviceLock  sync.RWMutex
+	certRegistry *CertificateRegistry
 }
 
 type ServiceDescription struct {
@@ -56,6 +57,16 @@ func NewRouter(statePath string) *Router {
 		statePath: statePath,
 		services:  NewServiceMap(),
 	}
+}
+
+// SetCertificateRegistry sets the central certificate registry for the router
+func (r *Router) SetCertificateRegistry(registry *CertificateRegistry) {
+	r.certRegistry = registry
+}
+
+// GetCertificateRegistry returns the certificate registry if available
+func (r *Router) GetCertificateRegistry() *CertificateRegistry {
+	return r.certRegistry
 }
 
 func (r *Router) RestoreLastSavedState() error {
@@ -273,6 +284,19 @@ func (r *Router) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 		} else {
 			slog.Warn("No server name; using default TLS hostname", "host", hello.ServerName)
 		}
+	}
+
+	// Try the central certificate registry first
+	if r.certRegistry != nil {
+		cert, err := r.certRegistry.GetCertificate(hello)
+		if err == nil {
+			return cert, nil
+		}
+		// If registry returns an error (except not found), log it
+		if !errors.Is(err, ErrCertificateNotFound) && !errors.Is(err, ErrCertificatePending) {
+			slog.Debug("Certificate registry error", "domain", hello.ServerName, "error", err)
+		}
+		// Fall through to per-service cert manager
 	}
 
 	service := r.serviceForHost(hello.ServerName)
