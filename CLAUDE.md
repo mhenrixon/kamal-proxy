@@ -75,5 +75,6 @@ Tag push (`vX.Y.Z.N`) → `.github/workflows/docker-publish.yml` → multi-arch 
 
 ## More Documentation
 
+- `ROADMAP.md` — proxy-side roadmap with code anchors (strategy + sequencing in ../kamal/ROADMAP.md)
 - `.claude/rules/upstream-sync.md` — sync runbook, conflict playbook
 - Gem fork: `../kamal/CLAUDE.md` — gem-side contract and release ordering
