@@ -73,8 +73,26 @@ Tag push (`vX.Y.Z.N`) → `.github/workflows/docker-publish.yml` → multi-arch 
 - `make docker && docker run --rm kamal-proxy kamal-proxy -h` — image smoke test
 - CI (`ci.yml`): build + test + golangci-lint + actionlint/zizmor on `main` and `dash`
 
+## Slash Commands
+
+| Command | Purpose |
+|---------|---------|
+| `/lfg` | Full autonomous workflow: branch off `main` → understand → plan → TDD → verify → PR into `dash` |
+| `/plan` | Read-only planning → GitHub issue or `docs/plans/` markdown (execute with `/lfg`) |
+| `/architect` | Coordinate work across the cmd → RPC → server layers |
+| `/tdd` | Enforce RED → GREEN → REFACTOR with Go table-driven tests |
+| `/security` | Audit TLS/cert handling, request parsing, header forwarding, ACME, the unix socket |
+| `/perf` | Baseline vs `main` in a worktree via `make bench` on the real hot paths |
+| `/review-pr` | Review a PR for pattern + fork-constraint compliance |
+| `/github-review-pr` | Full PR pass: fix CI failures, then process review comments |
+| `/github-review-failures` | Diagnose + fix CI failures until green |
+| `/github-review-comments` | Process unresolved PR review comments |
+
+Commands pin a model tier via frontmatter aliases (`sonnet` implementation, `opus` orchestration/security/review, `fable` read-only planning) so they track the latest model per tier.
+
 ## More Documentation
 
 - `ROADMAP.md` — proxy-side roadmap with code anchors (strategy + sequencing in ../kamal/ROADMAP.md)
-- `.claude/rules/upstream-sync.md` — sync runbook, conflict playbook
+- `.claude/rules/` — coding-style, git-workflow, testing, agents, performance, upstream-sync
+- `.claude/commands/` — the slash commands above
 - Gem fork: `../kamal/CLAUDE.md` — gem-side contract and release ordering
