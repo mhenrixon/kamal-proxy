@@ -139,7 +139,7 @@ func (c *ACMEClient) SetDNSProvider(provider challenge.Provider) error {
 	opts := []dns01.ChallengeOption{}
 	if c.config.PropagationWait > 0 {
 		// Use sequential resolver with custom wait time
-		opts = append(opts, dns01.DisableCompletePropagationRequirement())
+		opts = append(opts, dns01.DisableAuthoritativeNssPropagationRequirement())
 	}
 
 	return c.client.Challenge.SetDNS01Provider(provider, opts...)
@@ -188,7 +188,7 @@ func (c *ACMEClient) RenewCertificate(ctx context.Context, cert *certificate.Res
 
 	slog.Info("Renewing certificate", "domains", cert.Domain)
 
-	newCert, err := c.client.Certificate.Renew(*cert, true, false, "")
+	newCert, err := c.client.Certificate.RenewWithOptions(*cert, &certificate.RenewOptions{Bundle: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to renew certificate: %w", err)
 	}
