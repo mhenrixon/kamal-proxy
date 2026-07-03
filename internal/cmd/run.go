@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -9,11 +10,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/basecamp/kamal-proxy/internal/server"
+	"github.com/basecamp/kamal-proxy/internal/server/acme"
 )
 
 type runCommand struct {
 	cmd              *cobra.Command
 	debugLogsEnabled bool
+	acmeDNSProvider  string
 }
 
 func newRunCommand() *runCommand {
@@ -33,12 +36,25 @@ func newRunCommand() *runCommand {
 	// ACME/TLS configuration
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEEmail, "acme-email", getEnvString("ACME_EMAIL", ""), "Email address for ACME account registration (required for automatic TLS)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEDirectory, "acme-directory", getEnvString("ACME_DIRECTORY", server.LetsEncryptProduction), "ACME directory URL")
+	runCommand.cmd.Flags().StringVar(&runCommand.acmeDNSProvider, "acme-dns-provider", getEnvString("ACME_DNS_PROVIDER", "auto"), "DNS provider for DNS-01 challenges (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto)")
+	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEPreferWildcard, "acme-prefer-wildcard", getEnvBool("ACME_PREFER_WILDCARD", true), "Prefer wildcard certificates when DNS provider available")
+	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEHTTPFallback, "acme-http-fallback", getEnvBool("ACME_HTTP_FALLBACK", true), "Fall back to HTTP-01 challenge if DNS-01 fails")
 
 	return runCommand
 }
 
 func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	c.setLogger()
+
+	// Parse DNS provider if specified
+	if c.acmeDNSProvider != "" {
+		providerName, err := acme.ParseProviderName(c.acmeDNSProvider)
+		if err != nil {
+			slog.Warn("Invalid DNS provider specified", "provider", c.acmeDNSProvider, "error", err)
+		} else {
+			globalConfig.ACMEDNSProvider = providerName
+		}
+	}
 
 	router := server.NewRouter(globalConfig.StatePath())
 
@@ -62,6 +78,14 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		router.SetSANCertManager(manager)
 	}
 
+	// Initialize certificate registry if ACME is configured
+	if globalConfig.HasACMEConfig() {
+		if err := c.initCertificateRegistry(router); err != nil {
+			slog.Error("Failed to initialize certificate registry", "error", err)
+			// Continue without registry - will fall back to per-service certs
+		}
+	}
+
 	s := server.NewServer(&globalConfig, router)
 	err := s.Start()
 	if err != nil {
@@ -72,6 +96,29 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
 	<-ch
+
+	return nil
+}
+
+func (c *runCommand) initCertificateRegistry(router *server.Router) error {
+	config := globalConfig.CertificateRegistryConfig()
+
+	registry, err := server.NewCertificateRegistry(config)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	if err := registry.Initialize(ctx); err != nil {
+		return err
+	}
+
+	router.SetCertificateRegistry(registry)
+	slog.Info("Certificate registry initialized",
+		"email", config.Email,
+		"dns_provider", config.DNSProvider,
+		"prefer_wildcard", config.PreferWildcard,
+	)
 
 	return nil
 }

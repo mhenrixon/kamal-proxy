@@ -6,8 +6,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -92,9 +92,9 @@ type SANCertManager struct {
 
 // ManagedCert represents a certificate managed by the manager
 type ManagedCert struct {
-	Identifier  string          `json:"identifier"`
-	Domains     []string        `json:"domains"`
-	NotAfter    time.Time       `json:"not_after"`
+	Identifier  string           `json:"identifier"`
+	Domains     []string         `json:"domains"`
+	NotAfter    time.Time        `json:"not_after"`
 	Certificate *tls.Certificate `json:"-"` // Not persisted, loaded from files
 }
 
@@ -437,7 +437,6 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 
 	return &tlsCert, nil
 }
-
 
 // getCertForDomain retrieves a certificate for a domain
 func (m *SANCertManager) getCertForDomain(domain string) (*tls.Certificate, error) {
