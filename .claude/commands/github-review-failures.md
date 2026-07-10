@@ -31,8 +31,10 @@ If exactly one open PR exists for the current branch, use it. If none or multipl
 Once you have the PR number, confirm it and its base branch:
 
 ```bash
-gh pr view <PR_NUMBER> --repo mhenrixon/kamal-proxy --json title,state,url,baseRefName
+gh pr view <PR_NUMBER> --repo mhenrixon/kamal-proxy --json title,state,url,baseRefName,mergeable
 ```
+
+**Pre-flight: merge conflicts (detection only).** If `mergeable` is `CONFLICTING`, STOP — do not diagnose CI on a conflicted branch (the merge itself may fix or cause the failures). Report the conflict and hand off to `/github-review-pr`, whose Phase A0 owns the resolution runbook (including this fork's merge-forward rules) — this command's toolset deliberately does not include the merge machinery. If `mergeable` is `UNKNOWN`, note it and proceed: the orchestrator resolves the ambiguity; a standalone run shouldn't block on GitHub's recompute.
 
 ---
 
