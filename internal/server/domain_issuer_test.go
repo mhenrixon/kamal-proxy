@@ -219,6 +219,47 @@ func TestDomainIssuer_Issue_PreflightSkippedWhenCertificateExists(t *testing.T) 
 	require.Len(t, obtainer.Calls(), 1)
 }
 
+func TestDomainIssuer_InflightDomainIsNotOrderedTwice(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	obtainer := &fakeObtainer{}
+	obtainer.respond = func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		started <- struct{}{}
+		<-release
+		return testCertResource(t, request.Domains, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)), nil
+	}
+
+	issuer, manager, _ := testIssuer(t, obtainer, domainIssuerConfig{})
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+
+	issuer.Start()
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		issuer.Stop()
+	})
+
+	issuer.Request("tenant.example.com", "service1")
+	<-started // the order is now in flight
+
+	// A handshake burst re-requests the same domain while the order runs;
+	// none of these may produce a second concurrent order.
+	issuer.Request("tenant.example.com", "service1")
+	issuer.Request("tenant.example.com", "service1")
+	assert.Empty(t, issuer.nextBatch(), "in-flight domain must not be dequeued again")
+
+	close(release)
+
+	require.Eventually(t, func() bool {
+		return manager.HasValidCertificate("tenant.example.com")
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Len(t, obtainer.Calls(), 1)
+}
+
 func TestDomainIssuer_WorkerIssuesAsynchronously(t *testing.T) {
 	obtainer := successfulObtainer(t)
 	issuer, manager, _ := testIssuer(t, obtainer, domainIssuerConfig{})

@@ -190,6 +190,27 @@ func TestCertRenewer_TopsUpBatchOnlyAtRenewal(t *testing.T) {
 	assert.Equal(t, 0, issuer.QueueLen())
 }
 
+func TestCertRenewer_SkipsRenewalWhenAllDomainsQuarantined(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	manager.SetDynamicDomains("service1", []string{"flaky.example.com"})
+	adoptTestCert(t, manager, []string{"flaky.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	quarantine.RecordFailure("flaky.example.com", quarantineACME)
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	// The domain is still allowed — only quarantined. The certificate must
+	// keep serving; renewal just waits for the quarantine to lift.
+	assert.Empty(t, obtainer.Calls())
+	require.Len(t, manager.ManagedCertificates(), 1)
+	assert.True(t, manager.HasCertificate("flaky.example.com"))
+}
+
 func TestCertRenewer_QuarantinesCulpritsOnFailure(t *testing.T) {
 	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
 		return nil, fmt.Errorf("error: one or more domains had a problem:\nbad.example.com: acme: dns problem")

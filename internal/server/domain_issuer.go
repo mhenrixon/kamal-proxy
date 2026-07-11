@@ -62,9 +62,10 @@ type domainIssuer struct {
 	config     domainIssuerConfig
 	bucket     *tokenBucket
 
-	mu     sync.Mutex
-	queue  []*issueRequest
-	queued map[string]struct{}
+	mu       sync.Mutex
+	queue    []*issueRequest
+	queued   map[string]struct{}
+	inflight map[string]struct{}
 
 	wake   chan struct{}
 	sem    chan struct{}
@@ -93,6 +94,7 @@ func newDomainIssuer(manager *SANCertManager, quarantine *domainQuarantine, conf
 		bucket:     newTokenBucket(config.Burst, config.RefillInterval),
 		queue:      []*issueRequest{},
 		queued:     make(map[string]struct{}),
+		inflight:   make(map[string]struct{}),
 		wake:       make(chan struct{}, 1),
 		sem:        make(chan struct{}, config.MaxConcurrentOrders),
 		ctx:        ctx,
@@ -120,7 +122,9 @@ func (i *domainIssuer) Request(domain, service string) {
 	}
 
 	i.mu.Lock()
-	if _, ok := i.queued[domain]; ok {
+	_, alreadyQueued := i.queued[domain]
+	_, alreadyInflight := i.inflight[domain]
+	if alreadyQueued || alreadyInflight {
 		i.mu.Unlock()
 		return
 	}
@@ -230,16 +234,37 @@ func (i *domainIssuer) nextBatch() []*issueRequest {
 		}
 		i.queue = remaining
 
+		for _, request := range batch {
+			i.inflight[request.domain] = struct{}{}
+		}
+
 		return batch
 	}
 
 	return nil
 }
 
+// issuable must be called with i.mu held.
 func (i *domainIssuer) issuable(domain string) bool {
+	if _, ok := i.inflight[domain]; ok {
+		return false
+	}
+
 	return !i.quarantine.IsQuarantined(domain) &&
 		!i.manager.HasValidCertificate(domain) &&
 		i.manager.DomainAllowed(domain)
+}
+
+// finishBatch releases the in-flight hold on a batch's domains. Callers must
+// record quarantine or certificate outcomes for the batch BEFORE calling it,
+// so re-requested domains cannot slip into a duplicate order.
+func (i *domainIssuer) finishBatch(batch []*issueRequest) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	for _, request := range batch {
+		delete(i.inflight, request.domain)
+	}
 }
 
 func (i *domainIssuer) batchSizeFor(service string) int {
@@ -271,6 +296,7 @@ func (i *domainIssuer) issue(batch []*issueRequest) {
 	}
 
 	if len(domains) == 0 {
+		i.finishBatch(batch)
 		i.notifyChange()
 		return
 	}
@@ -282,7 +308,7 @@ func (i *domainIssuer) issue(batch []*issueRequest) {
 		Bundle:  true,
 	})
 	if err != nil {
-		i.handleObtainFailure(domains, requests, err)
+		i.handleObtainFailure(batch, domains, requests, err)
 		i.notifyChange()
 		return
 	}
@@ -292,6 +318,7 @@ func (i *domainIssuer) issue(batch []*issueRequest) {
 		for _, domain := range domains {
 			i.quarantine.RecordFailure(domain, quarantineACME)
 		}
+		i.finishBatch(batch)
 		i.notifyChange()
 		return
 	}
@@ -299,6 +326,7 @@ func (i *domainIssuer) issue(batch []*issueRequest) {
 	for _, domain := range domains {
 		i.quarantine.Clear(domain)
 	}
+	i.finishBatch(batch)
 
 	slog.Info("Dynamic certificate issued", "domains", domains)
 	i.notifyChange()
@@ -308,7 +336,7 @@ func (i *domainIssuer) issue(batch []*issueRequest) {
 // the survivors exactly once. Survivors that already had their retry are
 // quarantined too, so a failing batch cannot loop against ACME rate limits;
 // the poller re-requests them after the backoff expires.
-func (i *domainIssuer) handleObtainFailure(domains []string, requests map[string]*issueRequest, err error) {
+func (i *domainIssuer) handleObtainFailure(batch []*issueRequest, domains []string, requests map[string]*issueRequest, err error) {
 	failed := failedDomainsFromError(err, domains)
 	if len(failed) == 0 {
 		failed = domains
@@ -320,6 +348,7 @@ func (i *domainIssuer) handleObtainFailure(domains []string, requests map[string
 		i.quarantine.RecordFailure(domain, quarantineACME)
 	}
 
+	survivors := []*issueRequest{}
 	for _, domain := range domains {
 		if slices.Contains(failed, domain) {
 			continue
@@ -330,14 +359,21 @@ func (i *domainIssuer) handleObtainFailure(domains []string, requests map[string
 			i.quarantine.RecordFailure(domain, quarantineACME)
 			continue
 		}
-
-		i.mu.Lock()
-		if _, ok := i.queued[domain]; !ok {
-			i.queue = append(i.queue, &issueRequest{domain: domain, service: request.service, retried: true})
-			i.queued[domain] = struct{}{}
-		}
-		i.mu.Unlock()
+		survivors = append(survivors, request)
 	}
+
+	// Outcomes are recorded; release the in-flight hold before re-enqueueing
+	// so the survivors are not dropped as in-flight at the next dequeue.
+	i.finishBatch(batch)
+
+	i.mu.Lock()
+	for _, request := range survivors {
+		if _, ok := i.queued[request.domain]; !ok {
+			i.queue = append(i.queue, &issueRequest{domain: request.domain, service: request.service, retried: true})
+			i.queued[request.domain] = struct{}{}
+		}
+	}
+	i.mu.Unlock()
 
 	i.notify()
 }

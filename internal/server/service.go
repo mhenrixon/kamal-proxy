@@ -488,6 +488,11 @@ func (s *Service) createCertManager(options ServiceOptions) (CertManager, error)
 		return s.sanCertManager, nil
 	}
 
+	if options.TLSDomainsSource != "" {
+		slog.Warn("tls-domains-source requires the proxy to run with --acme-email; dynamic domains will not receive certificates",
+			"service", s.name)
+	}
+
 	return &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		Cache:      autocert.DirCache(options.ScopedCachePath()),

@@ -160,12 +160,21 @@ func (r *certRenewer) shouldRenew(cert *ManagedCert) bool {
 // quarantined members. An unchanged set keeps Let's Encrypt's renewal
 // exemption; ARI `replaces` exempts the order entirely where supported.
 func (r *certRenewer) renew(cert *ManagedCert) {
-	domains := r.effectiveDomains(cert)
+	allowed := r.allowedDomains(cert)
 
-	if len(domains) == 0 {
+	// Only eviction drops a certificate. Quarantine just defers renewal: the
+	// certificate keeps serving until the quarantine lifts or it expires.
+	if len(allowed) == 0 {
 		slog.Info("Dropping certificate with no remaining domains", "certificate", cert.Identifier)
 		r.manager.removeCertificate(cert.Identifier)
 		r.notifyChange()
+		return
+	}
+
+	domains, quarantined := r.quarantine.Filter(allowed)
+	if len(domains) == 0 {
+		slog.Info("Deferring renewal; all remaining domains are quarantined",
+			"certificate", cert.Identifier, "quarantined", quarantined)
 		return
 	}
 
@@ -215,12 +224,12 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	r.notifyChange()
 }
 
-// effectiveDomains filters a certificate's set down to domains that are still
-// allowed (deploy-registered or dynamic) and not quarantined.
-func (r *certRenewer) effectiveDomains(cert *ManagedCert) []string {
+// allowedDomains filters a certificate's set down to domains that are still
+// allowed (deploy-registered or dynamic).
+func (r *certRenewer) allowedDomains(cert *ManagedCert) []string {
 	domains := []string{}
 	for _, domain := range cert.Domains {
-		if r.manager.DomainAllowed(domain) && !r.quarantine.IsQuarantined(domain) {
+		if r.manager.DomainAllowed(domain) {
 			domains = append(domains, domain)
 		}
 	}
