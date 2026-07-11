@@ -23,6 +23,11 @@ type CertificateRenewalManager struct {
 	checkInterval    time.Duration
 	renewalThreshold time.Duration
 
+	// renewFn performs the actual renewal of a single certificate. It defaults
+	// to renewCertificate and exists as a seam so tests can observe scheduling
+	// without touching the network.
+	renewFn func(*ManagedCertificate) error
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -31,13 +36,15 @@ type CertificateRenewalManager struct {
 // NewCertificateRenewalManager creates a new renewal manager
 func NewCertificateRenewalManager(registry *CertificateRegistry) *CertificateRenewalManager {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &CertificateRenewalManager{
+	m := &CertificateRenewalManager{
 		registry:         registry,
 		checkInterval:    DefaultRenewalCheckInterval,
 		renewalThreshold: DefaultRenewalThreshold,
 		ctx:              ctx,
 		cancel:           cancel,
 	}
+	m.renewFn = m.renewCertificate
+	return m
 }
 
 // Start begins the background renewal loop
@@ -102,7 +109,7 @@ func (m *CertificateRenewalManager) checkAndRenew() {
 	slog.Info("Renewing certificates", "count", len(certsToRenew))
 
 	for _, cert := range certsToRenew {
-		if err := m.renewCertificate(cert); err != nil {
+		if err := m.renewFn(cert); err != nil {
 			slog.Error("Failed to renew certificate",
 				"identifier", cert.Identifier,
 				"domains", cert.Domains,

@@ -89,10 +89,14 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize certificate registry if ACME is configured
+	var renewalManager *server.CertificateRenewalManager
 	if globalConfig.HasACMEConfig() {
-		if err := c.initCertificateRegistry(router); err != nil {
+		manager, err := c.initCertificateRegistry(router)
+		if err != nil {
 			slog.Error("Failed to initialize certificate registry", "error", err)
 			// Continue without registry - will fall back to per-service certs
+		} else {
+			renewalManager = manager
 		}
 	}
 
@@ -111,6 +115,13 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		defer dynamicDomains.Stop()
 	}
 
+	if renewalManager != nil {
+		// Start background renewal after the registry is ready; stop it during
+		// shutdown so an in-flight renewal can settle before we exit.
+		renewalManager.Start()
+		defer renewalManager.Stop()
+	}
+
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
 	<-ch
@@ -118,17 +129,17 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func (c *runCommand) initCertificateRegistry(router *server.Router) error {
+func (c *runCommand) initCertificateRegistry(router *server.Router) (*server.CertificateRenewalManager, error) {
 	config := globalConfig.CertificateRegistryConfig()
 
 	registry, err := server.NewCertificateRegistry(config)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	ctx := context.Background()
 	if err := registry.Initialize(ctx); err != nil {
-		return err
+		return nil, err
 	}
 
 	router.SetCertificateRegistry(registry)
@@ -138,7 +149,7 @@ func (c *runCommand) initCertificateRegistry(router *server.Router) error {
 		"prefer_wildcard", config.PreferWildcard,
 	)
 
-	return nil
+	return server.NewCertificateRenewalManager(registry), nil
 }
 
 func (c *runCommand) setLogger() {
