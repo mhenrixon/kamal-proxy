@@ -303,7 +303,7 @@ func (dm *DynamicDomainManager) Status() DomainsStatusResponse {
 
 	quarantine := map[string]QuarantineStatus{}
 	for domain, entry := range dm.quarantine.Snapshot() {
-		quarantine[domain] = QuarantineStatus{Until: entry.Until, Failures: entry.Failures}
+		quarantine[domain] = QuarantineStatus(entry)
 	}
 
 	return DomainsStatusResponse{
