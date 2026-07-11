@@ -94,7 +94,11 @@ func TestServiceOptions_Validate_DynamicDomains(t *testing.T) {
 	// TLS with no hosts is allowed when a dynamic domain source is set
 	assertValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains"})
 	assertValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "https://app.internal/domains"})
-	assertValid(ServiceOptions{Hosts: []string{"example.com"}, TLSEnabled: true, TLSDomainsSource: "/domains"})
+
+	// Configured hosts are rejected: dynamic domains only route through the
+	// catch-all service, so host-scoped certs could never be served
+	assertNotValid(ServiceOptions{Hosts: []string{"example.com"}, TLSEnabled: true, TLSDomainsSource: "/domains"},
+		"tls-domains-source requires the service to be the catch-all")
 
 	// A source requires TLS to be enabled
 	assertNotValid(ServiceOptions{TLSDomainsSource: "/domains"}, "tls-domains-source requires TLS")
@@ -112,6 +116,13 @@ func TestServiceOptions_Validate_DynamicDomains(t *testing.T) {
 	// Related knobs require a source
 	assertNotValid(ServiceOptions{Hosts: []string{"example.com"}, TLSEnabled: true, TLSDomainsBatchSize: 5}, "tls-domains-batch-size requires tls-domains-source")
 	assertNotValid(ServiceOptions{Hosts: []string{"example.com"}, TLSEnabled: true, TLSDomainsInterval: time.Minute}, "tls-domains-interval requires tls-domains-source")
+
+	// A catch-all TLS service must never register the empty host for
+	// certificate provisioning
+	manager := testSANCertManager(t)
+	_, err := NewService("catch-all", ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", Hosts: []string{""}}, defaultTargetOptions, manager)
+	require.NoError(t, err)
+	assert.Empty(t, manager.pendingDomains)
 
 	// Interval must not hammer the app
 	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", TLSDomainsInterval: 5 * time.Second}, "tls-domains-interval must be at least 10s")

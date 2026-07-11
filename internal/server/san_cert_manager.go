@@ -64,8 +64,9 @@ type SANCertManagerConfig struct {
 // It batches up to 100 domains into a single certificate,
 // reducing the number of certificates and avoiding rate limits.
 type SANCertManager struct {
-	mu     sync.RWMutex
-	config SANCertManagerConfig
+	mu      sync.RWMutex
+	stateMu sync.Mutex // serializes state-file snapshots and writes
+	config  SANCertManagerConfig
 
 	// ACME client
 	client *lego.Client
@@ -234,6 +235,11 @@ func (p *memoryHTTP01Provider) CleanUp(domain, token, keyAuth string) error {
 
 // RegisterDomain registers a domain for certificate management
 func (m *SANCertManager) RegisterDomain(domain string, service string) error {
+	// A catch-all service's normalized host is "": not a provisionable domain
+	if domain == "" {
+		return nil
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -688,6 +694,12 @@ func (m *SANCertManager) persistState() error {
 	if m.config.StatePath == "" {
 		return nil
 	}
+
+	// Serialize snapshot+write: issuer goroutines, the renewer, and
+	// handshake-driven provisioning all persist concurrently, and interleaved
+	// writes to the shared .tmp file would corrupt it.
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 
 	m.mu.RLock()
 	certs := make(map[string]*ManagedCert, len(m.certificates))

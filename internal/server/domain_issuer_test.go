@@ -196,6 +196,24 @@ func TestDomainIssuer_Issue_PreflightFailureQuarantinesWithoutBurningAnOrder(t *
 	assert.Empty(t, obtainer.Calls())
 }
 
+func TestDomainIssuer_Issue_ShutdownFailureDoesNotQuarantine(t *testing.T) {
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, errors.New("acme: connection reset")
+	}}
+	issuer, manager, quarantine := testIssuer(t, obtainer, domainIssuerConfig{})
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+
+	issuer.Request("tenant.example.com", "service1")
+	batch := issuer.nextBatch()
+
+	// The proxy is shutting down: the order failure is our fault, not the
+	// domain's — it must not be recorded against the domain
+	issuer.cancel()
+	issuer.issue(batch)
+
+	assert.False(t, quarantine.IsQuarantined("tenant.example.com"))
+}
+
 func TestDomainIssuer_Issue_PreflightSkippedWhenCertificateExists(t *testing.T) {
 	preflights := 0
 	obtainer := successfulObtainer(t)
@@ -258,6 +276,23 @@ func TestDomainIssuer_InflightDomainIsNotOrderedTwice(t *testing.T) {
 		return manager.HasValidCertificate("tenant.example.com")
 	}, 5*time.Second, 10*time.Millisecond)
 	require.Len(t, obtainer.Calls(), 1)
+}
+
+func TestDomainIssuer_TakePendingMarksInflightUntilReleased(t *testing.T) {
+	issuer, manager, _ := testIssuer(t, successfulObtainer(t), domainIssuerConfig{})
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+
+	issuer.Request("tenant.example.com", "service1")
+	taken := issuer.takePending("service1", 1)
+	require.Equal(t, []string{"tenant.example.com"}, taken)
+
+	// While the renewer holds the domain, re-requests must be dropped
+	issuer.Request("tenant.example.com", "service1")
+	assert.Empty(t, issuer.nextBatch())
+
+	issuer.releasePending(taken)
+	issuer.Request("tenant.example.com", "service1")
+	require.Len(t, issuer.nextBatch(), 1)
 }
 
 func TestDomainIssuer_WorkerIssuesAsynchronously(t *testing.T) {

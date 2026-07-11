@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -145,14 +146,37 @@ func TestCertRenewer_DropsCertificateWhenAllDomainsEvicted(t *testing.T) {
 	assert.False(t, manager.HasCertificate("gone.example.com"))
 }
 
-func TestCertRenewer_ExcludesQuarantinedDomains(t *testing.T) {
+func TestCertRenewer_DefersPartiallyQuarantinedBatchWhenTimeAllows(t *testing.T) {
 	obtainer := successfulObtainer(t)
 	manager := testSANCertManager(t)
 	quarantine := newDomainQuarantine()
 
 	manager.SetDynamicDomains("service1", []string{"ok.example.com", "flaky.example.com"})
+	// In the renewal window but with 20 days of validity left: renewing
+	// without the quarantined member would unmap its still-valid certificate
+	// and change the identifier set. Wait for the quarantine instead.
 	adoptTestCert(t, manager, []string{"flaky.example.com", "ok.example.com"},
 		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	quarantine.RecordFailure("flaky.example.com", quarantineACME)
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	assert.Empty(t, obtainer.Calls())
+	require.Len(t, manager.ManagedCertificates(), 1)
+}
+
+func TestCertRenewer_CompactsQuarantinedDomainsNearExpiry(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	manager.SetDynamicDomains("service1", []string{"ok.example.com", "flaky.example.com"})
+	// Only 3 days left: waiting for the quarantine would risk expiring the
+	// healthy member — renew without the quarantined one
+	adoptTestCert(t, manager, []string{"flaky.example.com", "ok.example.com"},
+		time.Now().Add(-87*24*time.Hour), time.Now().Add(3*24*time.Hour))
 
 	quarantine.RecordFailure("flaky.example.com", quarantineACME)
 
@@ -178,9 +202,10 @@ func TestCertRenewer_TopsUpBatchOnlyAtRenewal(t *testing.T) {
 	issuer.Request("c.example.com", "service1")
 
 	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{
-		Obtainer:    obtainer,
-		BatchSize:   func(service string) int { return 3 },
-		TakePending: issuer.takePending,
+		Obtainer:       obtainer,
+		BatchSize:      func(service string) int { return 3 },
+		TakePending:    issuer.takePending,
+		ReleasePending: issuer.releasePending,
 	})
 	renewer.reconcile()
 
@@ -188,6 +213,63 @@ func TestCertRenewer_TopsUpBatchOnlyAtRenewal(t *testing.T) {
 	require.Len(t, calls, 1)
 	assert.ElementsMatch(t, []string{"a.example.com", "b.example.com", "c.example.com"}, calls[0].Domains)
 	assert.Equal(t, 0, issuer.QueueLen())
+
+	// The taken domains were released after the order completed
+	issuer.Request("d.example.com", "service1")
+	manager.SetDynamicDomains("service1", []string{"a.example.com", "b.example.com", "c.example.com", "d.example.com"})
+	assert.NotEmpty(t, issuer.nextBatch())
+}
+
+func TestCertRenewer_TopUpPreflightsNewDomains(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	manager.SetDynamicDomains("service1", []string{"a.example.com", "unreachable.example.com"})
+	adoptTestCert(t, manager, []string{"a.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	issuer := newDomainIssuer(manager, quarantine, domainIssuerConfig{Obtainer: obtainer})
+	issuer.Request("unreachable.example.com", "service1")
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{
+		Obtainer:       obtainer,
+		BatchSize:      func(service string) int { return 3 },
+		TakePending:    issuer.takePending,
+		ReleasePending: issuer.releasePending,
+		Preflight:      func(domain string) error { return errors.New("does not route here") },
+	})
+	renewer.reconcile()
+
+	// The never-issued domain failed its probe: quarantined, not ordered
+	calls := obtainer.Calls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, []string{"a.example.com"}, calls[0].Domains)
+	assert.True(t, quarantine.IsQuarantined("unreachable.example.com"))
+}
+
+func TestCertRenewer_SkipsCertificatesNoLongerReferenced(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+
+	// An older, superseded certificate still covers the domain, but the
+	// domain now maps to a newer one: the old cert must be GC'd, not renewed.
+	old := adoptTestCert(t, manager, []string{"gone.example.com", "tenant.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+	current := adoptTestCert(t, manager, []string{"tenant.example.com"},
+		time.Now().Add(-time.Hour), time.Now().Add(89*24*time.Hour))
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	assert.Empty(t, obtainer.Calls())
+
+	certs := manager.ManagedCertificates()
+	require.Len(t, certs, 1)
+	assert.Equal(t, current.Identifier, certs[0].Identifier)
+	assert.NotEqual(t, old.Identifier, certs[0].Identifier)
 }
 
 func TestCertRenewer_SkipsRenewalWhenAllDomainsQuarantined(t *testing.T) {

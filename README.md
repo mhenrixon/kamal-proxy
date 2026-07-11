@@ -231,8 +231,9 @@ hostnames are skipped, and payloads over 1MB or 10,000 entries are rejected.
 Set `KAMAL_PROXY_DOMAINS_TOKEN` to send `Authorization: Bearer <token>` with
 each poll.
 
-With a source configured, `--tls` no longer requires `--host`: the service can
-act as a catch-all, and the fetched list is a hard allowlist — TLS handshakes
+A service with a domain source must be the catch-all: deploy it without
+`--host` (dynamic domains route through the host-less binding, so `--tls` no
+longer requires one). The fetched list is a hard allowlist — TLS handshakes
 for unknown hostnames are refused without touching Let's Encrypt.
 
 **Push refresh (optional).** To pick up new domains faster than the poll

@@ -114,6 +114,15 @@ func (m *SANCertManager) dynamicOwner(domain string) (string, bool) {
 	return service, ok
 }
 
+// certIDForDomain returns the identifier of the certificate a domain
+// currently maps to, or "".
+func (m *SANCertManager) certIDForDomain(domain string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.domainToCert[domain]
+}
+
 // ManagedCertificates returns a snapshot of the managed certificates.
 func (m *SANCertManager) ManagedCertificates() []*ManagedCert {
 	m.mu.RLock()

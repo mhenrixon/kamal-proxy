@@ -280,6 +280,16 @@ func TestSANCertManager_RegisterDomain_TracksRegisteredDomains(t *testing.T) {
 	assert.NotContains(t, manager.registeredDomains, "app.example.com")
 }
 
+func TestSANCertManager_RegisterDomain_IgnoresEmptyHost(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	// A catch-all service's normalized hosts are [""] — the empty marker must
+	// never reach the shared pending batch, or it poisons every SAN order.
+	require.NoError(t, manager.RegisterDomain("", "catch-all-service"))
+	assert.Empty(t, manager.pendingDomains)
+	assert.Empty(t, manager.registeredDomains)
+}
+
 func TestSANCertManager_GetCertificate_UnknownSNIRejected(t *testing.T) {
 	manager := testSANCertManager(t)
 

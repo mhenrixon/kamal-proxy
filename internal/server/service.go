@@ -140,6 +140,12 @@ func (so ServiceOptions) validateDynamicDomains() error {
 		return fmt.Errorf("%w: tls-domains-source requires TLS to be enabled", ErrServiceOptionsInvalid)
 	}
 
+	// Dynamic domains are routed via the host-less catch-all binding; a
+	// host-scoped service would issue certificates that can never be served.
+	if so.HasConfiguredHosts() {
+		return fmt.Errorf("%w: tls-domains-source requires the service to be the catch-all (no --host)", ErrServiceOptionsInvalid)
+	}
+
 	if !validDomainSource(so.TLSDomainsSource) {
 		return fmt.Errorf("%w: tls-domains-source must be a path or an http(s) URL: %q", ErrServiceOptionsInvalid, so.TLSDomainsSource)
 	}
@@ -481,6 +487,10 @@ func (s *Service) createCertManager(options ServiceOptions) (CertManager, error)
 	// Use the shared SAN certificate manager when available
 	if s.sanCertManager != nil {
 		for _, host := range options.Hosts {
+			if host == "" {
+				// Catch-all marker, not a provisionable domain
+				continue
+			}
 			if err := s.sanCertManager.RegisterDomain(host, s.name); err != nil {
 				slog.Warn("Failed to register domain with SAN cert manager", "host", host, "error", err)
 			}

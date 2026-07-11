@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -31,7 +32,11 @@ func testDynamicDomainManager(t testing.TB, config DynamicDomainConfig) (*Dynami
 	}
 
 	manager := testSANCertManager(t)
-	dm := NewDynamicDomainManager(config, manager, &fakeResolver{services: map[string]*Service{}})
+	resolver := &fakeResolver{services: map[string]*Service{
+		"service1": {name: "service1"},
+		"service2": {name: "service2"},
+	}}
+	dm := NewDynamicDomainManager(config, manager, resolver)
 	dm.issuer.config.Obtainer = successfulObtainer(t)
 	dm.issuer.config.Preflight = nil
 
@@ -83,9 +88,13 @@ func TestDynamicDomainManager_StateSurvivesRestart(t *testing.T) {
 	backend, _ := testDomainsBackend(t, "tenant.example.com")
 
 	dm, _ := testDynamicDomainManager(t, DynamicDomainConfig{StatePath: statePath})
+	dm.ServiceDeployed("service1", ServiceOptions{
+		TLSEnabled:       true,
+		TLSDomainsSource: backend.URL,
+	})
 	dm.applyDomains("service1", []string{"tenant.example.com"})
 	dm.quarantine.RecordFailure("bad.example.com", quarantineACME)
-	dm.saveState()
+	dm.Stop()
 
 	// A fresh manager restores state and applies persisted domains on deploy,
 	// before any poll happens.
@@ -253,4 +262,44 @@ func TestDynamicDomainManager_PreflightProbe(t *testing.T) {
 	}
 
 	require.Error(t, dm.preflightProbe("tenant.example.com"))
+}
+
+func TestDynamicDomainManager_PreflightProbeRefusesRedirects(t *testing.T) {
+	dm, _ := testDynamicDomainManager(t, DynamicDomainConfig{})
+
+	redirected := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected = true
+		w.Write([]byte(dm.preflightNonce))
+	}))
+	t.Cleanup(target.Close)
+
+	// The probed (tenant-controlled) server answers with a redirect — the
+	// probe must fail without following it (SSRF).
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+
+	dm.probeClient.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return net.Dial(network, redirector.Listener.Addr().String())
+		},
+	}
+
+	require.Error(t, dm.preflightProbe("evil.example.com"))
+	assert.False(t, redirected)
+}
+
+func TestDynamicDomainManager_LoadStateSkipsNilEntries(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "dynamic-domains.state")
+	require.NoError(t, os.WriteFile(statePath,
+		[]byte(`{"services":{"broken":null,"ok":{"domains":["tenant.example.com"]}}}`), 0600))
+
+	dm, _ := testDynamicDomainManager(t, DynamicDomainConfig{StatePath: statePath})
+
+	// Must not panic, and the valid entry must survive
+	status := dm.Status()
+	assert.NotContains(t, status.Services, "broken")
+	assert.Contains(t, status.Services, "ok")
 }

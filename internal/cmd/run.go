@@ -44,6 +44,8 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 
 	router.RestoreLastSavedState()
 
+	var dynamicDomains *server.DynamicDomainManager
+
 	if globalConfig.ACMEEmail != "" {
 		manager, err := server.NewSANCertManager(server.SANCertManagerConfig{
 			Email:     globalConfig.ACMEEmail,
@@ -61,15 +63,13 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 
 		router.SetSANCertManager(manager)
 
-		dynamicDomains := server.NewDynamicDomainManager(server.DynamicDomainConfig{
+		dynamicDomains = server.NewDynamicDomainManager(server.DynamicDomainConfig{
 			StatePath:    globalConfig.DynamicDomainsStatePath(),
 			RefreshToken: os.Getenv("KAMAL_PROXY_REFRESH_TOKEN"),
 			SourceToken:  os.Getenv("KAMAL_PROXY_DOMAINS_TOKEN"),
 		}, manager, router)
-		defer dynamicDomains.Stop()
 
 		router.SetDynamicDomainManager(dynamicDomains)
-		dynamicDomains.Start()
 	}
 
 	s := server.NewServer(&globalConfig, router)
@@ -78,6 +78,14 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer s.Stop()
+
+	if dynamicDomains != nil {
+		// Start after the listeners are bound (pre-flight probes and HTTP-01
+		// challenges route through them), and stop before they close so
+		// in-flight orders can still validate during shutdown.
+		dynamicDomains.Start()
+		defer dynamicDomains.Stop()
+	}
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)

@@ -43,8 +43,17 @@ func (dm *DynamicDomainManager) loadState() {
 	}
 
 	dm.mu.Lock()
-	if state.Services != nil {
-		dm.states = state.Services
+	for name, serviceState := range state.Services {
+		// Guard against hand-edited or partially written files: a nil entry
+		// would panic Status() and the RPC handler with it.
+		if serviceState == nil {
+			slog.Warn("Skipping invalid dynamic domains state entry", "service", name)
+			continue
+		}
+		if serviceState.Domains == nil {
+			serviceState.Domains = []string{}
+		}
+		dm.states[name] = serviceState
 	}
 	dm.mu.Unlock()
 

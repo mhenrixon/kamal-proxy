@@ -144,8 +144,9 @@ func (i *domainIssuer) QueueLen() int {
 }
 
 // takePending removes and returns up to n issuable queued domains for a
-// service. The renewer uses it to top up under-filled batches at renewal
-// boundaries.
+// service, marking them in-flight so handshakes and polls cannot race them
+// into duplicate orders. The renewer uses it to top up under-filled batches
+// at renewal boundaries and MUST call releasePending when its order finishes.
 func (i *domainIssuer) takePending(service string, n int) []string {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -156,6 +157,7 @@ func (i *domainIssuer) takePending(service string, n int) []string {
 		if len(taken) < n && request.service == service && i.issuable(request.domain) {
 			taken = append(taken, request.domain)
 			delete(i.queued, request.domain)
+			i.inflight[request.domain] = struct{}{}
 		} else {
 			remaining = append(remaining, request)
 		}
@@ -163,6 +165,18 @@ func (i *domainIssuer) takePending(service string, n int) []string {
 	i.queue = remaining
 
 	return taken
+}
+
+// releasePending drops the in-flight hold on domains handed out by
+// takePending. Outcomes (certificate or quarantine) must be recorded first.
+func (i *domainIssuer) releasePending(domains []string) {
+	i.mu.Lock()
+	for _, domain := range domains {
+		delete(i.inflight, domain)
+	}
+	i.mu.Unlock()
+
+	i.notify()
 }
 
 // Private
@@ -285,6 +299,10 @@ func (i *domainIssuer) issue(batch []*issueRequest) {
 	for _, request := range batch {
 		if i.config.Preflight != nil && !i.manager.HasCertificate(request.domain) {
 			if err := i.config.Preflight(request.domain); err != nil {
+				if i.ctx.Err() != nil {
+					// Shutting down: the failure is ours, not the domain's
+					continue
+				}
 				backoff := i.quarantine.RecordFailure(request.domain, quarantinePreflight)
 				slog.Warn("Domain failed pre-flight probe; holding back",
 					"domain", request.domain, "backoff", backoff, "error", err)
@@ -308,6 +326,13 @@ func (i *domainIssuer) issue(batch []*issueRequest) {
 		Bundle:  true,
 	})
 	if err != nil {
+		if i.ctx.Err() != nil {
+			// The shutdown broke the order (listeners are closing); do not
+			// hold that against the domains.
+			slog.Info("Certificate order aborted by shutdown", "domains", domains)
+			i.finishBatch(batch)
+			return
+		}
 		i.handleObtainFailure(batch, domains, requests, err)
 		i.notifyChange()
 		return

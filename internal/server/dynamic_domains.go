@@ -98,7 +98,14 @@ func NewDynamicDomainManager(config DynamicDomainConfig, manager *SANCertManager
 		settings:       make(map[string]serviceSettings),
 		states:         make(map[string]*serviceDomainState),
 		preflightNonce: generateNonce(),
-		probeClient:    &http.Client{Timeout: preflightTimeout},
+		probeClient: &http.Client{
+			Timeout: preflightTimeout,
+			// Never follow redirects: the probed domain is tenant-supplied,
+			// and a redirect could point the proxy at internal targets (SSRF).
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 
 	dm.issuer = newDomainIssuer(manager, dm.quarantine, domainIssuerConfig{
@@ -109,11 +116,13 @@ func NewDynamicDomainManager(config DynamicDomainConfig, manager *SANCertManager
 	})
 
 	dm.renewer = newCertRenewer(manager, dm.quarantine, certRenewerConfig{
-		Obtainer:    managerObtainer{manager: manager},
-		Bucket:      dm.issuer.bucket,
-		BatchSize:   dm.batchSizeFor,
-		TakePending: dm.issuer.takePending,
-		OnChange:    dm.saveState,
+		Obtainer:       managerObtainer{manager: manager},
+		Bucket:         dm.issuer.bucket,
+		BatchSize:      dm.batchSizeFor,
+		TakePending:    dm.issuer.takePending,
+		ReleasePending: dm.issuer.releasePending,
+		Preflight:      dm.preflightProbe,
+		OnChange:       dm.saveState,
 	})
 
 	manager.SetDynamicCertRequester(dm.issuer.Request)
@@ -311,7 +320,22 @@ func (dm *DynamicDomainManager) Status() DomainsStatusResponse {
 // the allowlist, clears quarantine history for removed domains, requests
 // issuance for uncovered ones, and persists.
 func (dm *DynamicDomainManager) applyDomains(service string, domains []string) {
+	// A deploy/remove race can leave an orphaned poller behind; never apply
+	// domains for a service the router no longer knows.
+	if dm.resolver.serviceForName(service) == nil {
+		slog.Debug("Ignoring domain update for unknown service", "service", service)
+		return
+	}
+
 	dm.mu.Lock()
+	// A poll can complete while its service is being removed or replaced;
+	// applying it would resurrect state for a dead service.
+	if _, ok := dm.sources[service]; !ok {
+		dm.mu.Unlock()
+		slog.Debug("Ignoring domain update for removed service", "service", service)
+		return
+	}
+
 	previous := []string{}
 	if state := dm.states[service]; state != nil {
 		previous = state.Domains

@@ -26,6 +26,12 @@ const (
 	// fallbackCertLifetime is assumed when a certificate's leaf (and so its
 	// NotBefore) is unavailable.
 	fallbackCertLifetime = 90 * 24 * time.Hour
+
+	// quarantineCompactionWindow is how close to expiry a partially
+	// quarantined certificate is renewed WITHOUT its quarantined members.
+	// Further out, renewal is deferred so a transient failure cannot unmap a
+	// domain from its still-valid certificate.
+	quarantineCompactionWindow = 7 * 24 * time.Hour
 )
 
 // renewalInfoGetter is implemented by obtainers that support ACME Renewal
@@ -46,6 +52,14 @@ type certRenewerConfig struct {
 	// TakePending supplies queued domains to top up an under-filled batch;
 	// membership changes happen ONLY at renewal boundaries.
 	TakePending func(service string, n int) []string
+
+	// ReleasePending returns the in-flight hold on topped-up domains once
+	// their renewal order has finished.
+	ReleasePending func(domains []string)
+
+	// Preflight probes a never-issued top-up domain before it joins a live
+	// renewal order. Nil skips probing.
+	Preflight func(domain string) error
 
 	// OnChange is notified after renewal activity mutates state.
 	OnChange func()
@@ -125,6 +139,16 @@ func (r *certRenewer) reconcile() {
 			return
 		}
 
+		// A certificate with no domain that is both still allowed and still
+		// mapped to it has been superseded or fully evicted: garbage-collect
+		// it instead of renewing it forever.
+		if len(r.renewableDomains(cert)) == 0 {
+			slog.Info("Removing certificate with no remaining domains", "certificate", cert.Identifier)
+			r.manager.removeCertificate(cert.Identifier)
+			r.notifyChange()
+			continue
+		}
+
 		if r.shouldRenew(cert) {
 			r.renew(cert)
 		}
@@ -160,7 +184,7 @@ func (r *certRenewer) shouldRenew(cert *ManagedCert) bool {
 // quarantined members. An unchanged set keeps Let's Encrypt's renewal
 // exemption; ARI `replaces` exempts the order entirely where supported.
 func (r *certRenewer) renew(cert *ManagedCert) {
-	allowed := r.allowedDomains(cert)
+	allowed := r.renewableDomains(cert)
 
 	// Only eviction drops a certificate. Quarantine just defers renewal: the
 	// certificate keeps serving until the quarantine lifts or it expires.
@@ -178,7 +202,22 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 		return
 	}
 
-	domains = r.topUpBatch(domains)
+	// While there is time, wait for quarantined members rather than renewing
+	// without them: a shrunken set would unmap them from a still-valid
+	// certificate AND forfeit the identical-set renewal exemption. Compact
+	// only when expiry is close.
+	if len(quarantined) > 0 && time.Until(cert.NotAfter) > quarantineCompactionWindow {
+		slog.Info("Deferring renewal until quarantined members recover",
+			"certificate", cert.Identifier, "quarantined", quarantined)
+		return
+	}
+
+	domains, toppedUp := r.topUpBatch(domains)
+	defer func() {
+		if r.config.ReleasePending != nil && len(toppedUp) > 0 {
+			r.config.ReleasePending(toppedUp)
+		}
+	}()
 	slices.Sort(domains)
 
 	replaces := ""
@@ -224,36 +263,57 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	r.notifyChange()
 }
 
-// allowedDomains filters a certificate's set down to domains that are still
-// allowed (deploy-registered or dynamic).
-func (r *certRenewer) allowedDomains(cert *ManagedCert) []string {
+// renewableDomains filters a certificate's set down to domains that are still
+// allowed (deploy-registered or dynamic) AND still mapped to this certificate
+// — a domain that moved to a newer certificate no longer renews through this
+// one.
+func (r *certRenewer) renewableDomains(cert *ManagedCert) []string {
 	domains := []string{}
 	for _, domain := range cert.Domains {
-		if r.manager.DomainAllowed(domain) {
+		if r.manager.DomainAllowed(domain) && r.manager.certIDForDomain(domain) == cert.Identifier {
 			domains = append(domains, domain)
 		}
 	}
 	return domains
 }
 
-// topUpBatch fills an under-filled dynamic batch from the pending queue. It
-// only applies to certificates owned by a service with a batch size above one.
-func (r *certRenewer) topUpBatch(domains []string) []string {
+// topUpBatch fills an under-filled dynamic batch from the pending queue,
+// pre-flighting never-issued candidates so an unreachable newcomer cannot sink
+// a live renewal order. It returns the batch plus the taken domains, which the
+// caller must release once the order finishes. It only applies to certificates
+// owned by a service with a batch size above one.
+func (r *certRenewer) topUpBatch(domains []string) (batch, taken []string) {
 	if r.config.BatchSize == nil || r.config.TakePending == nil {
-		return domains
+		return domains, nil
 	}
 
 	service, ok := r.dynamicServiceFor(domains)
 	if !ok {
-		return domains
+		return domains, nil
 	}
 
 	size := r.config.BatchSize(service)
 	if size <= 1 || len(domains) >= size {
-		return domains
+		return domains, nil
 	}
 
-	return append(domains, r.config.TakePending(service, size-len(domains))...)
+	kept := []string{}
+	for _, domain := range r.config.TakePending(service, size-len(domains)) {
+		if r.config.Preflight != nil && !r.manager.HasCertificate(domain) {
+			if err := r.config.Preflight(domain); err != nil {
+				backoff := r.quarantine.RecordFailure(domain, quarantinePreflight)
+				slog.Warn("Top-up domain failed pre-flight probe; holding back",
+					"domain", domain, "backoff", backoff, "error", err)
+				if r.config.ReleasePending != nil {
+					r.config.ReleasePending([]string{domain})
+				}
+				continue
+			}
+		}
+		kept = append(kept, domain)
+	}
+
+	return append(domains, kept...), kept
 }
 
 func (r *certRenewer) dynamicServiceFor(domains []string) (string, bool) {
@@ -266,6 +326,12 @@ func (r *certRenewer) dynamicServiceFor(domains []string) (string, bool) {
 }
 
 func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, err error) {
+	if r.ctx.Err() != nil {
+		// The shutdown broke the order; do not hold that against the domains.
+		slog.Info("Certificate renewal aborted by shutdown", "certificate", cert.Identifier)
+		return
+	}
+
 	failed := failedDomainsFromError(err, domains)
 
 	slog.Warn("Certificate renewal failed", "certificate", cert.Identifier,
