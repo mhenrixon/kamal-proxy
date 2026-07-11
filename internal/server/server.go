@@ -223,6 +223,11 @@ func (s *Server) buildHandler() http.Handler {
 		handler = sanManager.HTTPHandler(handler)
 	}
 
+	// Mount the domain refresh nudge and pre-flight probe endpoints
+	if dynamicDomains := s.router.DynamicDomainManager(); dynamicDomains != nil {
+		handler = dynamicDomains.WrapHandler(handler)
+	}
+
 	return handler
 }
 

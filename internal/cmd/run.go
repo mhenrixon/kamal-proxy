@@ -60,6 +60,16 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		}
 
 		router.SetSANCertManager(manager)
+
+		dynamicDomains := server.NewDynamicDomainManager(server.DynamicDomainConfig{
+			StatePath:    globalConfig.DynamicDomainsStatePath(),
+			RefreshToken: os.Getenv("KAMAL_PROXY_REFRESH_TOKEN"),
+			SourceToken:  os.Getenv("KAMAL_PROXY_DOMAINS_TOKEN"),
+		}, manager, router)
+		defer dynamicDomains.Stop()
+
+		router.SetDynamicDomainManager(dynamicDomains)
+		dynamicDomains.Start()
 	}
 
 	s := server.NewServer(&globalConfig, router)

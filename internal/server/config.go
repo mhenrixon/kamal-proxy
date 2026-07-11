@@ -42,6 +42,10 @@ func (c Config) ACMEStatePath() string {
 	return path.Join(c.dataDirectory(), "acme.state")
 }
 
+func (c Config) DynamicDomainsStatePath() string {
+	return path.Join(c.dataDirectory(), "dynamic-domains.state")
+}
+
 // Private
 
 func (c Config) runtimeDirectory() string {

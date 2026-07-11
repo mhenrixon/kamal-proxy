@@ -201,6 +201,82 @@ kamal-proxy run --acme-email admin@example.com \
 ```
 
 
+### Dynamic domains with automatic TLS
+
+SaaS apps that host many customer domains usually only know the full domain
+list at runtime, in their own database. With a *domain source*, Kamal Proxy
+learns that list from the app itself and fully manages certificates for it:
+proactive throttled issuance, background renewal (ARI), per-domain failure
+quarantine, and eviction when a domain is removed. A domain added in the app
+serves HTTPS within minutes — no deploys, config edits, or restarts.
+
+Requires running with `--acme-email`. Enable per service at deploy time:
+
+```bash
+kamal-proxy deploy service1 --target web-1:3000 --tls \
+  --tls-domains-source /api/v1/domains
+```
+
+The source is polled every 5 minutes (`--tls-domains-interval` to change,
+minimum 10s), resolved against a healthy target of the service — or use an
+absolute `http(s)://` URL. `ETag`/`If-None-Match` are honored. The endpoint
+must return:
+
+```json
+{"domains": ["customer1.com", "www.customer2.org"]}
+```
+
+Wildcard entries (`*.example.com`) are skipped (they need DNS-01), invalid
+hostnames are skipped, and payloads over 1MB or 10,000 entries are rejected.
+Set `KAMAL_PROXY_DOMAINS_TOKEN` to send `Authorization: Bearer <token>` with
+each poll.
+
+With a source configured, `--tls` no longer requires `--host`: the service can
+act as a catch-all, and the fetched list is a hard allowlist — TLS handshakes
+for unknown hostnames are refused without touching Let's Encrypt.
+
+**Push refresh (optional).** To pick up new domains faster than the poll
+interval, set `KAMAL_PROXY_REFRESH_TOKEN` on the proxy and have the app nudge
+it after changing domains:
+
+```bash
+curl -X POST -H "Authorization: Bearer $KAMAL_PROXY_REFRESH_TOKEN" \
+  http://proxy-host/.kamal-proxy/domains/refresh
+```
+
+The nudge carries no data — it just triggers an immediate re-poll (202). It
+answers 401 for bad tokens, 404 when unconfigured, and 429 more than once per
+10s.
+
+**Certificates and Let's Encrypt limits.** Dynamic domains are issued
+per-domain by default, throttled well under Let's Encrypt's account limits
+(burst of 20 orders, then one per 40s, max 3 in flight). Before a domain's
+first order, the proxy probes `http://<domain>/.kamal-proxy/preflight/<nonce>`
+to verify DNS actually routes here — unreachable domains are quarantined
+(5m, then 15m → 1h → 4h → 24h backoff) without burning an order. Failing
+domains quarantine alone; the rest of a batch is retried once. Renewals reuse
+the exact same identifier set (exempt from most rate limits) and pass ARI
+`replaces` where supported.
+
+`--tls-domains-batch-size` (max 25) opts into stable SAN batching for dynamic
+domains: batches fill append-only, and membership only changes at renewal
+boundaries. Note that batching publishes all tenants of a batch together in
+certificate-transparency logs, and one dead domain can hold up its batch —
+per-domain (the default) is recommended.
+
+The last fetched list and quarantine state persist in
+`dynamic-domains.state`, so certificates keep serving after a restart even if
+the app is down.
+
+**Inspecting:**
+
+```bash
+kamal-proxy domains list      # every dynamic domain, cert + quarantine status
+kamal-proxy domains stats     # counters: domains, certified, queued, quarantined
+kamal-proxy domains refresh   # trigger an immediate re-poll of all sources
+```
+
+
 ## Specifying `run` options with environment variables
 
 In some environments, like when running a Docker container, it can be convenient

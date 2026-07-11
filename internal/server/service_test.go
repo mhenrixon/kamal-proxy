@@ -78,6 +78,49 @@ func TestServiceOptions_Validate(t *testing.T) {
 	assertValid(ServiceOptions{Hosts: []string{"example.com", "www.example.com"}, CanonicalHost: "www.example.com"})
 }
 
+func TestServiceOptions_Validate_DynamicDomains(t *testing.T) {
+	assertValid := func(options ServiceOptions) {
+		t.Helper()
+		require.NoError(t, options.Validate())
+	}
+
+	assertNotValid := func(options ServiceOptions, expected string) {
+		t.Helper()
+		err := options.Validate()
+		require.ErrorContains(t, err, expected)
+		require.ErrorIs(t, err, ErrServiceOptionsInvalid)
+	}
+
+	// TLS with no hosts is allowed when a dynamic domain source is set
+	assertValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains"})
+	assertValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "https://app.internal/domains"})
+	assertValid(ServiceOptions{Hosts: []string{"example.com"}, TLSEnabled: true, TLSDomainsSource: "/domains"})
+
+	// A source requires TLS to be enabled
+	assertNotValid(ServiceOptions{TLSDomainsSource: "/domains"}, "tls-domains-source requires TLS")
+
+	// The source must be a path on the service or an absolute http(s) URL
+	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "domains"}, "tls-domains-source must be a path or an http(s) URL")
+	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "ftp://app.internal/domains"}, "tls-domains-source must be a path or an http(s) URL")
+
+	// Batch size limits (new ACME profiles cap SANs at 25)
+	assertValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", TLSDomainsBatchSize: 1})
+	assertValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", TLSDomainsBatchSize: 25})
+	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", TLSDomainsBatchSize: 26}, "tls-domains-batch-size must be between 1 and 25")
+	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", TLSDomainsBatchSize: -1}, "tls-domains-batch-size must be between 1 and 25")
+
+	// Related knobs require a source
+	assertNotValid(ServiceOptions{Hosts: []string{"example.com"}, TLSEnabled: true, TLSDomainsBatchSize: 5}, "tls-domains-batch-size requires tls-domains-source")
+	assertNotValid(ServiceOptions{Hosts: []string{"example.com"}, TLSEnabled: true, TLSDomainsInterval: time.Minute}, "tls-domains-interval requires tls-domains-source")
+
+	// Interval must not hammer the app
+	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", TLSDomainsInterval: 5 * time.Second}, "tls-domains-interval must be at least 10s")
+	assertValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", TLSDomainsInterval: 10 * time.Second})
+
+	// The root-path TLS rule still applies to source-enabled services
+	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", PathPrefixes: []string{"/api"}}, "TLS settings must be specified on the root path service")
+}
+
 func TestService_DontRedirectToHTTPSWhenTLSAndPlainHTTPAllowed(t *testing.T) {
 	var forwardedProto string
 
