@@ -5,6 +5,8 @@ import (
 	"os"
 	"path"
 	"syscall"
+
+	"github.com/basecamp/kamal-proxy/internal/server/acme"
 )
 
 const (
@@ -21,9 +23,12 @@ type Config struct {
 
 	AlternateConfigDir string
 
-	// ACME configuration for automatic TLS
-	ACMEEmail     string
-	ACMEDirectory string
+	// ACME configuration for automatic certificate management
+	ACMEEmail          string
+	ACMEDirectory      string
+	ACMEDNSProvider    acme.ProviderName
+	ACMEPreferWildcard bool
+	ACMEHTTPFallback   bool
 }
 
 func (c Config) SocketPath() string {
@@ -44,6 +49,33 @@ func (c Config) ACMEStatePath() string {
 
 func (c Config) DynamicDomainsStatePath() string {
 	return path.Join(c.dataDirectory(), "dynamic-domains.state")
+}
+
+func (c Config) CertificateStatePath() string {
+	return path.Join(c.dataDirectory(), "certificates.state")
+}
+
+// CertificateRegistryConfig returns the configuration for the certificate registry
+func (c Config) CertificateRegistryConfig() CertificateRegistryConfig {
+	directory := c.ACMEDirectory
+	if directory == "" {
+		directory = acme.DefaultProductionDirectory
+	}
+
+	return CertificateRegistryConfig{
+		Email:          c.ACMEEmail,
+		Directory:      directory,
+		DNSProvider:    c.ACMEDNSProvider,
+		PreferWildcard: c.ACMEPreferWildcard,
+		HTTPFallback:   c.ACMEHTTPFallback,
+		CachePath:      c.CertificatePath(),
+		StatePath:      c.CertificateStatePath(),
+	}
+}
+
+// HasACMEConfig returns true if ACME is configured
+func (c Config) HasACMEConfig() bool {
+	return c.ACMEEmail != "" && (c.ACMEDNSProvider != "" || c.ACMEHTTPFallback)
 }
 
 // Private

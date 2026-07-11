@@ -278,6 +278,75 @@ kamal-proxy domains refresh   # trigger an immediate re-poll of all sources
 ```
 
 
+### Wildcard Certificates (DNS-01 Challenge)
+
+For deployments with many subdomains, you can use wildcard certificates to avoid
+Let's Encrypt rate limits. Wildcard certificates require DNS-01 challenge, which
+needs access to your DNS provider's API.
+
+**Supported DNS Providers:**
+
+| Provider | Environment Variables |
+|----------|----------------------|
+| Cloudflare | `CF_API_TOKEN` or (`CF_API_KEY` + `CF_API_EMAIL`) |
+| AWS Route53 | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
+| DigitalOcean | `DO_AUTH_TOKEN` |
+| Google Cloud DNS | `GCE_PROJECT` + `GOOGLE_APPLICATION_CREDENTIALS` |
+| Namecheap | `NAMECHEAP_API_USER` + `NAMECHEAP_API_KEY` |
+| GoDaddy | `GODADDY_API_KEY` + `GODADDY_API_SECRET` |
+| Hetzner | `HETZNER_API_KEY` |
+| Vultr | `VULTR_API_KEY` |
+
+**Enabling wildcard certificates:**
+
+1. Set DNS provider credentials as environment variables
+2. Start kamal-proxy with ACME email configured:
+
+```bash
+export CF_API_TOKEN=your-cloudflare-token
+kamal-proxy run --acme-email admin@example.com --acme-dns-provider cloudflare
+```
+
+3. Deploy services as normal - wildcards are provisioned automatically:
+
+```bash
+kamal-proxy deploy app --target web-1:3000 --host app.example.com --tls
+kamal-proxy deploy api --target web-2:3000 --host api.example.com --tls
+# → Both services share a *.example.com wildcard certificate
+```
+
+**How certificate grouping works:**
+
+When you deploy services with TLS enabled, kamal-proxy automatically:
+
+1. Groups domains by their root domain (e.g., `app.example.com` and `api.example.com` → `example.com`)
+2. When 2+ subdomains share a root domain, provisions a wildcard certificate (`*.example.com`)
+3. Shares the wildcard certificate across all matching services
+4. Falls back to individual certificates for unrelated domains
+
+This dramatically reduces the number of certificates needed and avoids Let's Encrypt
+rate limits (50 certificates per registered domain per week).
+
+**ACME configuration options:**
+
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `--acme-email` | `ACME_EMAIL` | (required) | Contact email for Let's Encrypt |
+| `--acme-dns-provider` | `ACME_DNS_PROVIDER` | `auto` | DNS provider (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto) |
+| `--acme-directory` | `ACME_DIRECTORY` | Let's Encrypt production | ACME directory URL |
+| `--acme-prefer-wildcard` | `ACME_PREFER_WILDCARD` | `true` | Prefer wildcard certificates when DNS provider available |
+| `--acme-http-fallback` | `ACME_HTTP_FALLBACK` | `true` | Fall back to HTTP-01 challenge if DNS-01 fails |
+
+**Using Let's Encrypt staging environment:**
+
+For testing, use the staging environment to avoid rate limits:
+
+```bash
+kamal-proxy run --acme-email admin@example.com --acme-dns-provider cloudflare \
+  --acme-directory https://acme-staging-v02.api.letsencrypt.org/directory
+```
+
+
 ## Specifying `run` options with environment variables
 
 In some environments, like when running a Docker container, it can be convenient
@@ -297,6 +366,109 @@ environment, you can prefix them with `KAMAL_PROXY_` to disambiguate them. For
 example:
 
     KAMAL_PROXY_HTTP_PORT=8080 kamal-proxy run
+
+
+## Configuring with Kamal
+
+When using kamal-proxy with [Kamal](https://kamal-deploy.org/), you can configure
+the proxy through your `deploy.yml` file.
+
+### Enabling Wildcard Certificates in Kamal
+
+To use wildcard certificates with Kamal, add the DNS provider credentials and
+ACME configuration to your proxy settings:
+
+```yaml
+# deploy.yml
+
+proxy:
+  ssl: true
+  host: app.example.com
+  # Additional hosts will share the wildcard certificate
+  # hosts:
+  #   - api.example.com
+  #   - admin.example.com
+
+# Pass environment variables to the kamal-proxy container
+env:
+  clear:
+    # ACME configuration (required for wildcard certs)
+    ACME_EMAIL: admin@example.com
+    ACME_DNS_PROVIDER: cloudflare
+
+  secret:
+    # DNS provider credentials (from .kamal/secrets)
+    - CF_API_TOKEN
+```
+
+### Setting up secrets
+
+Create or update `.kamal/secrets` with your DNS provider credentials:
+
+```bash
+# .kamal/secrets
+CF_API_TOKEN=your-cloudflare-api-token
+```
+
+For AWS Route53:
+```bash
+# .kamal/secrets
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+AWS_REGION=us-east-1
+```
+
+### Complete example with multiple services
+
+```yaml
+# deploy.yml
+service: myapp
+
+servers:
+  web:
+    hosts:
+      - 192.168.1.1
+    proxy:
+      ssl: true
+      host: app.example.com
+
+  api:
+    hosts:
+      - 192.168.1.1
+    proxy:
+      ssl: true
+      host: api.example.com
+
+env:
+  clear:
+    ACME_EMAIL: admin@example.com
+    ACME_DNS_PROVIDER: cloudflare
+    ACME_PREFER_WILDCARD: true
+
+  secret:
+    - CF_API_TOKEN
+```
+
+With this configuration:
+- Both `app.example.com` and `api.example.com` will share a `*.example.com` wildcard certificate
+- Certificate is automatically provisioned and renewed
+- No rate limiting issues with Let's Encrypt
+
+### Troubleshooting
+
+**Certificate not provisioning:**
+- Check DNS provider credentials are correct
+- Ensure the DNS API can create TXT records in your zone
+- Check kamal-proxy logs: `docker logs kamal-proxy`
+
+**Using staging environment for testing:**
+```yaml
+env:
+  clear:
+    ACME_EMAIL: admin@example.com
+    ACME_DNS_PROVIDER: cloudflare
+    ACME_DIRECTORY: https://acme-staging-v02.api.letsencrypt.org/directory
+```
 
 
 ## Building

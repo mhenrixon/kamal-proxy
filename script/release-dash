@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Release a fork build of kamal-proxy as ghcr.io/mhenrixon/kamal-proxy.
+#
+# Tags must be four-segment: v<upstream-base>.<fork-counter>, e.g. v0.9.2.1.
+# The kamal gem reads the proxy version from the image tag and compares it
+# with Gem::Version - four-segment tags sort above their upstream base and
+# below the next upstream release. Never use suffix tags like v0.9.2-dash.1
+# (they parse as prereleases OLDER than the base and fail the version check).
+#
+# The Docker workflow (.github/workflows/docker-publish.yml) builds and
+# publishes the multi-arch image when the tag is pushed.
+
+set -e
+
+usage() {
+  echo "Usage: $0 <tag>"
+  echo "  <tag>    Four-segment fork tag (e.g. v0.9.2.1)"
+  exit 1
+}
+
+if [ $# -ne 1 ]; then
+  usage
+fi
+
+TAG=$1
+
+if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "Error: tag must match v<X>.<Y>.<Z>.<N> (e.g. v0.9.2.1)"
+  usage
+fi
+
+make test
+
+git tag -a "${TAG}" -m "kamal-proxy fork ${TAG}"
+git push origin "tag" "${TAG}"
+
+echo "Tag ${TAG} pushed. CI will publish ghcr.io/mhenrixon/kamal-proxy:${TAG}"
+echo "Verify with: docker buildx imagetools inspect ghcr.io/mhenrixon/kamal-proxy:${TAG}"

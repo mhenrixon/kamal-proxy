@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	// DefaultRenewalCheckInterval is how often managed certificates are
+	// DefaultDynamicRenewalCheckInterval is how often managed certificates are
 	// checked for renewal.
-	DefaultRenewalCheckInterval = time.Hour
+	DefaultDynamicRenewalCheckInterval = time.Hour
 
 	// renewalJitterMax spreads fallback renewals so a fleet of proxies does
 	// not renew in lockstep.
@@ -84,7 +84,7 @@ type certRenewer struct {
 
 func newCertRenewer(manager *SANCertManager, quarantine *domainQuarantine, config certRenewerConfig) *certRenewer {
 	if config.CheckInterval == 0 {
-		config.CheckInterval = DefaultRenewalCheckInterval
+		config.CheckInterval = DefaultDynamicRenewalCheckInterval
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
