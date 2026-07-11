@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/basecamp/kamal-proxy/internal/metrics"
 	"github.com/basecamp/kamal-proxy/internal/server/acme"
 	"github.com/basecamp/kamal-proxy/internal/server/acme/providers"
 	"github.com/go-acme/lego/v4/certificate"
@@ -477,6 +479,8 @@ func (r *CertificateRegistry) provisionWithDNS(ctx context.Context, group *Domai
 		slog.Warn("Failed to save certificate state", "error", err)
 	}
 
+	r.reportCertificateMetrics()
+
 	return result.Certificate, nil
 }
 
@@ -511,6 +515,8 @@ func (r *CertificateRegistry) provisionWithHTTP(ctx context.Context, domain stri
 	r.certificates[managed.Identifier] = managed
 	r.domainToCert[domain] = managed.Identifier
 	r.mu.Unlock()
+
+	r.reportCertificateMetrics()
 
 	return cert, nil
 }
@@ -608,6 +614,41 @@ func (r *CertificateRegistry) saveState() error {
 	}
 
 	return os.Rename(tmpPath, r.config.StatePath)
+}
+
+// reportCertificateMetrics publishes the certificate totals gauge and a
+// per-domain expiry gauge from a snapshot of the current certificate set. It is
+// called after every provisioning or renewal that changes the set.
+func (r *CertificateRegistry) reportCertificateMetrics() {
+	r.mu.RLock()
+	total := len(r.certificates)
+	wildcard := 0
+	http01 := 0
+
+	type expirySample struct {
+		domain     string
+		isWildcard bool
+		notAfter   time.Time
+	}
+	samples := make([]expirySample, 0, total)
+
+	for _, cert := range r.certificates {
+		if cert.IsWildcard {
+			wildcard++
+		}
+		if strings.HasPrefix(cert.Identifier, "http01") {
+			http01++
+		}
+		for _, domain := range cert.Domains {
+			samples = append(samples, expirySample{domain, cert.IsWildcard, cert.NotAfter})
+		}
+	}
+	r.mu.RUnlock()
+
+	metrics.Tracker.SetCertificateCount(total, wildcard, http01)
+	for _, s := range samples {
+		metrics.Tracker.SetCertificateExpiry(s.domain, s.isWildcard, s.notAfter)
+	}
 }
 
 // GetStats returns statistics about the registry
