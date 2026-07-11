@@ -36,11 +36,12 @@ func RoutingContext(r *http.Request) *routingContext {
 }
 
 type Router struct {
-	statePath      string
-	services       *ServiceMap
-	serviceLock    sync.RWMutex
-	sanCertManager *SANCertManager
-	certRegistry   *CertificateRegistry
+	statePath            string
+	services             *ServiceMap
+	serviceLock          sync.RWMutex
+	sanCertManager       *SANCertManager
+	dynamicDomainManager *DynamicDomainManager
+	certRegistry         *CertificateRegistry
 }
 
 type ServiceDescription struct {
@@ -73,6 +74,29 @@ func (r *Router) SetSANCertManager(manager *SANCertManager) {
 
 func (r *Router) SANCertManager() *SANCertManager {
 	return r.sanCertManager
+}
+
+// SetDynamicDomainManager installs the dynamic domain coordinator and
+// reconciles it with the already-restored services.
+func (r *Router) SetDynamicDomainManager(manager *DynamicDomainManager) {
+	services := map[string]ServiceOptions{}
+
+	r.withReadLock(func() error {
+		r.dynamicDomainManager = manager
+
+		for name, service := range r.services.All() {
+			services[name] = service.options
+		}
+		return nil
+	})
+
+	for name, options := range services {
+		manager.ServiceDeployed(name, options)
+	}
+}
+
+func (r *Router) DynamicDomainManager() *DynamicDomainManager {
+	return r.dynamicDomainManager
 }
 
 // SetCertificateRegistry sets the central certificate registry for the router
@@ -157,6 +181,10 @@ func (r *Router) DeployService(name string, targetURLs, readerURLs []string, opt
 		replaced.DrainAll(deploymentOptions.DrainTimeout)
 	}
 
+	if r.dynamicDomainManager != nil {
+		r.dynamicDomainManager.ServiceDeployed(name, options)
+	}
+
 	slog.Info("Deployed", "service", name, "targets", targetURLs, "hosts", options.Hosts, "paths", options.PathPrefixes, "tls", options.TLSEnabled)
 	return nil
 }
@@ -215,7 +243,7 @@ func (r *Router) StopRollout(name string) error {
 func (r *Router) RemoveService(name string) error {
 	defer r.saveStateSnapshot()
 
-	return r.withWriteLock(func() error {
+	err := r.withWriteLock(func() error {
 		service := r.services.Get(name)
 		if service == nil {
 			return ErrorServiceNotFound
@@ -226,6 +254,15 @@ func (r *Router) RemoveService(name string) error {
 
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	if r.dynamicDomainManager != nil {
+		r.dynamicDomainManager.ServiceRemoved(name)
+	}
+
+	return nil
 }
 
 func (r *Router) PauseService(name string, drainTimeout time.Duration, pauseTimeout time.Duration) error {

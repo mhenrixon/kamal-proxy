@@ -66,6 +66,29 @@ type ListResponse struct {
 	Targets ServiceDescriptionMap `json:"services"`
 }
 
+type DomainStatus struct {
+	Domain    string `json:"domain"`
+	Certified bool   `json:"certified"`
+}
+
+type DomainsServiceStatus struct {
+	Source    string         `json:"source"`
+	Domains   []DomainStatus `json:"domains"`
+	FetchedAt time.Time      `json:"fetched_at"`
+}
+
+type QuarantineStatus struct {
+	Until    time.Time `json:"until"`
+	Failures int       `json:"failures"`
+}
+
+type DomainsStatusResponse struct {
+	Services     map[string]DomainsServiceStatus `json:"services"`
+	QueueLength  int                             `json:"queue_length"`
+	Quarantine   map[string]QuarantineStatus     `json:"quarantine"`
+	Certificates int                             `json:"certificates"`
+}
+
 func NewCommandHandler(router *Router) *CommandHandler {
 	return &CommandHandler{
 		router: router,
@@ -148,4 +171,24 @@ func (h *CommandHandler) RolloutSet(args RolloutSetArgs, reply *bool) error {
 
 func (h *CommandHandler) RolloutStop(args RolloutStopArgs, reply *bool) error {
 	return h.router.StopRollout(args.Service)
+}
+
+func (h *CommandHandler) DomainsStatus(args bool, reply *DomainsStatusResponse) error {
+	dynamicDomains := h.router.DynamicDomainManager()
+	if dynamicDomains == nil {
+		return errors.New("dynamic domains are not enabled (start the proxy with --acme-email)")
+	}
+
+	*reply = dynamicDomains.Status()
+	return nil
+}
+
+func (h *CommandHandler) DomainsRefresh(args bool, reply *int) error {
+	dynamicDomains := h.router.DynamicDomainManager()
+	if dynamicDomains == nil {
+		return errors.New("dynamic domains are not enabled (start the proxy with --acme-email)")
+	}
+
+	*reply = dynamicDomains.RefreshAll()
+	return nil
 }

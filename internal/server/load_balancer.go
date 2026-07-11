@@ -133,6 +133,17 @@ func (lb *LoadBalancer) ReadTargets() TargetList {
 	return lb.all.targetsMatchingReadonly(true)
 }
 
+// HealthyTargets returns the currently healthy targets, writers first.
+func (lb *LoadBalancer) HealthyTargets() TargetList {
+	lb.lock.Lock()
+	defer lb.lock.Unlock()
+
+	targets := TargetList{}
+	targets = append(targets, lb.writers...)
+	targets = append(targets, lb.readers...)
+	return targets
+}
+
 func (lb *LoadBalancer) WaitUntilHealthy(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(lb.waitForHealthyContext, timeout)
 	defer cancel()

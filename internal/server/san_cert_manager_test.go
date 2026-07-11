@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -256,6 +257,101 @@ func TestSANCertManager_GetStats(t *testing.T) {
 	assert.Equal(t, 0, stats["total_certificates"])
 	assert.Equal(t, 0, stats["domains_mapped"])
 	assert.Equal(t, 0, stats["pending_domains"])
+}
+
+func TestSANCertManager_RegisterDomain_TracksRegisteredDomains(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "service1"))
+	assert.Contains(t, manager.registeredDomains, "app.example.com")
+
+	// Domains covered by an existing certificate are still tracked as registered
+	manager.certificates["san:covered"] = &ManagedCert{
+		Identifier: "san:covered",
+		Domains:    []string{"covered.example.com"},
+		NotAfter:   time.Now().Add(48 * time.Hour),
+	}
+	manager.domainToCert["covered.example.com"] = "san:covered"
+
+	require.NoError(t, manager.RegisterDomain("covered.example.com", "service1"))
+	assert.Contains(t, manager.registeredDomains, "covered.example.com")
+
+	require.NoError(t, manager.UnregisterDomain("app.example.com", "service1"))
+	assert.NotContains(t, manager.registeredDomains, "app.example.com")
+}
+
+func TestSANCertManager_RegisterDomain_IgnoresEmptyHost(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	// A catch-all service's normalized hosts are [""] — the empty marker must
+	// never reach the shared pending batch, or it poisons every SAN order.
+	require.NoError(t, manager.RegisterDomain("", "catch-all-service"))
+	assert.Empty(t, manager.pendingDomains)
+	assert.Empty(t, manager.registeredDomains)
+}
+
+func TestSANCertManager_GetCertificate_UnknownSNIRejected(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	// An unknown server name must NOT trigger provisioning; the handshake aborts.
+	_, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: "attacker.example.com"})
+	require.ErrorIs(t, err, ErrCertNotFound)
+
+	// Nothing was queued for provisioning as a side effect
+	assert.Empty(t, manager.pendingDomains)
+	assert.Empty(t, manager.provisioning)
+}
+
+func TestSANCertManager_GetCertificate_DynamicDomainWithoutCert(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	requested := make(map[string]string)
+	manager.SetDynamicCertRequester(func(domain, service string) {
+		requested[domain] = service
+	})
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+
+	// No cert yet: the handshake fails fast, but issuance is requested
+	_, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: "tenant.example.com"})
+	require.ErrorIs(t, err, ErrCertNotFound)
+	assert.Equal(t, "service1", requested["tenant.example.com"])
+
+	// The synchronous provisioning path was not used
+	assert.Empty(t, manager.pendingDomains)
+	assert.Empty(t, manager.provisioning)
+}
+
+func TestSANCertManager_GetCertificate_ServesExistingCertForEvictedDomain(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	cert := testSelfSignedCert(t, []string{"gone.example.com"}, time.Now().Add(-time.Hour), time.Now().Add(12*time.Hour))
+	manager.certificates["san:gone"] = &ManagedCert{
+		Identifier:  "san:gone",
+		Domains:     []string{"gone.example.com"},
+		NotAfter:    time.Now().Add(12 * time.Hour),
+		Certificate: cert,
+	}
+	manager.domainToCert["gone.example.com"] = "san:gone"
+
+	// Not registered, not dynamic — but still valid: keep serving until renewal drops it
+	served, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: "gone.example.com"})
+	require.NoError(t, err)
+	assert.Equal(t, cert, served)
+}
+
+func TestSANCertManager_SetDynamicDomains_ReplacesServiceSet(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	manager.SetDynamicDomains("service1", []string{"a.example.com", "b.example.com"})
+	manager.SetDynamicDomains("service2", []string{"c.example.com"})
+	manager.SetDynamicDomains("service1", []string{"b.example.com", "d.example.com"})
+
+	assert.ElementsMatch(t, []string{"b.example.com", "d.example.com"}, manager.DynamicDomains("service1"))
+	assert.ElementsMatch(t, []string{"c.example.com"}, manager.DynamicDomains("service2"))
+
+	// a.example.com was evicted entirely
+	_, isDynamic := manager.dynamicDomains["a.example.com"]
+	assert.False(t, isDynamic)
 }
 
 func TestSanitizeFilename(t *testing.T) {

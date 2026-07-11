@@ -64,8 +64,9 @@ type SANCertManagerConfig struct {
 // It batches up to 100 domains into a single certificate,
 // reducing the number of certificates and avoiding rate limits.
 type SANCertManager struct {
-	mu     sync.RWMutex
-	config SANCertManagerConfig
+	mu      sync.RWMutex
+	stateMu sync.Mutex // serializes state-file snapshots and writes
+	config  SANCertManagerConfig
 
 	// ACME client
 	client *lego.Client
@@ -79,6 +80,15 @@ type SANCertManager struct {
 
 	// Pending domains waiting to be batched: domain -> service name
 	pendingDomains map[string]string
+
+	// Deploy-registered hosts allowed to provision synchronously
+	registeredDomains map[string]struct{}
+
+	// Runtime-learned domains from tls-domains-source: domain -> service name
+	dynamicDomains map[string]string
+
+	// Callback to request asynchronous issuance for a dynamic domain
+	dynamicCertRequester func(domain, service string)
 
 	// Currently provisioning: rootDomain -> done channel
 	provisioning map[string]chan struct{}
@@ -121,12 +131,14 @@ func NewSANCertManager(config SANCertManagerConfig) (*SANCertManager, error) {
 	}
 
 	manager := &SANCertManager{
-		config:          config,
-		certificates:    make(map[string]*ManagedCert),
-		domainToCert:    make(map[string]string),
-		pendingDomains:  make(map[string]string),
-		provisioning:    make(map[string]chan struct{}),
-		challengeTokens: make(map[string]string),
+		config:            config,
+		certificates:      make(map[string]*ManagedCert),
+		domainToCert:      make(map[string]string),
+		pendingDomains:    make(map[string]string),
+		registeredDomains: make(map[string]struct{}),
+		dynamicDomains:    make(map[string]string),
+		provisioning:      make(map[string]chan struct{}),
+		challengeTokens:   make(map[string]string),
 	}
 
 	// Ensure cache directory exists
@@ -223,12 +235,19 @@ func (p *memoryHTTP01Provider) CleanUp(domain, token, keyAuth string) error {
 
 // RegisterDomain registers a domain for certificate management
 func (m *SANCertManager) RegisterDomain(domain string, service string) error {
+	// A catch-all service's normalized host is "": not a provisionable domain
+	if domain == "" {
+		return nil
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if !m.ready {
 		return ErrManagerNotReady
 	}
+
+	m.registeredDomains[domain] = struct{}{}
 
 	// Check if domain already has a certificate
 	if certID, ok := m.domainToCert[domain]; ok {
@@ -276,10 +295,17 @@ func (m *SANCertManager) UnregisterDomain(domain string, service string) error {
 	defer m.mu.Unlock()
 
 	delete(m.pendingDomains, domain)
+	delete(m.registeredDomains, domain)
 	return nil
 }
 
-// GetCertificate returns a certificate for the TLS handshake
+// GetCertificate returns a certificate for the TLS handshake.
+//
+// Provisioning is gated by a hard allowlist: deploy-registered hosts provision
+// synchronously (the original behavior), dynamic domains are queued for
+// asynchronous issuance, and any other server name is refused outright so a
+// catch-all service cannot be used to burn rate limits on scanner-supplied
+// names.
 func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	domain := hello.ServerName
 	if domain == "" {
@@ -293,25 +319,47 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 	if hasCert {
 		cert = m.certificates[certID]
 	}
+	_, isRegistered := m.registeredDomains[domain]
+	dynamicService, isDynamic := m.dynamicDomains[domain]
 	m.mu.RUnlock()
 
 	if !ready {
 		return nil, ErrManagerNotReady
 	}
 
-	// Return existing valid certificate
 	if cert != nil && cert.Certificate != nil {
+		// Return existing valid certificate
 		if time.Until(cert.NotAfter) > 24*time.Hour {
 			return cert.Certificate, nil
 		}
-		slog.Info("Certificate expiring soon, will reprovision",
-			"domain", domain,
-			"expiresAt", cert.NotAfter,
-		)
+
+		if isRegistered {
+			slog.Info("Certificate expiring soon, will reprovision",
+				"domain", domain,
+				"expiresAt", cert.NotAfter,
+			)
+		} else if time.Until(cert.NotAfter) > 0 {
+			// Dynamic and evicted domains keep serving a still-valid
+			// certificate; the renewal loop is responsible for rotating it.
+			if isDynamic {
+				m.requestDynamicCertificate(domain, dynamicService)
+			}
+			return cert.Certificate, nil
+		}
 	}
 
-	// Need to provision certificate
-	return m.provisionCertificate(hello.Context(), domain)
+	if isRegistered {
+		// Need to provision certificate
+		return m.provisionCertificate(hello.Context(), domain)
+	}
+
+	if isDynamic {
+		m.requestDynamicCertificate(domain, dynamicService)
+		return nil, ErrCertNotFound
+	}
+
+	slog.Debug("Refusing to provision certificate for unknown server name", "domain", domain)
+	return nil, ErrCertNotFound
 }
 
 // provisionCertificate provisions a certificate for a domain
@@ -388,6 +436,18 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 		return nil, fmt.Errorf("failed to obtain certificate: %w", err)
 	}
 
+	managed, err := m.adoptCertificate(resource, sortedDomains)
+	if err != nil {
+		return nil, err
+	}
+
+	return managed.Certificate, nil
+}
+
+// adoptCertificate parses an issued certificate, installs it in the manager's
+// maps, and persists it. sortedDomains must be the sorted identifier set the
+// certificate was ordered for.
+func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sortedDomains []string) (*ManagedCert, error) {
 	// Parse the certificate
 	tlsCert, err := tls.X509KeyPair(resource.Certificate, resource.PrivateKey)
 	if err != nil {
@@ -435,7 +495,7 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 		"expires", notAfter,
 	)
 
-	return &tlsCert, nil
+	return managed, nil
 }
 
 // getCertForDomain retrieves a certificate for a domain
@@ -500,6 +560,8 @@ func (m *SANCertManager) GetStats() map[string]interface{} {
 		"total_certificates":  len(m.certificates),
 		"domains_mapped":      len(m.domainToCert),
 		"pending_domains":     len(m.pendingDomains),
+		"registered_domains":  len(m.registeredDomains),
+		"dynamic_domains":     len(m.dynamicDomains),
 		"expiring_soon":       expiringCount,
 		"provisioning_active": len(m.provisioning),
 	}
@@ -632,6 +694,12 @@ func (m *SANCertManager) persistState() error {
 	if m.config.StatePath == "" {
 		return nil
 	}
+
+	// Serialize snapshot+write: issuer goroutines, the renewer, and
+	// handshake-driven provisioning all persist concurrently, and interleaved
+	// writes to the shared .tmp file would corrupt it.
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 
 	m.mu.RLock()
 	certs := make(map[string]*ManagedCert, len(m.certificates))

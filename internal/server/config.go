@@ -47,6 +47,10 @@ func (c Config) ACMEStatePath() string {
 	return path.Join(c.dataDirectory(), "acme.state")
 }
 
+func (c Config) DynamicDomainsStatePath() string {
+	return path.Join(c.dataDirectory(), "dynamic-domains.state")
+}
+
 func (c Config) CertificateStatePath() string {
 	return path.Join(c.dataDirectory(), "certificates.state")
 }

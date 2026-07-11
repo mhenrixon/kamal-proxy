@@ -93,6 +93,9 @@ type ServiceOptions struct {
 	StripPrefix                 bool          `json:"strip_prefix"`
 	WriterAffinityTimeout       time.Duration `json:"writer_affinity_timeout"`
 	ReadTargetsAcceptWebsockets bool          `json:"read_targets_accept_websockets"`
+	TLSDomainsSource            string        `json:"tls_domains_source,omitempty"`
+	TLSDomainsInterval          time.Duration `json:"tls_domains_interval,omitempty"`
+	TLSDomainsBatchSize         int           `json:"tls_domains_batch_size,omitempty"`
 }
 
 func (so *ServiceOptions) Normalize() {
@@ -104,7 +107,7 @@ func (so ServiceOptions) Validate() error {
 	so.Normalize()
 
 	if so.TLSEnabled {
-		if !so.HasConfiguredHosts() {
+		if !so.HasConfiguredHosts() && so.TLSDomainsSource == "" {
 			return fmt.Errorf("%w: host must be set when using TLS", ErrServiceOptionsInvalid)
 		}
 
@@ -117,6 +120,42 @@ func (so ServiceOptions) Validate() error {
 		if !slices.Contains(so.Hosts, so.CanonicalHost) {
 			return fmt.Errorf("%w: canonical-host '%s' must be present in the hosts list: %v", ErrServiceOptionsInvalid, so.CanonicalHost, so.Hosts)
 		}
+	}
+
+	return so.validateDynamicDomains()
+}
+
+func (so ServiceOptions) validateDynamicDomains() error {
+	if so.TLSDomainsSource == "" {
+		if so.TLSDomainsBatchSize != 0 {
+			return fmt.Errorf("%w: tls-domains-batch-size requires tls-domains-source", ErrServiceOptionsInvalid)
+		}
+		if so.TLSDomainsInterval != 0 {
+			return fmt.Errorf("%w: tls-domains-interval requires tls-domains-source", ErrServiceOptionsInvalid)
+		}
+		return nil
+	}
+
+	if !so.TLSEnabled {
+		return fmt.Errorf("%w: tls-domains-source requires TLS to be enabled", ErrServiceOptionsInvalid)
+	}
+
+	// Dynamic domains are routed via the host-less catch-all binding; a
+	// host-scoped service would issue certificates that can never be served.
+	if so.HasConfiguredHosts() {
+		return fmt.Errorf("%w: tls-domains-source requires the service to be the catch-all (no --host)", ErrServiceOptionsInvalid)
+	}
+
+	if !validDomainSource(so.TLSDomainsSource) {
+		return fmt.Errorf("%w: tls-domains-source must be a path or an http(s) URL: %q", ErrServiceOptionsInvalid, so.TLSDomainsSource)
+	}
+
+	if so.TLSDomainsBatchSize < 0 || so.TLSDomainsBatchSize > MaxTLSDomainsBatchSize {
+		return fmt.Errorf("%w: tls-domains-batch-size must be between 1 and %d", ErrServiceOptionsInvalid, MaxTLSDomainsBatchSize)
+	}
+
+	if so.TLSDomainsInterval != 0 && so.TLSDomainsInterval < MinTLSDomainsInterval {
+		return fmt.Errorf("%w: tls-domains-interval must be at least %s", ErrServiceOptionsInvalid, MinTLSDomainsInterval)
 	}
 
 	return nil
@@ -205,6 +244,14 @@ func (s *Service) Dispose() {
 	if s.rollout != nil {
 		s.rollout.Dispose()
 	}
+}
+
+// ActiveLoadBalancer returns the service's active load balancer, if any.
+func (s *Service) ActiveLoadBalancer() *LoadBalancer {
+	s.serviceLock.RLock()
+	defer s.serviceLock.RUnlock()
+
+	return s.active
 }
 
 func (s *Service) UpdateLoadBalancer(lb *LoadBalancer, slot TargetSlot) *LoadBalancer {
@@ -440,11 +487,20 @@ func (s *Service) createCertManager(options ServiceOptions) (CertManager, error)
 	// Use the shared SAN certificate manager when available
 	if s.sanCertManager != nil {
 		for _, host := range options.Hosts {
+			if host == "" {
+				// Catch-all marker, not a provisionable domain
+				continue
+			}
 			if err := s.sanCertManager.RegisterDomain(host, s.name); err != nil {
 				slog.Warn("Failed to register domain with SAN cert manager", "host", host, "error", err)
 			}
 		}
 		return s.sanCertManager, nil
+	}
+
+	if options.TLSDomainsSource != "" {
+		slog.Warn("tls-domains-source requires the proxy to run with --acme-email; dynamic domains will not receive certificates",
+			"service", s.name)
 	}
 
 	return &autocert.Manager{
