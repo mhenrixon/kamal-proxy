@@ -773,6 +773,29 @@ func TestRouter_RestoreLastSavedState(t *testing.T) {
 	assert.Equal(t, "third", body)
 }
 
+func TestRouter_ListActiveServicesIncludesDetailedFields(t *testing.T) {
+	router := testRouter(t)
+	_, writer := testBackend(t, "writer", http.StatusOK)
+	_, reader := testBackend(t, "reader", http.StatusOK)
+	_, rollout := testBackend(t, "rollout", http.StatusOK)
+
+	serviceOptions := defaultServiceOptions
+	serviceOptions.Hosts = []string{"example.com"}
+
+	require.NoError(t, router.DeployService("service1", []string{writer}, []string{reader}, serviceOptions, defaultTargetOptions, defaultDeploymentOptions))
+	require.NoError(t, router.SetRolloutTargets("service1", []string{rollout}, defaultEmptyReaders, defaultDeploymentOptions))
+
+	services := router.ListActiveServices()
+	require.Contains(t, services, "service1")
+
+	description := services["service1"]
+	assert.Equal(t, []string{"example.com"}, description.Hosts)
+	assert.Equal(t, []string{writer}, description.Targets)
+	assert.Equal(t, []string{reader}, description.ReaderTargets)
+	assert.Equal(t, []string{rollout}, description.RolloutTargets)
+	assert.Equal(t, "running", description.State)
+}
+
 func TestRouter_RestoreWritesBackupAfterCleanDecode(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	_, backend := testBackend(t, "ok", http.StatusOK)

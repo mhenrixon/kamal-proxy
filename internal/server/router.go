@@ -53,6 +53,15 @@ type ServiceDescription struct {
 	TLS    bool   `json:"tls"`
 	Target string `json:"target"`
 	State  string `json:"state"`
+
+	// Structured variants of the display fields above. Only ever append fields
+	// here — the CLI and server may briefly run different versions during a
+	// proxy replacement, and gob tolerates added fields but not changed ones.
+	Hosts          []string `json:"hosts,omitempty"`
+	PathPrefixes   []string `json:"path_prefixes,omitempty"`
+	Targets        []string `json:"targets,omitempty"`
+	ReaderTargets  []string `json:"reader_targets,omitempty"`
+	RolloutTargets []string `json:"rollout_targets,omitempty"`
 }
 
 type ServiceDescriptionMap map[string]ServiceDescription
@@ -385,13 +394,23 @@ func (r *Router) ListActiveServices() ServiceDescriptionMap {
 				path := strings.Join(service.options.PathPrefixes, ",")
 				target := strings.Join(service.active.Targets().Names(), ",")
 
-				result[name] = ServiceDescription{
-					Host:   host,
-					Path:   path,
-					Target: target,
-					TLS:    service.options.TLSEnabled,
-					State:  service.pauseController.GetState().String(),
+				description := ServiceDescription{
+					Host:          host,
+					Path:          path,
+					Target:        target,
+					TLS:           service.options.TLSEnabled,
+					State:         service.pauseController.GetState().String(),
+					Hosts:         service.options.Hosts,
+					PathPrefixes:  service.options.PathPrefixes,
+					Targets:       service.active.WriteTargets().Names(),
+					ReaderTargets: service.active.ReadTargets().Names(),
 				}
+
+				if service.rollout != nil {
+					description.RolloutTargets = service.rollout.Targets().Names()
+				}
+
+				result[name] = description
 			}
 		}
 		return nil
