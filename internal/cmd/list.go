@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
 	"maps"
 	"net/rpc"
 	"slices"
@@ -11,7 +13,8 @@ import (
 )
 
 type listCommand struct {
-	cmd *cobra.Command
+	cmd  *cobra.Command
+	json bool
 }
 
 func newListCommand() *listCommand {
@@ -23,6 +26,8 @@ func newListCommand() *listCommand {
 		Args:    cobra.NoArgs,
 		Aliases: []string{"ls"},
 	}
+
+	listCommand.cmd.Flags().BoolVar(&listCommand.json, "json", false, "Output the service list as JSON")
 
 	return listCommand
 }
@@ -36,9 +41,23 @@ func (c *listCommand) run(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
+		if c.json {
+			return c.displayJSON(response)
+		}
+
 		c.displayResponse(response)
 		return nil
 	})
+}
+
+func (c *listCommand) displayJSON(response server.ListResponse) error {
+	data, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(string(data))
+	return nil
 }
 
 func (c *listCommand) displayResponse(response server.ListResponse) {

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,9 +15,11 @@ import (
 )
 
 type runCommand struct {
-	cmd              *cobra.Command
-	debugLogsEnabled bool
-	acmeDNSProvider  string
+	cmd                     *cobra.Command
+	debugLogsEnabled        bool
+	acmeDNSProvider         string
+	ignoreRestoreErrors     bool
+	recheckTargetsOnRestore bool
 }
 
 func newRunCommand() *runCommand {
@@ -32,12 +35,17 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().IntVar(&globalConfig.HttpsPort, "https-port", getEnvInt("HTTPS_PORT", server.DefaultHttpsPort), "Port to serve HTTPS traffic on")
 	runCommand.cmd.Flags().IntVar(&globalConfig.MetricsPort, "metrics-port", getEnvInt("METRICS_PORT", 0), "Publish metrics on the specified port (default zero to disable)")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.HTTP3Enabled, "http3", false, "Enable HTTP/3")
+	runCommand.cmd.Flags().BoolVar(&runCommand.ignoreRestoreErrors, "ignore-restore-errors", getEnvBool("IGNORE_RESTORE_ERRORS", false), "Boot with an empty routing state when restoring the saved state fails")
+	runCommand.cmd.Flags().BoolVar(&runCommand.recheckTargetsOnRestore, "recheck-targets-on-restore", getEnvBool("RECHECK_TARGETS_ON_RESTORE", false), "Re-verify restored targets with health checks instead of assuming they are healthy")
+	runCommand.cmd.Flags().StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/kamal-proxy)")
+	runCommand.cmd.Flags().BoolVar(&globalConfig.ReusePort, "reuse-port", getEnvBool("REUSE_PORT", false), "Bind listeners with SO_REUSEPORT so an overlapping proxy generation can share the ports during a handoff")
 
 	// Listener connection timeouts
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadHeaderTimeout, "read-header-timeout", getEnvDuration("READ_HEADER_TIMEOUT", server.DefaultReadHeaderTimeout), "Maximum time a client may take to send request headers (zero to disable)")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadTimeout, "read-timeout", getEnvDuration("READ_TIMEOUT", server.DefaultReadTimeout), "Maximum time to read an entire request, including the body (zero to disable; non-zero truncates slow uploads)")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.WriteTimeout, "write-timeout", getEnvDuration("WRITE_TIMEOUT", server.DefaultWriteTimeout), "Maximum time to write an entire response (zero to disable; non-zero truncates SSE and streaming responses)")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.IdleTimeout, "idle-timeout", getEnvDuration("IDLE_TIMEOUT", server.DefaultIdleTimeout), "Maximum time an idle keep-alive connection is kept open (zero to disable)")
+	runCommand.cmd.Flags().DurationVar(&globalConfig.ShutdownTimeout, "shutdown-timeout", getEnvDuration("SHUTDOWN_TIMEOUT", server.DefaultShutdownTimeout), "Maximum time to wait for in-flight requests to drain on shutdown")
 
 	// ACME/TLS configuration
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEEmail, "acme-email", getEnvString("ACME_EMAIL", ""), "Email address for ACME account registration (required for automatic TLS)")
@@ -62,9 +70,24 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if globalConfig.AlternateConfigDir != "" {
+		if err := os.MkdirAll(globalConfig.AlternateConfigDir, 0700); err != nil {
+			return fmt.Errorf("failed to create data directory %q: %w", globalConfig.AlternateConfigDir, err)
+		}
+	}
+
 	router := server.NewRouter(globalConfig.StatePath())
 
-	router.RestoreLastSavedState()
+	if c.recheckTargetsOnRestore {
+		router.EnableTargetRecheckOnRestore()
+	}
+
+	if err := router.RestoreLastSavedState(); err != nil {
+		if !c.ignoreRestoreErrors {
+			return fmt.Errorf("failed to restore saved state (use --ignore-restore-errors to boot with no services): %w", err)
+		}
+		slog.Error("Continuing with empty routing state", "error", err)
+	}
 
 	var dynamicDomains *server.DynamicDomainManager
 
@@ -130,7 +153,14 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
-	<-ch
+
+	select {
+	case <-ch:
+		// Converge on the drain path so SIGTERM and `kamal-proxy drain`
+		// behave identically; the deferred Stop finishes the teardown.
+		_ = s.BeginDrain(0)
+	case <-s.ShutdownRequested():
+	}
 
 	return nil
 }

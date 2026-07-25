@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 var (
@@ -40,6 +42,7 @@ type Router struct {
 	services             *ServiceMap
 	serviceLock          sync.RWMutex
 	saveLock             sync.Mutex
+	recheckOnRestore     bool
 	sanCertManager       *SANCertManager
 	dynamicDomainManager *DynamicDomainManager
 	certRegistry         *CertificateRegistry
@@ -51,6 +54,15 @@ type ServiceDescription struct {
 	TLS    bool   `json:"tls"`
 	Target string `json:"target"`
 	State  string `json:"state"`
+
+	// Structured variants of the display fields above. Only ever append fields
+	// here — the CLI and server may briefly run different versions during a
+	// proxy replacement, and gob tolerates added fields but not changed ones.
+	Hosts          []string `json:"hosts,omitempty"`
+	PathPrefixes   []string `json:"path_prefixes,omitempty"`
+	Targets        []string `json:"targets,omitempty"`
+	ReaderTargets  []string `json:"reader_targets,omitempty"`
+	RolloutTargets []string `json:"rollout_targets,omitempty"`
 }
 
 type ServiceDescriptionMap map[string]ServiceDescription
@@ -60,6 +72,12 @@ func NewRouter(statePath string) *Router {
 		statePath: statePath,
 		services:  NewServiceMap(),
 	}
+}
+
+// EnableTargetRecheckOnRestore makes RestoreLastSavedState re-verify restored
+// targets with live health checks instead of assuming they are still healthy.
+func (r *Router) EnableTargetRecheckOnRestore() {
+	r.recheckOnRestore = true
 }
 
 func (r *Router) SetSANCertManager(manager *SANCertManager) {
@@ -111,7 +129,14 @@ func (r *Router) GetCertificateRegistry() *CertificateRegistry {
 }
 
 func (r *Router) RestoreLastSavedState() error {
-	f, err := os.Open(r.statePath)
+	// Under the atomic-write protocol a leftover temp file is by definition an
+	// aborted partial write — never restore from it.
+	tmpPath := r.statePath + ".tmp"
+	if err := os.Remove(tmpPath); err == nil {
+		slog.Warn("Removed stale state temp file from an interrupted save", "path", tmpPath)
+	}
+
+	data, err := os.ReadFile(r.statePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			slog.Info("No previous state to restore", "path", r.statePath)
@@ -120,13 +145,20 @@ func (r *Router) RestoreLastSavedState() error {
 		slog.Error("Failed to restore saved state", "path", r.statePath, "error", err)
 		return err
 	}
-	defer f.Close()
 
-	var services []*Service
-	err = json.NewDecoder(f).Decode(&services)
+	services, err := decodeStateServices(data)
 	if err != nil {
 		slog.Error("Failed to decode saved state", "path", r.statePath, "error", err)
-		return err
+
+		services, err = r.restoreFromBackup(err)
+		if err != nil {
+			return err
+		}
+	} else {
+		// Keep a last-known-good copy to recover from a future torn write.
+		if err := writeFileAtomic(r.backupPath(), data, 0644); err != nil {
+			slog.Warn("Failed to write state backup", "path", r.backupPath(), "error", err)
+		}
 	}
 
 	r.withWriteLock(func() error {
@@ -138,8 +170,70 @@ func (r *Router) RestoreLastSavedState() error {
 		return nil
 	})
 
+	if r.recheckOnRestore {
+		for _, service := range services {
+			service.RecheckTargetHealth()
+		}
+	}
+
 	slog.Info("Restored saved state", "path", r.statePath)
 	return nil
+}
+
+func (r *Router) restoreFromBackup(cause error) ([]*Service, error) {
+	data, err := os.ReadFile(r.backupPath())
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Error("Failed to read state backup", "path", r.backupPath(), "error", err)
+		}
+		return nil, cause
+	}
+
+	services, err := decodeStateServices(data)
+	if err != nil {
+		slog.Error("Failed to decode state backup", "path", r.backupPath(), "error", err)
+		return nil, errors.Join(cause, err)
+	}
+
+	slog.Warn("Restored state from backup after decode failure", "path", r.backupPath())
+
+	// Repair the primary so subsequent boots restore cleanly again.
+	if err := writeFileAtomic(r.statePath, data, 0644); err != nil {
+		slog.Warn("Failed to repair state file from backup", "path", r.statePath, "error", err)
+	}
+
+	return services, nil
+}
+
+func (r *Router) backupPath() string {
+	return r.statePath + ".bak"
+}
+
+// stateEnvelope is the future versioned on-disk state format. The writer still
+// emits a bare JSON array so that older generations can read its output; the
+// reader accepts both forms so the writer can switch once every deployed
+// generation understands the envelope.
+type stateEnvelope struct {
+	Version  int        `json:"version"`
+	Services []*Service `json:"services"`
+}
+
+func decodeStateServices(data []byte) ([]*Service, error) {
+	trimmed := bytes.TrimLeftFunc(data, unicode.IsSpace)
+
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var envelope stateEnvelope
+		if err := json.Unmarshal(trimmed, &envelope); err != nil {
+			return nil, err
+		}
+		return envelope.Services, nil
+	}
+
+	var services []*Service
+	if err := json.Unmarshal(trimmed, &services); err != nil {
+		return nil, err
+	}
+	return services, nil
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -313,13 +407,23 @@ func (r *Router) ListActiveServices() ServiceDescriptionMap {
 				path := strings.Join(service.options.PathPrefixes, ",")
 				target := strings.Join(service.active.Targets().Names(), ",")
 
-				result[name] = ServiceDescription{
-					Host:   host,
-					Path:   path,
-					Target: target,
-					TLS:    service.options.TLSEnabled,
-					State:  service.pauseController.GetState().String(),
+				description := ServiceDescription{
+					Host:          host,
+					Path:          path,
+					Target:        target,
+					TLS:           service.options.TLSEnabled,
+					State:         service.pauseController.GetState().String(),
+					Hosts:         service.options.Hosts,
+					PathPrefixes:  service.options.PathPrefixes,
+					Targets:       service.active.WriteTargets().Names(),
+					ReaderTargets: service.active.ReadTargets().Names(),
 				}
+
+				if service.rollout != nil {
+					description.RolloutTargets = service.rollout.Targets().Names()
+				}
+
+				result[name] = description
 			}
 		}
 		return nil
@@ -426,6 +530,26 @@ func (r *Router) installLoadBalancer(name string, slot TargetSlot, lb *LoadBalan
 // SaveState flushes the current routing state to disk.
 func (r *Router) SaveState() error {
 	return r.saveStateSnapshot()
+}
+
+// DrainAll drains every service's targets concurrently, cancelling hijacked
+// connections and waiting out in-flight requests up to timeout.
+func (r *Router) DrainAll(timeout time.Duration) {
+	services := []*Service{}
+	r.withReadLock(func() error {
+		for _, service := range r.services.All() {
+			if service.active != nil || service.rollout != nil {
+				services = append(services, service)
+			}
+		}
+		return nil
+	})
+
+	var wg sync.WaitGroup
+	for _, service := range services {
+		wg.Go(func() { service.Drain(timeout) })
+	}
+	wg.Wait()
 }
 
 func (r *Router) saveStateSnapshot() error {

@@ -94,10 +94,11 @@ type LoadBalancer struct {
 	readerIndex                 int
 	lock                        sync.Mutex
 
-	multiTarget           bool
-	hasReaders            bool
-	waitForHealthyContext context.Context
-	markHealthy           context.CancelFunc
+	multiTarget            bool
+	hasReaders             bool
+	persistentHealthChecks bool
+	waitForHealthyContext  context.Context
+	markHealthy            context.CancelFunc
 }
 
 func NewLoadBalancer(targets TargetList, writerAffinityTimeout time.Duration, readTargetsAcceptWebsockets bool) *LoadBalancer {
@@ -162,6 +163,19 @@ func (lb *LoadBalancer) MarkAllHealthy() {
 		target.updateState(TargetStateHealthy)
 	}
 	lb.updateHealthyTargets()
+}
+
+// RecheckHealth restarts health checking on targets that were assumed healthy
+// when restored from saved state. Restored targets were never verified, so a
+// dead one must be demoted (503) rather than served blindly (502s forever).
+// Checks stay active for the lifetime of this load balancer, so a recovered
+// target also rejoins the pool.
+func (lb *LoadBalancer) RecheckHealth() {
+	lb.lock.Lock()
+	lb.persistentHealthChecks = true
+	lb.lock.Unlock()
+
+	lb.all.BeginHealthChecks(lb)
 }
 
 func (lb *LoadBalancer) Dispose() {
@@ -271,8 +285,9 @@ func (lb *LoadBalancer) updateHealthyTargets() {
 
 	// If we have a single target, we can stop health-checking once it's
 	// healthy. Even if it becomes unhealthy later, taking it out of the pool
-	// won't help.
-	if !lb.multiTarget && len(lb.writers) == 1 {
+	// won't help. Restored targets are the exception: their health was assumed
+	// rather than observed, so their checks are kept running.
+	if !lb.multiTarget && len(lb.writers) == 1 && !lb.persistentHealthChecks {
 		lb.all.StopHealthChecks()
 	}
 

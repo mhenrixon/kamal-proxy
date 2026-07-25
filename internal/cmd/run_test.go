@@ -10,6 +10,39 @@ import (
 	"github.com/basecamp/kamal-proxy/internal/server"
 )
 
+func TestRunCommand_IgnoreRestoreErrorsFlag(t *testing.T) {
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("ignore-restore-errors")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
+}
+
+func TestRunCommand_RecheckTargetsOnRestoreFlag(t *testing.T) {
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("recheck-targets-on-restore")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
+}
+
+func TestRunCommand_ReusePortFlag(t *testing.T) {
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("reuse-port")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
+}
+
+func TestRunCommand_DataDirFlag(t *testing.T) {
+	globalConfig = server.Config{}
+
+	cmd := newRunCommand().cmd
+	require.NoError(t, cmd.Flags().Parse([]string{"--data-dir=/var/lib/kamal-proxy"}))
+
+	assert.Equal(t, "/var/lib/kamal-proxy", globalConfig.AlternateConfigDir)
+}
+
 func TestRunCommand_TimeoutFlagDefaults(t *testing.T) {
 	tests := []struct {
 		flag     string
@@ -19,6 +52,7 @@ func TestRunCommand_TimeoutFlagDefaults(t *testing.T) {
 		{"read-timeout", server.DefaultReadTimeout},
 		{"write-timeout", server.DefaultWriteTimeout},
 		{"idle-timeout", server.DefaultIdleTimeout},
+		{"shutdown-timeout", server.DefaultShutdownTimeout},
 	}
 
 	for _, tt := range tests {

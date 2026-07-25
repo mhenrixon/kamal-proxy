@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/assert"
@@ -104,6 +106,213 @@ func TestServer_DeployingHTTPS(t *testing.T) {
 			con.Close()
 		})
 	})
+}
+
+func TestServer_StopAllowsInflightRequestsToComplete(t *testing.T) {
+	// Health checks also hit the backend, so gate on a path they don't use.
+	handlerStarted := make(chan struct{})
+	target := testTarget(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow" {
+			close(handlerStarted)
+			time.Sleep(300 * time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	config := testConfig(t)
+	router := NewRouter(config.StatePath())
+	server := NewServer(config, router)
+	require.NoError(t, server.Start())
+
+	testDeployTarget(t, target, server, defaultServiceOptions)
+
+	responses := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/slow", server.HttpPort()))
+		if err == nil {
+			responses <- resp
+		}
+		close(responses)
+	}()
+
+	<-handlerStarted
+	server.Stop()
+
+	resp, ok := <-responses
+	require.True(t, ok, "in-flight request should have completed during shutdown")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestServer_StopRespectsConfiguredShutdownTimeout(t *testing.T) {
+	// Health checks also hit the backend, so gate on a path they don't use.
+	handlerStarted := make(chan struct{})
+	target := testTarget(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow" {
+			close(handlerStarted)
+			time.Sleep(5 * time.Second)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	config := testConfig(t)
+	config.ShutdownTimeout = 250 * time.Millisecond
+	router := NewRouter(config.StatePath())
+	server := NewServer(config, router)
+	require.NoError(t, server.Start())
+
+	testDeployTarget(t, target, server, defaultServiceOptions)
+
+	go func() {
+		_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/slow", server.HttpPort()))
+	}()
+
+	<-handlerStarted
+
+	started := time.Now()
+	server.Stop()
+
+	assert.Less(t, time.Since(started), 3*time.Second, "Stop should be bounded by the configured shutdown timeout")
+}
+
+func TestServer_ReusePortAllowsOverlappingGenerations(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("SO_REUSEPORT is not supported on this platform")
+	}
+
+	configA := testConfig(t)
+	configA.ReusePort = true
+	serverA := testServerWithConfig(t, configA)
+	testDeployTarget(t, testTarget(t, func(w http.ResponseWriter, r *http.Request) {}), serverA, defaultServiceOptions)
+
+	// A second generation binds the same ports while the first still serves.
+	configB := testConfig(t)
+	configB.ReusePort = true
+	configB.HttpPort = serverA.HttpPort()
+	configB.HttpsPort = serverA.HttpsPort()
+
+	routerB := NewRouter(configB.StatePath())
+	serverB := NewServer(configB, routerB)
+	require.NoError(t, serverB.Start())
+	t.Cleanup(serverB.Stop)
+
+	testDeployTarget(t, testTarget(t, func(w http.ResponseWriter, r *http.Request) {}), serverB, defaultServiceOptions)
+
+	// Whichever generation the kernel picks, requests keep succeeding.
+	for range 5 {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", serverA.HttpPort()))
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	}
+}
+
+func TestServer_DrainHandsOffToOverlappingGeneration(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("SO_REUSEPORT is not supported on this platform")
+	}
+
+	// Old generation, serving a slow request when the drain starts.
+	handlerStarted := make(chan struct{})
+	target := testTarget(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow" {
+			close(handlerStarted)
+			time.Sleep(300 * time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	configA := testConfig(t)
+	configA.ReusePort = true
+	routerA := NewRouter(configA.StatePath())
+	serverA := NewServer(configA, routerA)
+	require.NoError(t, serverA.Start())
+	t.Cleanup(serverA.Stop)
+
+	testDeployTarget(t, target, serverA, defaultServiceOptions)
+
+	// New generation restores the old generation's state from the shared
+	// data dir and binds the same ports before the old one leaves.
+	configB := testConfig(t)
+	configB.ReusePort = true
+	configB.AlternateConfigDir = configA.AlternateConfigDir
+	configB.HttpPort = serverA.HttpPort()
+	configB.HttpsPort = serverA.HttpsPort()
+
+	routerB := NewRouter(configB.StatePath())
+	require.NoError(t, routerB.RestoreLastSavedState())
+	serverB := NewServer(configB, routerB)
+	require.NoError(t, serverB.Start())
+	t.Cleanup(serverB.Stop)
+
+	responses := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/slow", serverA.HttpPort()))
+		if err == nil {
+			responses <- resp
+		}
+		close(responses)
+	}()
+	<-handlerStarted
+
+	require.NoError(t, serverA.BeginDrain(5*time.Second))
+
+	// The in-flight request on the draining generation completed.
+	resp, ok := <-responses
+	require.True(t, ok, "in-flight request should complete during the drain")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// The new generation keeps serving the shared ports.
+	for range 5 {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", serverA.HttpPort()))
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	}
+
+	// The drain signalled shutdown and flushed state.
+	select {
+	case <-serverA.ShutdownRequested():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected ShutdownRequested to be signalled after drain")
+	}
+
+	f, err := os.Open(configA.StatePath())
+	require.NoError(t, err)
+	defer f.Close()
+	var services []*Service
+	require.NoError(t, json.NewDecoder(f).Decode(&services))
+	require.Len(t, services, 1)
+}
+
+func TestCommandHandler_DrainRepliesAfterDrainCompletes(t *testing.T) {
+	target := testTarget(t, func(w http.ResponseWriter, r *http.Request) {})
+
+	config := testConfig(t)
+	router := NewRouter(config.StatePath())
+	server := NewServer(config, router)
+	require.NoError(t, server.Start())
+	t.Cleanup(server.Stop)
+
+	testDeployTarget(t, target, server, defaultServiceOptions)
+
+	var reply bool
+	require.NoError(t, server.commandHandler.Drain(DrainArgs{Timeout: time.Second}, &reply))
+	assert.True(t, reply)
+
+	select {
+	case <-server.ShutdownRequested():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected ShutdownRequested after Drain RPC")
+	}
+}
+
+func TestServer_WithoutReusePortSecondBindFails(t *testing.T) {
+	serverA := testServer(t, false)
+
+	configB := testConfig(t)
+	configB.HttpPort = serverA.HttpPort()
+	configB.HttpsPort = serverA.HttpsPort()
+
+	serverB := NewServer(configB, NewRouter(configB.StatePath()))
+	require.Error(t, serverB.Start())
 }
 
 func TestServer_SavesStateOnStop(t *testing.T) {

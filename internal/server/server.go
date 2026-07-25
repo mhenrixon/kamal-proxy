@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
@@ -20,8 +22,6 @@ import (
 
 const (
 	ACMEStagingDirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
-
-	shutdownTimeout = 10 * time.Second
 )
 
 type Server struct {
@@ -36,13 +36,71 @@ type Server struct {
 	http3Server     *http3.Server
 	metricsServer   *http.Server
 	commandHandler  *CommandHandler
+	drainOnce       sync.Once
+	shutdownCh      chan struct{}
 }
 
 func NewServer(config *Config, router *Router) *Server {
 	return &Server{
-		config: config,
-		router: router,
+		config:     config,
+		router:     router,
+		shutdownCh: make(chan struct{}),
 	}
+}
+
+// ShutdownRequested is closed once a drain has completed and the process
+// should exit.
+func (s *Server) ShutdownRequested() <-chan struct{} {
+	return s.shutdownCh
+}
+
+// BeginDrain closes the public listeners, drains in-flight requests up to
+// timeout, saves state, and signals the run loop to exit. Under SO_REUSEPORT a
+// new generation holding the same ports keeps serving while this one leaves.
+// The RPC socket and metrics server stay up so the caller's reply can flush
+// and the drain remains observable; the run loop's deferred Stop tears them
+// down. A second call is a no-op.
+func (s *Server) BeginDrain(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = cmp.Or(s.config.ShutdownTimeout, DefaultShutdownTimeout)
+	}
+
+	s.drainOnce.Do(func() {
+		slog.Info("Draining", "timeout", timeout)
+
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		PerformConcurrently(
+			func() { s.router.DrainAll(timeout) },
+			func() { s.stopHTTPServer(ctx, s.httpServer) },
+			func() { s.stopHTTPServer(ctx, s.httpsServer) },
+			func() {
+				if s.http3Server != nil {
+					s.stopHTTPServer(ctx, s.http3Server)
+				}
+			},
+		)
+
+		s.httpListener.Close()
+		s.httpsListener.Close()
+		if s.http3Listener != nil {
+			s.http3Listener.Close()
+		}
+
+		_ = s.router.SaveState()
+
+		slog.Info("Drained")
+
+		// Give the RPC reply time to flush before the run loop tears down the
+		// command socket.
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			close(s.shutdownCh)
+		}()
+	})
+
+	return nil
 }
 
 func (s *Server) Start() error {
@@ -63,11 +121,13 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	timeout := cmp.Or(s.config.ShutdownTimeout, DefaultShutdownTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	PerformConcurrently(
 		func() { _ = s.commandHandler.Close() },
+		func() { s.router.DrainAll(timeout) },
 		func() { s.stopHTTPServer(ctx, s.httpServer) },
 		func() { s.stopHTTPServer(ctx, s.httpsServer) },
 		func() {
@@ -109,6 +169,24 @@ func (s *Server) HttpsPort() int {
 
 // Private
 
+// listen creates a TCP listener, optionally with SO_REUSEPORT so an
+// overlapping proxy generation can bind the same address during a handoff.
+func (s *Server) listen(network, addr string) (net.Listener, error) {
+	if s.config.ReusePort {
+		lc := net.ListenConfig{Control: reusePortControl}
+		return lc.Listen(context.Background(), network, addr)
+	}
+	return net.Listen(network, addr)
+}
+
+func (s *Server) listenPacket(network, addr string) (net.PacketConn, error) {
+	if s.config.ReusePort {
+		lc := net.ListenConfig{Control: reusePortControl}
+		return lc.ListenPacket(context.Background(), network, addr)
+	}
+	return net.ListenPacket(network, addr)
+}
+
 // newHTTPServer builds an http.Server carrying the configured connection
 // timeouts. Every listener shares one timeout policy so none of them is left
 // unbounded.
@@ -125,7 +203,7 @@ func (s *Server) newHTTPServer(handler http.Handler) *http.Server {
 func (s *Server) startHTTP3Server(handler http.Handler, httpsAddr string) error {
 	os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 
-	http3Listener, err := net.ListenPacket("udp", httpsAddr)
+	http3Listener, err := s.listenPacket("udp", httpsAddr)
 	if err != nil {
 		return err
 	}
@@ -151,14 +229,14 @@ func (s *Server) startHTTPServers() error {
 
 	handler := s.buildHandler()
 
-	httpListener, err := net.Listen("tcp", httpAddr)
+	httpListener, err := s.listen("tcp", httpAddr)
 	if err != nil {
 		return err
 	}
 	s.httpListener = httpListener
 	s.httpServer = s.newHTTPServer(handler)
 
-	httpsListener, err := net.Listen("tcp", httpsAddr)
+	httpsListener, err := s.listen("tcp", httpsAddr)
 	if err != nil {
 		return err
 	}
@@ -198,7 +276,7 @@ func (s *Server) startMetricsServer() error {
 	addr := fmt.Sprintf("%s:%d", s.config.Bind, s.config.MetricsPort)
 	handler := metrics.Enable()
 
-	l, err := net.Listen("tcp", addr)
+	l, err := s.listen("tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -215,6 +293,7 @@ func (s *Server) startMetricsServer() error {
 
 func (s *Server) startCommandHandler() error {
 	s.commandHandler = NewCommandHandler(s.router)
+	s.commandHandler.server = s
 	_ = os.Remove(s.config.SocketPath())
 
 	return s.commandHandler.Start(s.config.SocketPath())

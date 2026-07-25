@@ -244,6 +244,10 @@ func (t *Target) BeginHealthChecks(stateConsumer TargetStateConsumer) {
 	t.stateConsumer = stateConsumer
 
 	t.withInflightLock(func() {
+		if t.healthcheck != nil {
+			t.healthcheck.Close()
+		}
+
 		healthCheckURL := t.buildHealthCheckURL()
 		t.healthcheck = NewHealthCheck(t,
 			healthCheckURL,

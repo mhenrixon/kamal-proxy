@@ -33,6 +33,10 @@ const (
 	// text/event-stream bypass in response_buffer_middleware.go) and long
 	// downloads.
 	DefaultWriteTimeout = 0
+
+	// DefaultShutdownTimeout bounds how long a stopping server waits for
+	// in-flight requests to drain before closing their connections.
+	DefaultShutdownTimeout = 10 * time.Second
 )
 
 type Config struct {
@@ -46,6 +50,8 @@ type Config struct {
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
+	ShutdownTimeout   time.Duration
+	ReusePort         bool
 
 	AlternateConfigDir string
 
@@ -58,11 +64,17 @@ type Config struct {
 }
 
 func (c Config) SocketPath() string {
-	return path.Join(c.runtimeDirectory(), "kamal-proxy.sock")
+	return cmp.Or(os.Getenv("KAMAL_PROXY_SOCKET"), path.Join(c.runtimeDirectory(), "kamal-proxy.sock"))
 }
 
 func (c Config) StatePath() string {
 	return path.Join(c.dataDirectory(), "kamal-proxy.state")
+}
+
+// StateBackupPath is the last-known-good copy of StatePath, written after each
+// clean restore and used to recover from a torn or corrupted state file.
+func (c Config) StateBackupPath() string {
+	return c.StatePath() + ".bak"
 }
 
 func (c Config) CertificatePath() string {
