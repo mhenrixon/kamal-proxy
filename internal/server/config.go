@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"syscall"
+	"time"
 
 	"github.com/basecamp/kamal-proxy/internal/server/acme"
 )
@@ -12,6 +13,26 @@ import (
 const (
 	DefaultHttpPort  = 80
 	DefaultHttpsPort = 443
+
+	// DefaultReadHeaderTimeout bounds how long a client may take to send its
+	// request headers. Without it a handful of slowloris connections can hold
+	// listener resources open indefinitely.
+	DefaultReadHeaderTimeout = 30 * time.Second
+
+	// DefaultIdleTimeout bounds how long an established keep-alive connection
+	// may sit without carrying a request.
+	DefaultIdleTimeout = 60 * time.Second
+
+	// DefaultReadTimeout is disabled: it caps the time to read the *entire*
+	// request, so any non-zero value truncates slow or large uploads passing
+	// through the proxy.
+	DefaultReadTimeout = 0
+
+	// DefaultWriteTimeout is disabled: it caps the time to write the *entire*
+	// response, so any non-zero value truncates SSE streams (see the
+	// text/event-stream bypass in response_buffer_middleware.go) and long
+	// downloads.
+	DefaultWriteTimeout = 0
 )
 
 type Config struct {
@@ -20,6 +41,11 @@ type Config struct {
 	HttpsPort    int
 	MetricsPort  int
 	HTTP3Enabled bool
+
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
 
 	AlternateConfigDir string
 
