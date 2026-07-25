@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -220,6 +221,126 @@ func TestService_ReturnSuccessfulHealthCheckWhilePausedOrStopped(t *testing.T) {
 	assert.Equal(t, http.StatusOK, checkRequest("/other"))
 }
 
+func TestService_WholeRequestDeadlineReturnsGatewayTimeout(t *testing.T) {
+	targetOptions := defaultTargetOptions
+	targetOptions.RequestTimeout = 50 * time.Millisecond
+
+	service := testCreateServiceWithHandler(t, defaultServiceOptions, targetOptions,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == DefaultHealthCheckPath {
+				return
+			}
+
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+		}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/reports", nil)
+	w := httptest.NewRecorder()
+
+	started := time.Now()
+	service.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusGatewayTimeout, w.Result().StatusCode)
+	require.Less(t, time.Since(started), time.Second)
+}
+
+func TestService_WholeRequestDeadlineBoundsSlowResponseBodies(t *testing.T) {
+	targetOptions := defaultTargetOptions
+	targetOptions.RequestTimeout = 50 * time.Millisecond
+
+	service := testCreateServiceWithHandler(t, defaultServiceOptions, targetOptions,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == DefaultHealthCheckPath {
+				return
+			}
+
+			w.Write([]byte("start"))
+			w.(http.Flusher).Flush()
+
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+				w.Write([]byte("end"))
+			}
+		}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/reports", nil)
+	w := httptest.NewRecorder()
+
+	started := time.Now()
+	service.ServeHTTP(w, req)
+
+	// The headers are long gone by the time the deadline fires, so the only
+	// remedy left is to stop the response short.
+	require.Less(t, time.Since(started), time.Second)
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	require.Equal(t, "start", w.Body.String())
+}
+
+func TestService_WholeRequestDeadlineExemptsEventStreams(t *testing.T) {
+	targetOptions := defaultTargetOptions
+	targetOptions.RequestTimeout = 50 * time.Millisecond
+
+	service := testCreateServiceWithHandler(t, defaultServiceOptions, targetOptions,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == DefaultHealthCheckPath {
+				return
+			}
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+
+			// Well past the deadline: the stream must survive it.
+			time.Sleep(300 * time.Millisecond)
+			w.Write([]byte("data: hello\n\n"))
+			w.(http.Flusher).Flush()
+		}))
+
+	proxy := httptest.NewServer(service)
+	t.Cleanup(proxy.Close)
+
+	resp, err := http.Get(proxy.URL + "/events")
+	require.NoError(t, err)
+	t.Cleanup(func() { resp.Body.Close() })
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "data: hello\n\n", string(body))
+}
+
+func TestService_WholeRequestDeadlinePerPathOverride(t *testing.T) {
+	targetOptions := defaultTargetOptions
+	targetOptions.RequestTimeout = 50 * time.Millisecond
+	targetOptions.PathRequestTimeouts = []PathTimeout{
+		{PathPrefix: "/downloads", Timeout: 0},
+		{PathPrefix: "/reports", Timeout: time.Hour},
+	}
+
+	service := testCreateServiceWithHandler(t, defaultServiceOptions, targetOptions,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(200 * time.Millisecond)
+			w.Write([]byte("done"))
+		}))
+
+	for _, path := range []string{"/downloads/big.zip", "/reports/monthly"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://example.com"+path, nil)
+			w := httptest.NewRecorder()
+
+			service.ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusOK, w.Result().StatusCode)
+			require.Equal(t, "done", w.Body.String())
+		})
+	}
+}
+
 func TestService_MarshallingState(t *testing.T) {
 	targetOptions := TargetOptions{
 		HealthCheckConfig:   HealthCheckConfig{Path: "/health", Interval: time.Second, Timeout: 2 * time.Second},
@@ -252,6 +373,27 @@ func TestService_MarshallingState(t *testing.T) {
 
 	assert.Equal(t, 20, service2.rolloutController.Percentage)
 	assert.Equal(t, []string{"first"}, service2.rolloutController.Allowlist)
+}
+
+func TestService_MarshallingTimeoutState(t *testing.T) {
+	targetOptions := defaultTargetOptions
+	targetOptions.RequestTimeout = time.Minute
+	targetOptions.PathRequestTimeouts = []PathTimeout{{PathPrefix: "/downloads", Timeout: 0}}
+	targetOptions.PathResponseTimeouts = []PathTimeout{{PathPrefix: "api/reports/", Timeout: 5 * time.Minute}}
+
+	service := testCreateService(t, defaultServiceOptions, targetOptions)
+	t.Cleanup(service.Dispose)
+
+	var buf bytes.Buffer
+	require.NoError(t, json.NewEncoder(&buf).Encode(service))
+
+	var restored Service
+	require.NoError(t, json.NewDecoder(&buf).Decode(&restored))
+	t.Cleanup(restored.Dispose)
+
+	assert.Equal(t, time.Minute, restored.targetOptions.RequestTimeout)
+	assert.Equal(t, []PathTimeout{{PathPrefix: "/downloads", Timeout: 0}}, restored.targetOptions.PathRequestTimeouts)
+	assert.Equal(t, []PathTimeout{{PathPrefix: "/api/reports", Timeout: 5 * time.Minute}}, restored.targetOptions.PathResponseTimeouts)
 }
 
 func TestService_UnmarshallingStateFromLegacyFormat(t *testing.T) {
@@ -304,6 +446,11 @@ func TestService_UnmarshallingStateFromLegacyFormat(t *testing.T) {
 	assert.Equal(t, []string{"app.example.com"}, service.options.Hosts)
 	assert.Equal(t, []string{"/"}, service.options.PathPrefixes)
 	assert.Equal(t, 3*time.Second, service.targetOptions.ResponseTimeout)
+
+	// State written before per-route timeouts existed must load with them off
+	assert.Zero(t, service.targetOptions.RequestTimeout)
+	assert.Empty(t, service.targetOptions.PathRequestTimeouts)
+	assert.Empty(t, service.targetOptions.PathResponseTimeouts)
 }
 
 func testCreateService(t *testing.T, options ServiceOptions, targetOptions TargetOptions) *Service {

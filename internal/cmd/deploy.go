@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"net/rpc"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -10,9 +11,11 @@ import (
 )
 
 type deployCommand struct {
-	cmd        *cobra.Command
-	args       server.DeployArgs
-	tlsStaging bool
+	cmd                 *cobra.Command
+	args                server.DeployArgs
+	tlsStaging          bool
+	pathTimeouts        map[string]string
+	pathRequestTimeouts map[string]string
 }
 
 func newDeployCommand() *deployCommand {
@@ -55,6 +58,9 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.ServiceOptions.ReadTargetsAcceptWebsockets, "read-target-websockets", false, "Route WebSocket traffic to read targets, when available")
 
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.TargetOptions.ResponseTimeout, "target-timeout", server.DefaultTargetTimeout, "Maximum time to wait for the target server to respond when serving requests")
+	deployCommand.cmd.Flags().StringToStringVar(&deployCommand.pathTimeouts, "path-timeout", nil, "Override --target-timeout below a path prefix, as <prefix>=<duration> (0 for no timeout; may be specified multiple times)")
+	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.TargetOptions.RequestTimeout, "request-timeout", 0, "Maximum time a whole request may take, including streaming the response body (default 0, no limit; WebSocket and event-stream responses are exempt)")
+	deployCommand.cmd.Flags().StringToStringVar(&deployCommand.pathRequestTimeouts, "path-request-timeout", nil, "Override --request-timeout below a path prefix, as <prefix>=<duration> (0 for no limit; may be specified multiple times)")
 
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.TargetOptions.BufferRequests, "buffer-requests", false, "Buffer requests before forwarding to target")
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.TargetOptions.BufferResponses, "buffer-responses", false, "Buffer responses before forwarding to client")
@@ -100,9 +106,41 @@ func (c *deployCommand) preRun(cmd *cobra.Command, args []string) error {
 		c.args.TargetOptions.ForwardHeaders = !c.args.ServiceOptions.TLSEnabled
 	}
 
+	var err error
+	c.args.TargetOptions.PathResponseTimeouts, err = parsePathTimeouts("path-timeout", c.pathTimeouts)
+	if err != nil {
+		return err
+	}
+
+	c.args.TargetOptions.PathRequestTimeouts, err = parsePathTimeouts("path-request-timeout", c.pathRequestTimeouts)
+	if err != nil {
+		return err
+	}
+
 	if err := c.args.ServiceOptions.Validate(); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// parsePathTimeouts converts the <prefix>=<duration> flag pairs into the
+// server's normalized, longest-prefix-first form. The map's iteration order is
+// random, so normalizing here is what makes the deployed order deterministic.
+func parsePathTimeouts(flagName string, values map[string]string) ([]server.PathTimeout, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	pathTimeouts := make([]server.PathTimeout, 0, len(values))
+	for pathPrefix, value := range values {
+		timeout, err := time.ParseDuration(value)
+		if err != nil || timeout < 0 {
+			return nil, fmt.Errorf("invalid --%s duration for '%s': %s", flagName, pathPrefix, value)
+		}
+
+		pathTimeouts = append(pathTimeouts, server.PathTimeout{PathPrefix: pathPrefix, Timeout: timeout})
+	}
+
+	return server.NormalizePathTimeouts(pathTimeouts), nil
 }

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,81 @@ func TestDeployCommand_TLSRequiresHost(t *testing.T) {
 
 	assertTLSHostValidation(t, []string{"example.com"}, true)
 	assertTLSHostValidation(t, []string{"example.com", "*.example.com"}, true)
+}
+
+func TestDeployCommand_PathTimeoutParsing(t *testing.T) {
+	tests := []struct {
+		name                  string
+		args                  []string
+		expectedError         string
+		expectedPathResponses []server.PathTimeout
+		expectedPathRequests  []server.PathTimeout
+		expectedRequest       time.Duration
+	}{
+		{
+			name:                  "no flags leaves the timeouts unset",
+			args:                  []string{"--target=web:3000"},
+			expectedPathResponses: nil,
+			expectedPathRequests:  nil,
+		},
+		{
+			name: "repeated path timeouts accumulate, longest prefix first",
+			args: []string{"--target=web:3000", "--path-timeout=/api=2s", "--path-timeout=api/reports/=5m"},
+			expectedPathResponses: []server.PathTimeout{
+				{PathPrefix: "/api/reports", Timeout: 5 * time.Minute},
+				{PathPrefix: "/api", Timeout: 2 * time.Second},
+			},
+		},
+		{
+			name: "a zero timeout disables the timeout for that prefix",
+			args: []string{"--target=web:3000", "--path-timeout=/stream=0"},
+			expectedPathResponses: []server.PathTimeout{
+				{PathPrefix: "/stream", Timeout: 0},
+			},
+		},
+		{
+			name:            "request deadline with a per-path override",
+			args:            []string{"--target=web:3000", "--request-timeout=60s", "--path-request-timeout=/downloads=0"},
+			expectedRequest: time.Minute,
+			expectedPathRequests: []server.PathTimeout{
+				{PathPrefix: "/downloads", Timeout: 0},
+			},
+		},
+		{
+			name:          "an unparseable duration is rejected",
+			args:          []string{"--target=web:3000", "--path-timeout=/api=soon"},
+			expectedError: "invalid --path-timeout duration for '/api'",
+		},
+		{
+			name:          "a negative duration is rejected",
+			args:          []string{"--target=web:3000", "--path-timeout=/api=-5s"},
+			expectedError: "invalid --path-timeout duration for '/api'",
+		},
+		{
+			name:          "a negative request deadline is rejected",
+			args:          []string{"--target=web:3000", "--path-request-timeout=/api=-5s"},
+			expectedError: "invalid --path-request-timeout duration for '/api'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newDeployCommand()
+			require.NoError(t, cmd.cmd.Flags().Parse(tt.args))
+
+			err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+			if tt.expectedError != "" {
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedPathResponses, cmd.args.TargetOptions.PathResponseTimeouts)
+			assert.Equal(t, tt.expectedPathRequests, cmd.args.TargetOptions.PathRequestTimeouts)
+			assert.Equal(t, tt.expectedRequest, cmd.args.TargetOptions.RequestTimeout)
+		})
+	}
 }
 
 func TestDeployCommand_CanonicalHostValidation(t *testing.T) {
