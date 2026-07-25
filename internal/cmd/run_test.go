@@ -18,6 +18,15 @@ func TestRunCommand_IgnoreRestoreErrorsFlag(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
+func TestRunCommand_DataDirFlag(t *testing.T) {
+	globalConfig = server.Config{}
+
+	cmd := newRunCommand().cmd
+	require.NoError(t, cmd.Flags().Parse([]string{"--data-dir=/var/lib/kamal-proxy"}))
+
+	assert.Equal(t, "/var/lib/kamal-proxy", globalConfig.AlternateConfigDir)
+}
+
 func TestRunCommand_TimeoutFlagDefaults(t *testing.T) {
 	tests := []struct {
 		flag     string

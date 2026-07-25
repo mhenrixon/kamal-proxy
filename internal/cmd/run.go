@@ -35,6 +35,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().IntVar(&globalConfig.MetricsPort, "metrics-port", getEnvInt("METRICS_PORT", 0), "Publish metrics on the specified port (default zero to disable)")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.HTTP3Enabled, "http3", false, "Enable HTTP/3")
 	runCommand.cmd.Flags().BoolVar(&runCommand.ignoreRestoreErrors, "ignore-restore-errors", getEnvBool("IGNORE_RESTORE_ERRORS", false), "Boot with an empty routing state when restoring the saved state fails")
+	runCommand.cmd.Flags().StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/kamal-proxy)")
 
 	// Listener connection timeouts
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadHeaderTimeout, "read-header-timeout", getEnvDuration("READ_HEADER_TIMEOUT", server.DefaultReadHeaderTimeout), "Maximum time a client may take to send request headers (zero to disable)")
@@ -62,6 +63,12 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 			slog.Warn("Invalid DNS provider specified", "provider", c.acmeDNSProvider, "error", err)
 		} else {
 			globalConfig.ACMEDNSProvider = providerName
+		}
+	}
+
+	if globalConfig.AlternateConfigDir != "" {
+		if err := os.MkdirAll(globalConfig.AlternateConfigDir, 0700); err != nil {
+			return fmt.Errorf("failed to create data directory %q: %w", globalConfig.AlternateConfigDir, err)
 		}
 	}
 
