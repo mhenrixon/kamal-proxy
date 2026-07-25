@@ -254,10 +254,10 @@ func (lb *LoadBalancer) nextTarget(reader bool) *Target {
 
 func (lb *LoadBalancer) isReadRequest(req *http.Request) bool {
 	return (req.Method == http.MethodGet || req.Method == http.MethodHead) &&
-		(lb.readTargetsAcceptWebsockets || !lb.isWebSocketRequest(req))
+		(lb.readTargetsAcceptWebsockets || !isWebSocketRequest(req))
 }
 
-func (lb *LoadBalancer) isWebSocketRequest(req *http.Request) bool {
+func isWebSocketRequest(req *http.Request) bool {
 	return req.Method == http.MethodGet &&
 		strings.EqualFold(req.Header.Get("Upgrade"), "websocket") &&
 		strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade")

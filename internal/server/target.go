@@ -74,10 +74,25 @@ type TargetOptions struct {
 	LogResponseHeaders  []string          `json:"log_response_headers"`
 	ForwardHeaders      bool              `json:"forward_headers"`
 	ScopeCookiePaths    bool              `json:"scope_cookie_paths"`
+
+	// PathResponseTimeouts overrides ResponseTimeout for requests below a path
+	// prefix. Each override needs its own transport, so keep the list short.
+	PathResponseTimeouts []PathTimeout `json:"path_response_timeouts,omitempty"`
+	// RequestTimeout bounds the whole request, not just the wait for response
+	// headers. Zero (the default) leaves it unbounded.
+	RequestTimeout time.Duration `json:"request_timeout,omitempty"`
+	// PathRequestTimeouts overrides RequestTimeout for requests below a path
+	// prefix.
+	PathRequestTimeouts []PathTimeout `json:"path_request_timeouts,omitempty"`
 }
 
 func (to *TargetOptions) IsHealthCheckRequest(r *http.Request) bool {
 	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.URL.Path == to.HealthCheckConfig.Path
+}
+
+func (to *TargetOptions) normalizePathTimeouts() {
+	to.PathResponseTimeouts = NormalizePathTimeouts(to.PathResponseTimeouts)
+	to.PathRequestTimeouts = NormalizePathTimeouts(to.PathRequestTimeouts)
 }
 
 func (to *TargetOptions) canonicalizeLogHeaders() {
@@ -89,11 +104,17 @@ func (to *TargetOptions) canonicalizeLogHeaders() {
 	}
 }
 
+type pathProxyHandler struct {
+	pathPrefix string
+	handler    http.Handler
+}
+
 type Target struct {
-	targetURL    *url.URL
-	readonly     bool
-	options      TargetOptions
-	proxyHandler http.Handler
+	targetURL         *url.URL
+	readonly          bool
+	options           TargetOptions
+	proxyHandler      http.Handler
+	pathProxyHandlers []pathProxyHandler
 
 	state        TargetState
 	inflight     inflightMap
@@ -110,6 +131,7 @@ func NewTarget(targetURL string, options TargetOptions) (*Target, error) {
 	}
 
 	options.canonicalizeLogHeaders()
+	options.normalizePathTimeouts()
 
 	target := &Target{
 		targetURL: uri,
@@ -119,13 +141,15 @@ func NewTarget(targetURL string, options TargetOptions) (*Target, error) {
 		inflight: inflightMap{},
 	}
 
-	target.proxyHandler = target.createProxyHandler()
+	target.proxyHandler = target.createProxyHandler(options.ResponseTimeout)
 
-	if options.BufferResponses {
-		target.proxyHandler = WithResponseBufferMiddleware(options.MaxMemoryBufferSize, options.MaxResponseBodySize, target.proxyHandler)
-	}
-	if options.BufferRequests {
-		target.proxyHandler = WithRequestBufferMiddleware(options.MaxMemoryBufferSize, options.MaxRequestBodySize, target.proxyHandler)
+	// ResponseHeaderTimeout is a transport setting, so a per-path override needs
+	// its own proxy handler (and therefore its own connection pool).
+	for _, pathTimeout := range options.PathResponseTimeouts {
+		target.pathProxyHandlers = append(target.pathProxyHandlers, pathProxyHandler{
+			pathPrefix: pathTimeout.PathPrefix,
+			handler:    target.createProxyHandler(pathTimeout.Timeout),
+		})
 	}
 
 	return target, nil
@@ -181,7 +205,7 @@ func (t *Target) SendRequest(w http.ResponseWriter, req *http.Request) {
 	defer t.endInflightRequest(req)
 
 	tw := newTargetResponseWriter(w, inflightRequest, t.cookieScope(req))
-	t.proxyHandler.ServeHTTP(tw, req)
+	t.handlerForRequest(req).ServeHTTP(tw, req)
 }
 
 func (t *Target) Drain(timeout time.Duration) {
@@ -294,18 +318,39 @@ func (t *Target) buildHealthCheckURL() *url.URL {
 	return healthCheckURL.JoinPath(t.options.HealthCheckConfig.Path)
 }
 
-func (t *Target) createProxyHandler() http.Handler {
+func (t *Target) createProxyHandler(responseTimeout time.Duration) http.Handler {
 	bufferPool := NewBufferPool(ProxyBufferSize)
 
-	return &httputil.ReverseProxy{
+	var handler http.Handler = &httputil.ReverseProxy{
 		BufferPool:   bufferPool,
 		Rewrite:      t.rewrite,
 		ErrorHandler: t.handleProxyError,
 		Transport: &http.Transport{
 			MaxIdleConnsPerHost:   MaxIdleConnsPerHost,
-			ResponseHeaderTimeout: t.options.ResponseTimeout,
+			ResponseHeaderTimeout: responseTimeout,
 		},
 	}
+
+	if t.options.BufferResponses {
+		handler = WithResponseBufferMiddleware(t.options.MaxMemoryBufferSize, t.options.MaxResponseBodySize, handler)
+	}
+	if t.options.BufferRequests {
+		handler = WithRequestBufferMiddleware(t.options.MaxMemoryBufferSize, t.options.MaxRequestBodySize, handler)
+	}
+
+	return handler
+}
+
+// handlerForRequest returns the proxy handler carrying the response timeout
+// that applies to this request's path.
+func (t *Target) handlerForRequest(req *http.Request) http.Handler {
+	for _, pathHandler := range t.pathProxyHandlers {
+		if strings.HasPrefix(EnsureTrailingSlash(req.URL.Path), EnsureTrailingSlash(pathHandler.pathPrefix)) {
+			return pathHandler.handler
+		}
+	}
+
+	return t.proxyHandler
 }
 
 func (t *Target) rewrite(req *httputil.ProxyRequest) {
@@ -373,6 +418,12 @@ func (t *Target) handleProxyError(w http.ResponseWriter, r *http.Request, err er
 		return
 	}
 
+	if t.isRequestDeadlineExceeded(r) {
+		slog.Info("Request cancelled by its deadline", "target", t.Address(), "path", r.URL.Path)
+		SetErrorResponse(w, r, http.StatusGatewayTimeout, nil)
+		return
+	}
+
 	if t.isClientCancellation(err) {
 		// The client has disconnected so will not see the response, but we
 		// still want to set it for the sake of the logs.
@@ -407,6 +458,13 @@ func (t *Target) isGatewayTimeout(err error) bool {
 		return netErr.Timeout()
 	}
 	return false
+}
+
+// isRequestDeadlineExceeded distinguishes a request cancelled by its own
+// deadline from one cancelled by the client: both surface as context.Canceled,
+// so the cancellation cause on the request is what tells them apart.
+func (t *Target) isRequestDeadlineExceeded(r *http.Request) bool {
+	return errors.Is(context.Cause(r.Context()), ErrorRequestDeadlineExceeded)
 }
 
 func (t *Target) isClientCancellation(err error) bool {
