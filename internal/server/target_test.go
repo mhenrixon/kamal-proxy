@@ -162,6 +162,92 @@ func TestTarget_CancelledRequestsHaveStatus499(t *testing.T) {
 	require.Empty(t, string(w.Body.String()))
 }
 
+func TestTarget_PerPathResponseTimeout(t *testing.T) {
+	targetOptions := TargetOptions{
+		HealthCheckConfig: defaultHealthCheckConfig,
+		ResponseTimeout:   50 * time.Millisecond,
+		PathResponseTimeouts: []PathTimeout{
+			{PathPrefix: "/slow", Timeout: 5 * time.Second},
+			{PathPrefix: "/unlimited", Timeout: 0},
+		},
+	}
+
+	target := testTargetWithOptions(t, targetOptions, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Write([]byte("ok"))
+	})
+
+	tests := []struct {
+		name               string
+		path               string
+		expectedStatusCode int
+	}{
+		{"path with a longer override is not timed out", "/slow/report", http.StatusOK},
+		{"path with a zero override is never timed out", "/unlimited/download", http.StatusOK},
+		{"path without an override uses the service timeout", "/other", http.StatusGatewayTimeout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+
+			testServeRequestWithTarget(t, target, w, req)
+
+			require.Equal(t, tt.expectedStatusCode, w.Result().StatusCode)
+		})
+	}
+}
+
+func TestTarget_PerPathResponseTimeoutsAreNormalized(t *testing.T) {
+	targetOptions := TargetOptions{
+		HealthCheckConfig: defaultHealthCheckConfig,
+		ResponseTimeout:   50 * time.Millisecond,
+		PathResponseTimeouts: []PathTimeout{
+			{PathPrefix: "api", Timeout: 5 * time.Second},
+			{PathPrefix: "/api/quick/", Timeout: 10 * time.Millisecond},
+		},
+	}
+
+	target := testTargetWithOptions(t, targetOptions, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Write([]byte("ok"))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/reports", nil)
+	w := httptest.NewRecorder()
+	testServeRequestWithTarget(t, target, w, req)
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/quick", nil)
+	w = httptest.NewRecorder()
+	testServeRequestWithTarget(t, target, w, req)
+	require.Equal(t, http.StatusGatewayTimeout, w.Result().StatusCode)
+}
+
+func TestTarget_PerPathResponseTimeoutsBufferResponses(t *testing.T) {
+	targetOptions := TargetOptions{
+		HealthCheckConfig:    defaultHealthCheckConfig,
+		ResponseTimeout:      DefaultTargetTimeout,
+		BufferResponses:      true,
+		MaxMemoryBufferSize:  DefaultMaxMemoryBufferSize,
+		MaxResponseBodySize:  4,
+		PathResponseTimeouts: []PathTimeout{{PathPrefix: "/slow", Timeout: 5 * time.Second}},
+	}
+
+	target := testTargetWithOptions(t, targetOptions, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("too much body"))
+	})
+
+	// The per-path handler must carry the same buffering middleware as the
+	// default one, or its response limits silently stop applying.
+	req := httptest.NewRequest(http.MethodGet, "/slow/report", nil)
+	w := httptest.NewRecorder()
+	testServeRequestWithTarget(t, target, w, req)
+
+	require.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
+}
+
 func TestTarget_PreserveTargetHeader(t *testing.T) {
 	var requestTarget string
 

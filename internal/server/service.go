@@ -422,12 +422,16 @@ func (s *Service) Resume() error {
 // Private
 
 func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions) error {
+	// Canonicalize before anything stores or serves them, so that persisted state
+	// and the prefixes the deadline middleware matches on agree with each other.
+	targetOptions.normalizePathTimeouts()
+
 	certManager, err := s.createCertManager(options)
 	if err != nil {
 		return err
 	}
 
-	middleware, err := s.createMiddleware(options, certManager)
+	middleware, err := s.createMiddleware(options, targetOptions, certManager)
 	if err != nil {
 		return err
 	}
@@ -511,9 +515,16 @@ func (s *Service) createCertManager(options ServiceOptions) (CertManager, error)
 	}, nil
 }
 
-func (s *Service) createMiddleware(options ServiceOptions, certManager CertManager) (http.Handler, error) {
+func (s *Service) createMiddleware(options ServiceOptions, targetOptions TargetOptions, certManager CertManager) (http.Handler, error) {
 	var err error
 	var handler http.Handler = http.HandlerFunc(s.serviceRequestWithTarget)
+
+	// Innermost, so that the deadline covers pause waits and target selection as
+	// well as the proxied request, while its timeout response still renders
+	// through the custom error pages below.
+	if targetOptions.RequestTimeout > 0 || len(targetOptions.PathRequestTimeouts) > 0 {
+		handler = WithRequestDeadlineMiddleware(targetOptions.RequestTimeout, targetOptions.PathRequestTimeouts, handler)
+	}
 
 	if options.ErrorPagePath != "" {
 		slog.Debug("Using custom error pages", "service", s.name, "path", options.ErrorPagePath)
