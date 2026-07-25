@@ -36,9 +36,12 @@ func RoutingContext(r *http.Request) *routingContext {
 }
 
 type Router struct {
-	statePath   string
-	services    *ServiceMap
-	serviceLock sync.RWMutex
+	statePath            string
+	services             *ServiceMap
+	serviceLock          sync.RWMutex
+	sanCertManager       *SANCertManager
+	dynamicDomainManager *DynamicDomainManager
+	certRegistry         *CertificateRegistry
 }
 
 type ServiceDescription struct {
@@ -56,6 +59,54 @@ func NewRouter(statePath string) *Router {
 		statePath: statePath,
 		services:  NewServiceMap(),
 	}
+}
+
+func (r *Router) SetSANCertManager(manager *SANCertManager) {
+	r.withWriteLock(func() error {
+		r.sanCertManager = manager
+
+		for _, service := range r.services.All() {
+			service.SetSANCertManager(manager)
+		}
+		return nil
+	})
+}
+
+func (r *Router) SANCertManager() *SANCertManager {
+	return r.sanCertManager
+}
+
+// SetDynamicDomainManager installs the dynamic domain coordinator and
+// reconciles it with the already-restored services.
+func (r *Router) SetDynamicDomainManager(manager *DynamicDomainManager) {
+	services := map[string]ServiceOptions{}
+
+	r.withReadLock(func() error {
+		r.dynamicDomainManager = manager
+
+		for name, service := range r.services.All() {
+			services[name] = service.options
+		}
+		return nil
+	})
+
+	for name, options := range services {
+		manager.ServiceDeployed(name, options)
+	}
+}
+
+func (r *Router) DynamicDomainManager() *DynamicDomainManager {
+	return r.dynamicDomainManager
+}
+
+// SetCertificateRegistry sets the central certificate registry for the router
+func (r *Router) SetCertificateRegistry(registry *CertificateRegistry) {
+	r.certRegistry = registry
+}
+
+// GetCertificateRegistry returns the certificate registry if available
+func (r *Router) GetCertificateRegistry() *CertificateRegistry {
+	return r.certRegistry
 }
 
 func (r *Router) RestoreLastSavedState() error {
@@ -130,6 +181,10 @@ func (r *Router) DeployService(name string, targetURLs, readerURLs []string, opt
 		replaced.DrainAll(deploymentOptions.DrainTimeout)
 	}
 
+	if r.dynamicDomainManager != nil {
+		r.dynamicDomainManager.ServiceDeployed(name, options)
+	}
+
 	slog.Info("Deployed", "service", name, "targets", targetURLs, "hosts", options.Hosts, "paths", options.PathPrefixes, "tls", options.TLSEnabled)
 	return nil
 }
@@ -188,7 +243,7 @@ func (r *Router) StopRollout(name string) error {
 func (r *Router) RemoveService(name string) error {
 	defer r.saveStateSnapshot()
 
-	return r.withWriteLock(func() error {
+	err := r.withWriteLock(func() error {
 		service := r.services.Get(name)
 		if service == nil {
 			return ErrorServiceNotFound
@@ -199,6 +254,15 @@ func (r *Router) RemoveService(name string) error {
 
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	if r.dynamicDomainManager != nil {
+		r.dynamicDomainManager.ServiceRemoved(name)
+	}
+
+	return nil
 }
 
 func (r *Router) PauseService(name string, drainTimeout time.Duration, pauseTimeout time.Duration) error {
@@ -275,6 +339,19 @@ func (r *Router) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 		}
 	}
 
+	// Try the central certificate registry first
+	if r.certRegistry != nil {
+		cert, err := r.certRegistry.GetCertificate(hello)
+		if err == nil {
+			return cert, nil
+		}
+		// If registry returns an error (except not found), log it
+		if !errors.Is(err, ErrCertificateNotFound) && !errors.Is(err, ErrCertificatePending) {
+			slog.Debug("Certificate registry error", "domain", hello.ServerName, "error", err)
+		}
+		// Fall through to per-service cert manager
+	}
+
 	service := r.serviceForHost(hello.ServerName)
 	if service == nil {
 		slog.Debug("ACME: Unable to get certificate (unknown server name)")
@@ -294,7 +371,7 @@ func (r *Router) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 func (r *Router) createOrUpdateService(name string, options ServiceOptions, targetOptions TargetOptions) (*Service, error) {
 	service := r.services.Get(name)
 	if service == nil {
-		return NewService(name, options, targetOptions)
+		return NewService(name, options, targetOptions, r.sanCertManager)
 	}
 
 	err := service.UpdateOptions(options, targetOptions)

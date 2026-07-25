@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -9,11 +10,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/basecamp/kamal-proxy/internal/server"
+	"github.com/basecamp/kamal-proxy/internal/server/acme"
 )
 
 type runCommand struct {
 	cmd              *cobra.Command
 	debugLogsEnabled bool
+	acmeDNSProvider  string
 }
 
 func newRunCommand() *runCommand {
@@ -30,10 +33,18 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().IntVar(&globalConfig.MetricsPort, "metrics-port", getEnvInt("METRICS_PORT", 0), "Publish metrics on the specified port (default zero to disable)")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.HTTP3Enabled, "http3", false, "Enable HTTP/3")
 
+	// Listener connection timeouts
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadHeaderTimeout, "read-header-timeout", getEnvDuration("READ_HEADER_TIMEOUT", server.DefaultReadHeaderTimeout), "Maximum time a client may take to send request headers (zero to disable)")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadTimeout, "read-timeout", getEnvDuration("READ_TIMEOUT", server.DefaultReadTimeout), "Maximum time to read an entire request, including the body (zero to disable; non-zero truncates slow uploads)")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.WriteTimeout, "write-timeout", getEnvDuration("WRITE_TIMEOUT", server.DefaultWriteTimeout), "Maximum time to write an entire response (zero to disable; non-zero truncates SSE and streaming responses)")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.IdleTimeout, "idle-timeout", getEnvDuration("IDLE_TIMEOUT", server.DefaultIdleTimeout), "Maximum time an idle keep-alive connection is kept open (zero to disable)")
+
+	// ACME/TLS configuration
+	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEEmail, "acme-email", getEnvString("ACME_EMAIL", ""), "Email address for ACME account registration (required for automatic TLS)")
+	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEDirectory, "acme-directory", getEnvString("ACME_DIRECTORY", server.LetsEncryptProduction), "ACME directory URL")
+	runCommand.cmd.Flags().StringVar(&runCommand.acmeDNSProvider, "acme-dns-provider", getEnvString("ACME_DNS_PROVIDER", "auto"), "DNS provider for DNS-01 challenges (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto)")
+	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEPreferWildcard, "acme-prefer-wildcard", getEnvBool("ACME_PREFER_WILDCARD", true), "Prefer wildcard certificates when DNS provider available")
+	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEHTTPFallback, "acme-http-fallback", getEnvBool("ACME_HTTP_FALLBACK", true), "Fall back to HTTP-01 challenge if DNS-01 fails")
 
 	return runCommand
 }
@@ -41,8 +52,59 @@ func newRunCommand() *runCommand {
 func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	c.setLogger()
 
+	// Parse DNS provider if specified
+	if c.acmeDNSProvider != "" {
+		providerName, err := acme.ParseProviderName(c.acmeDNSProvider)
+		if err != nil {
+			slog.Warn("Invalid DNS provider specified", "provider", c.acmeDNSProvider, "error", err)
+		} else {
+			globalConfig.ACMEDNSProvider = providerName
+		}
+	}
+
 	router := server.NewRouter(globalConfig.StatePath())
+
 	router.RestoreLastSavedState()
+
+	var dynamicDomains *server.DynamicDomainManager
+
+	if globalConfig.ACMEEmail != "" {
+		manager, err := server.NewSANCertManager(server.SANCertManagerConfig{
+			Email:     globalConfig.ACMEEmail,
+			Directory: globalConfig.ACMEDirectory,
+			CachePath: globalConfig.CertificatePath(),
+			StatePath: globalConfig.ACMEStatePath(),
+		})
+		if err != nil {
+			return err
+		}
+
+		if err := manager.Initialize(cmd.Context()); err != nil {
+			return err
+		}
+
+		router.SetSANCertManager(manager)
+
+		dynamicDomains = server.NewDynamicDomainManager(server.DynamicDomainConfig{
+			StatePath:    globalConfig.DynamicDomainsStatePath(),
+			RefreshToken: os.Getenv("KAMAL_PROXY_REFRESH_TOKEN"),
+			SourceToken:  os.Getenv("KAMAL_PROXY_DOMAINS_TOKEN"),
+		}, manager, router)
+
+		router.SetDynamicDomainManager(dynamicDomains)
+	}
+
+	// Initialize certificate registry if ACME is configured
+	var renewalManager *server.CertificateRenewalManager
+	if globalConfig.HasACMEConfig() {
+		manager, err := c.initCertificateRegistry(router)
+		if err != nil {
+			slog.Error("Failed to initialize certificate registry", "error", err)
+			// Continue without registry - will fall back to per-service certs
+		} else {
+			renewalManager = manager
+		}
+	}
 
 	s := server.NewServer(&globalConfig, router)
 	err := s.Start()
@@ -51,11 +113,49 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Stop()
 
+	if dynamicDomains != nil {
+		// Start after the listeners are bound (pre-flight probes and HTTP-01
+		// challenges route through them), and stop before they close so
+		// in-flight orders can still validate during shutdown.
+		dynamicDomains.Start()
+		defer dynamicDomains.Stop()
+	}
+
+	if renewalManager != nil {
+		// Start background renewal after the registry is ready; stop it during
+		// shutdown so an in-flight renewal can settle before we exit.
+		renewalManager.Start()
+		defer renewalManager.Stop()
+	}
+
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
 	<-ch
 
 	return nil
+}
+
+func (c *runCommand) initCertificateRegistry(router *server.Router) (*server.CertificateRenewalManager, error) {
+	config := globalConfig.CertificateRegistryConfig()
+
+	registry, err := server.NewCertificateRegistry(config)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx := context.Background()
+	if err := registry.Initialize(ctx); err != nil {
+		return nil, err
+	}
+
+	router.SetCertificateRegistry(registry)
+	slog.Info("Certificate registry initialized",
+		"email", config.Email,
+		"dns_provider", config.DNSProvider,
+		"prefer_wildcard", config.PreferWildcard,
+	)
+
+	return server.NewCertificateRenewalManager(registry), nil
 }
 
 func (c *runCommand) setLogger() {

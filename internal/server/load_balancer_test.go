@@ -253,6 +253,20 @@ func TestLoadBalancer_TargetHeader(t *testing.T) {
 	checkHeader("POST", "existing, "+writer.Address(), "existing")
 }
 
+func TestLoadBalancer_HealthyTargets(t *testing.T) {
+	lb := testLoadBalancerWithHandlers(t,
+		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
+		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
+	)
+
+	require.NoError(t, lb.WaitUntilHealthy(time.Second))
+	assert.Len(t, lb.HealthyTargets(), 2)
+
+	unhealthy := NewLoadBalancer(TargetList{}, DefaultWriterAffinityTimeout, false)
+	t.Cleanup(unhealthy.Dispose)
+	assert.Empty(t, unhealthy.HealthyTargets())
+}
+
 // Helpers
 
 func testLoadBalancerWithHandlers(t *testing.T, handlers ...http.HandlerFunc) *LoadBalancer {

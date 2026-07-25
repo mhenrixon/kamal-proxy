@@ -38,6 +38,9 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.TLSPrivateKeyPath, "tls-private-key-path", "", "Configure custom TLS private key path (PEM format)")
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.ACMECachePath, "tls-acme-cache-path", globalConfig.CertificatePath(), "Location to store ACME assets")
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.ServiceOptions.TLSRedirect, "tls-redirect", true, "Redirect HTTP traffic to HTTPS")
+	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.TLSDomainsSource, "tls-domains-source", "", "Fetch additional TLS domains from this endpoint (path resolved against the service, or absolute URL)")
+	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.TLSDomainsInterval, "tls-domains-interval", 0, "Interval between domain source polls (default 5m)")
+	deployCommand.cmd.Flags().IntVar(&deployCommand.args.ServiceOptions.TLSDomainsBatchSize, "tls-domains-batch-size", 0, "Dynamic domains to batch per certificate (default 1, max 25)")
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.CanonicalHost, "canonical-host", "", "Redirect all requests to this host (e.g., force root or www)")
 
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.DeploymentOptions.DeployTimeout, "deploy-timeout", server.DefaultDeployTimeout, "Maximum time to wait for the new target to become healthy")

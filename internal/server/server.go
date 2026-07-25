@@ -46,18 +46,15 @@ func NewServer(config *Config, router *Router) *Server {
 }
 
 func (s *Server) Start() error {
-	err := s.startMetricsServer()
-	if err != nil {
+	if err := s.startMetricsServer(); err != nil {
 		return err
 	}
 
-	err = s.startHTTPServers()
-	if err != nil {
+	if err := s.startHTTPServers(); err != nil {
 		return err
 	}
 
-	err = s.startCommandHandler()
-	if err != nil {
+	if err := s.startCommandHandler(); err != nil {
 		return err
 	}
 
@@ -228,6 +225,16 @@ func (s *Server) buildHandler() http.Handler {
 	handler = WithLoggingMiddleware(slog.Default(), s.config.HttpPort, s.config.HttpsPort, handler)
 	handler = WithRequestIDMiddleware(handler)
 	handler = WithRequestStartMiddleware(handler)
+
+	// Intercept ACME HTTP-01 challenges before other handlers
+	if sanManager := s.router.SANCertManager(); sanManager != nil {
+		handler = sanManager.HTTPHandler(handler)
+	}
+
+	// Mount the domain refresh nudge and pre-flight probe endpoints
+	if dynamicDomains := s.router.DynamicDomainManager(); dynamicDomains != nil {
+		handler = dynamicDomains.WrapHandler(handler)
+	}
 
 	return handler
 }

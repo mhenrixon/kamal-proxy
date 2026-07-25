@@ -4,9 +4,9 @@ permissions: {}
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "dash" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "dash" ]
 
 jobs:
   lint-actions:
