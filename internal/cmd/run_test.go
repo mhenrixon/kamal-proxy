@@ -10,6 +10,14 @@ import (
 	"github.com/basecamp/kamal-proxy/internal/server"
 )
 
+func TestRunCommand_IgnoreRestoreErrorsFlag(t *testing.T) {
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("ignore-restore-errors")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
+}
+
 func TestRunCommand_TimeoutFlagDefaults(t *testing.T) {
 	tests := []struct {
 		flag     string

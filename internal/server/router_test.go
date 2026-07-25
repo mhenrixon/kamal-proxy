@@ -773,6 +773,95 @@ func TestRouter_RestoreLastSavedState(t *testing.T) {
 	assert.Equal(t, "third", body)
 }
 
+func TestRouter_RestoreWritesBackupAfterCleanDecode(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	_, backend := testBackend(t, "ok", http.StatusOK)
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.DeployService("service1", []string{backend}, defaultEmptyReaders, defaultServiceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	router = NewRouter(statePath)
+	require.NoError(t, router.RestoreLastSavedState())
+
+	require.Len(t, decodeStateFile(t, statePath+".bak"), 1)
+}
+
+func TestRouter_RestoreFromBackupWhenPrimaryCorrupt(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	_, backend := testBackend(t, "ok", http.StatusOK)
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.DeployService("service1", []string{backend}, defaultEmptyReaders, defaultServiceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	// A clean restore writes the last-known-good backup.
+	router = NewRouter(statePath)
+	require.NoError(t, router.RestoreLastSavedState())
+
+	// Tear the primary; the next boot should recover from the backup.
+	require.NoError(t, os.WriteFile(statePath, []byte(`[{"name": "service1", "opti`), 0644))
+
+	router = NewRouter(statePath)
+	require.NoError(t, router.RestoreLastSavedState())
+
+	statusCode, body := sendGETRequest(router, "http://example.com/")
+	assert.Equal(t, http.StatusOK, statusCode)
+	assert.Equal(t, "ok", body)
+
+	// The primary was repaired from the backup.
+	require.Len(t, decodeStateFile(t, statePath), 1)
+}
+
+func TestRouter_RestoreFailsWhenPrimaryAndBackupCorrupt(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	require.NoError(t, os.WriteFile(statePath, []byte(`[{"name`), 0644))
+	require.NoError(t, os.WriteFile(statePath+".bak", []byte(`{"vers`), 0644))
+
+	router := NewRouter(statePath)
+	require.Error(t, router.RestoreLastSavedState())
+}
+
+func TestRouter_RestoreFailsWhenPrimaryCorruptAndNoBackup(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	require.NoError(t, os.WriteFile(statePath, []byte(""), 0644))
+
+	router := NewRouter(statePath)
+	require.Error(t, router.RestoreLastSavedState())
+}
+
+func TestRouter_RestoreRemovesStaleTempFile(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(statePath+".tmp", []byte("{garbage"), 0644))
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.RestoreLastSavedState())
+
+	_, err := os.Stat(statePath + ".tmp")
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestRouter_RestoreAcceptsVersionedEnvelope(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	_, backend := testBackend(t, "ok", http.StatusOK)
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.DeployService("service1", []string{backend}, defaultEmptyReaders, defaultServiceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	// Rewrap the bare-array state in the future envelope form.
+	services, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	envelope := fmt.Sprintf(`{"version": 1, "services": %s}`, services)
+	require.NoError(t, os.WriteFile(statePath, []byte(envelope), 0644))
+
+	router = NewRouter(statePath)
+	require.NoError(t, router.RestoreLastSavedState())
+
+	statusCode, body := sendGETRequest(router, "http://example.com/")
+	assert.Equal(t, http.StatusOK, statusCode)
+	assert.Equal(t, "ok", body)
+}
+
 func TestRouter_SavingStateLeavesNoTempFile(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	_, backend := testBackend(t, "ok", http.StatusOK)

@@ -65,6 +65,12 @@ func (c Config) StatePath() string {
 	return path.Join(c.dataDirectory(), "kamal-proxy.state")
 }
 
+// StateBackupPath is the last-known-good copy of StatePath, written after each
+// clean restore and used to recover from a torn or corrupted state file.
+func (c Config) StateBackupPath() string {
+	return c.StatePath() + ".bak"
+}
+
 func (c Config) CertificatePath() string {
 	return path.Join(c.dataDirectory(), "certs")
 }

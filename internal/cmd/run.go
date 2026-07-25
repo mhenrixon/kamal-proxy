@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,9 +15,10 @@ import (
 )
 
 type runCommand struct {
-	cmd              *cobra.Command
-	debugLogsEnabled bool
-	acmeDNSProvider  string
+	cmd                 *cobra.Command
+	debugLogsEnabled    bool
+	acmeDNSProvider     string
+	ignoreRestoreErrors bool
 }
 
 func newRunCommand() *runCommand {
@@ -32,6 +34,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().IntVar(&globalConfig.HttpsPort, "https-port", getEnvInt("HTTPS_PORT", server.DefaultHttpsPort), "Port to serve HTTPS traffic on")
 	runCommand.cmd.Flags().IntVar(&globalConfig.MetricsPort, "metrics-port", getEnvInt("METRICS_PORT", 0), "Publish metrics on the specified port (default zero to disable)")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.HTTP3Enabled, "http3", false, "Enable HTTP/3")
+	runCommand.cmd.Flags().BoolVar(&runCommand.ignoreRestoreErrors, "ignore-restore-errors", getEnvBool("IGNORE_RESTORE_ERRORS", false), "Boot with an empty routing state when restoring the saved state fails")
 
 	// Listener connection timeouts
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadHeaderTimeout, "read-header-timeout", getEnvDuration("READ_HEADER_TIMEOUT", server.DefaultReadHeaderTimeout), "Maximum time a client may take to send request headers (zero to disable)")
@@ -64,7 +67,12 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 
 	router := server.NewRouter(globalConfig.StatePath())
 
-	router.RestoreLastSavedState()
+	if err := router.RestoreLastSavedState(); err != nil {
+		if !c.ignoreRestoreErrors {
+			return fmt.Errorf("failed to restore saved state (use --ignore-restore-errors to boot with no services): %w", err)
+		}
+		slog.Error("Continuing with empty routing state", "error", err)
+	}
 
 	var dynamicDomains *server.DynamicDomainManager
 
