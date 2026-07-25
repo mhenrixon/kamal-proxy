@@ -3,11 +3,13 @@ package server
 import (
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -771,11 +773,75 @@ func TestRouter_RestoreLastSavedState(t *testing.T) {
 	assert.Equal(t, "third", body)
 }
 
+func TestRouter_SavingStateLeavesNoTempFile(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	_, backend := testBackend(t, "ok", http.StatusOK)
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.DeployService("service1", []string{backend}, defaultEmptyReaders, defaultServiceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	_, err := os.Stat(statePath + ".tmp")
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	require.Len(t, decodeStateFile(t, statePath), 1)
+}
+
+func TestRouter_SavingStateReplacesStaleTempFile(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(statePath+".tmp", []byte("{garbage"), 0644))
+
+	_, backend := testBackend(t, "ok", http.StatusOK)
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.DeployService("service1", []string{backend}, defaultEmptyReaders, defaultServiceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	_, err := os.Stat(statePath + ".tmp")
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	require.Len(t, decodeStateFile(t, statePath), 1)
+}
+
+func TestRouter_ConcurrentStateSavesProduceValidState(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	_, backend := testBackend(t, "ok", http.StatusOK)
+
+	router := NewRouter(statePath)
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			name := fmt.Sprintf("service%d", i)
+			serviceOptions := defaultServiceOptions
+			serviceOptions.Hosts = []string{fmt.Sprintf("service%d.example.com", i)}
+
+			for range 10 {
+				assert.NoError(t, router.DeployService(name, []string{backend}, defaultEmptyReaders, serviceOptions, defaultTargetOptions, defaultDeploymentOptions))
+				assert.NoError(t, router.RemoveService(name))
+			}
+		})
+	}
+	wg.Wait()
+
+	decodeStateFile(t, statePath)
+}
+
 // Helpers
 
 func testRouter(t *testing.T) *Router {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	return NewRouter(statePath)
+}
+
+func decodeStateFile(t *testing.T, statePath string) []*Service {
+	t.Helper()
+
+	f, err := os.Open(statePath)
+	require.NoError(t, err)
+	defer f.Close()
+
+	var services []*Service
+	require.NoError(t, json.NewDecoder(f).Decode(&services))
+	return services
 }
 
 func sendGETRequest(router *Router, url string) (int, string) {

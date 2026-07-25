@@ -39,6 +39,7 @@ type Router struct {
 	statePath            string
 	services             *ServiceMap
 	serviceLock          sync.RWMutex
+	saveLock             sync.Mutex
 	sanCertManager       *SANCertManager
 	dynamicDomainManager *DynamicDomainManager
 	certRegistry         *CertificateRegistry
@@ -422,6 +423,11 @@ func (r *Router) installLoadBalancer(name string, slot TargetSlot, lb *LoadBalan
 	return replaced, err
 }
 
+// SaveState flushes the current routing state to disk.
+func (r *Router) SaveState() error {
+	return r.saveStateSnapshot()
+}
+
 func (r *Router) saveStateSnapshot() error {
 	services := []*Service{}
 	r.withReadLock(func() error {
@@ -431,13 +437,18 @@ func (r *Router) saveStateSnapshot() error {
 		return nil
 	})
 
-	f, err := os.Create(r.statePath)
+	data, err := json.Marshal(services)
 	if err != nil {
+		slog.Error("Unable to save state", "error", err, "path", r.statePath)
 		return err
 	}
 
-	err = json.NewEncoder(f).Encode(services)
-	if err != nil {
+	// Saves are triggered by deferred calls in concurrent RPC handlers, and
+	// they share one temp file path — serialize the writers.
+	r.saveLock.Lock()
+	defer r.saveLock.Unlock()
+
+	if err := writeFileAtomic(r.statePath, data, 0644); err != nil {
 		slog.Error("Unable to save state", "error", err, "path", r.statePath)
 		return err
 	}
