@@ -42,6 +42,7 @@ type Router struct {
 	services             *ServiceMap
 	serviceLock          sync.RWMutex
 	saveLock             sync.Mutex
+	recheckOnRestore     bool
 	sanCertManager       *SANCertManager
 	dynamicDomainManager *DynamicDomainManager
 	certRegistry         *CertificateRegistry
@@ -71,6 +72,12 @@ func NewRouter(statePath string) *Router {
 		statePath: statePath,
 		services:  NewServiceMap(),
 	}
+}
+
+// EnableTargetRecheckOnRestore makes RestoreLastSavedState re-verify restored
+// targets with live health checks instead of assuming they are still healthy.
+func (r *Router) EnableTargetRecheckOnRestore() {
+	r.recheckOnRestore = true
 }
 
 func (r *Router) SetSANCertManager(manager *SANCertManager) {
@@ -162,6 +169,12 @@ func (r *Router) RestoreLastSavedState() error {
 
 		return nil
 	})
+
+	if r.recheckOnRestore {
+		for _, service := range services {
+			service.RecheckTargetHealth()
+		}
+	}
 
 	slog.Info("Restored saved state", "path", r.statePath)
 	return nil

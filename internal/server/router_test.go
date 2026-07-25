@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -883,6 +884,81 @@ func TestRouter_RestoreAcceptsVersionedEnvelope(t *testing.T) {
 	statusCode, body := sendGETRequest(router, "http://example.com/")
 	assert.Equal(t, http.StatusOK, statusCode)
 	assert.Equal(t, "ok", body)
+}
+
+func TestRouter_RecheckOnRestoreDemotesDeadTargets(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	backendServer, backend := testBackend(t, "ok", http.StatusOK)
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.DeployService("service1", []string{backend}, defaultEmptyReaders, defaultServiceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	backendServer.Close()
+
+	router = NewRouter(statePath)
+	router.EnableTargetRecheckOnRestore()
+	require.NoError(t, router.RestoreLastSavedState())
+
+	// The dead target should be demoted to an accurate 503 instead of
+	// serving 502s forever.
+	require.Eventually(t, func() bool {
+		statusCode, _ := sendGETRequest(router, "http://example.com/")
+		return statusCode == http.StatusServiceUnavailable
+	}, 5*time.Second, 100*time.Millisecond)
+}
+
+func TestRouter_RestoreWithoutRecheckTrustsDeadTargets(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	backendServer, backend := testBackend(t, "ok", http.StatusOK)
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.DeployService("service1", []string{backend}, defaultEmptyReaders, defaultServiceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	backendServer.Close()
+
+	router = NewRouter(statePath)
+	require.NoError(t, router.RestoreLastSavedState())
+
+	// Default behavior preserved: the restored target is trusted blindly.
+	statusCode, _ := sendGETRequest(router, "http://example.com/")
+	assert.Equal(t, http.StatusBadGateway, statusCode)
+}
+
+func TestRouter_RecheckOnRestoreRepromotesRecoveredTargets(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	var healthy atomic.Bool
+	healthy.Store(true)
+	_, backend := testBackendWithHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/up" && !healthy.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.DeployService("service1", []string{backend}, defaultEmptyReaders, defaultServiceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	healthy.Store(false)
+
+	router = NewRouter(statePath)
+	router.EnableTargetRecheckOnRestore()
+	require.NoError(t, router.RestoreLastSavedState())
+
+	require.Eventually(t, func() bool {
+		statusCode, _ := sendGETRequest(router, "http://example.com/")
+		return statusCode == http.StatusServiceUnavailable
+	}, 5*time.Second, 100*time.Millisecond)
+
+	// Restored services keep their health checks running, so a recovered
+	// target rejoins the pool.
+	healthy.Store(true)
+
+	require.Eventually(t, func() bool {
+		statusCode, _ := sendGETRequest(router, "http://example.com/")
+		return statusCode == http.StatusOK
+	}, 5*time.Second, 100*time.Millisecond)
 }
 
 func TestRouter_SavingStateLeavesNoTempFile(t *testing.T) {

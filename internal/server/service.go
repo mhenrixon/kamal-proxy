@@ -440,6 +440,17 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 	return nil
 }
 
+// RecheckTargetHealth re-verifies restored targets instead of trusting the
+// saved state's assumption that they are still healthy.
+func (s *Service) RecheckTargetHealth() {
+	if s.active != nil {
+		s.active.RecheckHealth()
+	}
+	if s.rollout != nil {
+		s.rollout.RecheckHealth()
+	}
+}
+
 func (s *Service) Drain(timeout time.Duration) {
 	PerformConcurrently(
 		func() {

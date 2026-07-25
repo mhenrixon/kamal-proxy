@@ -18,6 +18,14 @@ func TestRunCommand_IgnoreRestoreErrorsFlag(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
+func TestRunCommand_RecheckTargetsOnRestoreFlag(t *testing.T) {
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("recheck-targets-on-restore")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
+}
+
 func TestRunCommand_DataDirFlag(t *testing.T) {
 	globalConfig = server.Config{}
 

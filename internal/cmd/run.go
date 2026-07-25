@@ -15,10 +15,11 @@ import (
 )
 
 type runCommand struct {
-	cmd                 *cobra.Command
-	debugLogsEnabled    bool
-	acmeDNSProvider     string
-	ignoreRestoreErrors bool
+	cmd                     *cobra.Command
+	debugLogsEnabled        bool
+	acmeDNSProvider         string
+	ignoreRestoreErrors     bool
+	recheckTargetsOnRestore bool
 }
 
 func newRunCommand() *runCommand {
@@ -35,6 +36,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().IntVar(&globalConfig.MetricsPort, "metrics-port", getEnvInt("METRICS_PORT", 0), "Publish metrics on the specified port (default zero to disable)")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.HTTP3Enabled, "http3", false, "Enable HTTP/3")
 	runCommand.cmd.Flags().BoolVar(&runCommand.ignoreRestoreErrors, "ignore-restore-errors", getEnvBool("IGNORE_RESTORE_ERRORS", false), "Boot with an empty routing state when restoring the saved state fails")
+	runCommand.cmd.Flags().BoolVar(&runCommand.recheckTargetsOnRestore, "recheck-targets-on-restore", getEnvBool("RECHECK_TARGETS_ON_RESTORE", false), "Re-verify restored targets with health checks instead of assuming they are healthy")
 	runCommand.cmd.Flags().StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/kamal-proxy)")
 
 	// Listener connection timeouts
@@ -74,6 +76,10 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	}
 
 	router := server.NewRouter(globalConfig.StatePath())
+
+	if c.recheckTargetsOnRestore {
+		router.EnableTargetRecheckOnRestore()
+	}
 
 	if err := router.RestoreLastSavedState(); err != nil {
 		if !c.ignoreRestoreErrors {
