@@ -42,6 +42,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadTimeout, "read-timeout", getEnvDuration("READ_TIMEOUT", server.DefaultReadTimeout), "Maximum time to read an entire request, including the body (zero to disable; non-zero truncates slow uploads)")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.WriteTimeout, "write-timeout", getEnvDuration("WRITE_TIMEOUT", server.DefaultWriteTimeout), "Maximum time to write an entire response (zero to disable; non-zero truncates SSE and streaming responses)")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.IdleTimeout, "idle-timeout", getEnvDuration("IDLE_TIMEOUT", server.DefaultIdleTimeout), "Maximum time an idle keep-alive connection is kept open (zero to disable)")
+	runCommand.cmd.Flags().DurationVar(&globalConfig.ShutdownTimeout, "shutdown-timeout", getEnvDuration("SHUTDOWN_TIMEOUT", server.DefaultShutdownTimeout), "Maximum time to wait for in-flight requests to drain on shutdown")
 
 	// ACME/TLS configuration
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEEmail, "acme-email", getEnvString("ACME_EMAIL", ""), "Email address for ACME account registration (required for automatic TLS)")

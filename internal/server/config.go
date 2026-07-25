@@ -33,6 +33,10 @@ const (
 	// text/event-stream bypass in response_buffer_middleware.go) and long
 	// downloads.
 	DefaultWriteTimeout = 0
+
+	// DefaultShutdownTimeout bounds how long a stopping server waits for
+	// in-flight requests to drain before closing their connections.
+	DefaultShutdownTimeout = 10 * time.Second
 )
 
 type Config struct {
@@ -46,6 +50,7 @@ type Config struct {
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
+	ShutdownTimeout   time.Duration
 
 	AlternateConfigDir string
 

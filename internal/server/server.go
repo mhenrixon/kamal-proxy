@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -9,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/acme"
@@ -20,8 +20,6 @@ import (
 
 const (
 	ACMEStagingDirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
-
-	shutdownTimeout = 10 * time.Second
 )
 
 type Server struct {
@@ -63,11 +61,13 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	timeout := cmp.Or(s.config.ShutdownTimeout, DefaultShutdownTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	PerformConcurrently(
 		func() { _ = s.commandHandler.Close() },
+		func() { s.router.DrainAll(timeout) },
 		func() { s.stopHTTPServer(ctx, s.httpServer) },
 		func() { s.stopHTTPServer(ctx, s.httpsServer) },
 		func() {

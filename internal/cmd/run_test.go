@@ -36,6 +36,7 @@ func TestRunCommand_TimeoutFlagDefaults(t *testing.T) {
 		{"read-timeout", server.DefaultReadTimeout},
 		{"write-timeout", server.DefaultWriteTimeout},
 		{"idle-timeout", server.DefaultIdleTimeout},
+		{"shutdown-timeout", server.DefaultShutdownTimeout},
 	}
 
 	for _, tt := range tests {

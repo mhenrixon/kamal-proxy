@@ -443,7 +443,9 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 func (s *Service) Drain(timeout time.Duration) {
 	PerformConcurrently(
 		func() {
-			s.active.DrainAll(timeout)
+			if s.active != nil {
+				s.active.DrainAll(timeout)
+			}
 		},
 		func() {
 			if s.rollout != nil {

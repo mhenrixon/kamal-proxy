@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/assert"
@@ -104,6 +105,72 @@ func TestServer_DeployingHTTPS(t *testing.T) {
 			con.Close()
 		})
 	})
+}
+
+func TestServer_StopAllowsInflightRequestsToComplete(t *testing.T) {
+	// Health checks also hit the backend, so gate on a path they don't use.
+	handlerStarted := make(chan struct{})
+	target := testTarget(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow" {
+			close(handlerStarted)
+			time.Sleep(300 * time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	config := testConfig(t)
+	router := NewRouter(config.StatePath())
+	server := NewServer(config, router)
+	require.NoError(t, server.Start())
+
+	testDeployTarget(t, target, server, defaultServiceOptions)
+
+	responses := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/slow", server.HttpPort()))
+		if err == nil {
+			responses <- resp
+		}
+		close(responses)
+	}()
+
+	<-handlerStarted
+	server.Stop()
+
+	resp, ok := <-responses
+	require.True(t, ok, "in-flight request should have completed during shutdown")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestServer_StopRespectsConfiguredShutdownTimeout(t *testing.T) {
+	// Health checks also hit the backend, so gate on a path they don't use.
+	handlerStarted := make(chan struct{})
+	target := testTarget(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow" {
+			close(handlerStarted)
+			time.Sleep(5 * time.Second)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	config := testConfig(t)
+	config.ShutdownTimeout = 250 * time.Millisecond
+	router := NewRouter(config.StatePath())
+	server := NewServer(config, router)
+	require.NoError(t, server.Start())
+
+	testDeployTarget(t, target, server, defaultServiceOptions)
+
+	go func() {
+		_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/slow", server.HttpPort()))
+	}()
+
+	<-handlerStarted
+
+	started := time.Now()
+	server.Stop()
+
+	assert.Less(t, time.Since(started), 3*time.Second, "Stop should be bounded by the configured shutdown timeout")
 }
 
 func TestServer_SavesStateOnStop(t *testing.T) {

@@ -519,6 +519,26 @@ func (r *Router) SaveState() error {
 	return r.saveStateSnapshot()
 }
 
+// DrainAll drains every service's targets concurrently, cancelling hijacked
+// connections and waiting out in-flight requests up to timeout.
+func (r *Router) DrainAll(timeout time.Duration) {
+	services := []*Service{}
+	r.withReadLock(func() error {
+		for _, service := range r.services.All() {
+			if service.active != nil || service.rollout != nil {
+				services = append(services, service)
+			}
+		}
+		return nil
+	})
+
+	var wg sync.WaitGroup
+	for _, service := range services {
+		wg.Go(func() { service.Drain(timeout) })
+	}
+	wg.Wait()
+}
+
 func (r *Router) saveStateSnapshot() error {
 	services := []*Service{}
 	r.withReadLock(func() error {
