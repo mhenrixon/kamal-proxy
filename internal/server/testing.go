@@ -69,16 +69,35 @@ func testBackendWithHandler(t testing.TB, handler http.HandlerFunc) (*httptest.S
 	return server, serverURL.Host
 }
 
-func testServer(t testing.TB, http3Enabled bool) *Server {
+// testConfig returns a Config bound to ephemeral ports, carrying the same
+// listener timeout defaults the run command ships.
+func testConfig(t testing.TB) *Config {
 	t.Helper()
 
-	config := &Config{
+	return &Config{
 		Bind:               "127.0.0.1",
 		HttpPort:           0,
 		HttpsPort:          0,
 		AlternateConfigDir: t.TempDir(),
-		HTTP3Enabled:       http3Enabled,
+		ReadHeaderTimeout:  DefaultReadHeaderTimeout,
+		ReadTimeout:        DefaultReadTimeout,
+		WriteTimeout:       DefaultWriteTimeout,
+		IdleTimeout:        DefaultIdleTimeout,
 	}
+}
+
+func testServer(t testing.TB, http3Enabled bool) *Server {
+	t.Helper()
+
+	config := testConfig(t)
+	config.HTTP3Enabled = http3Enabled
+
+	return testServerWithConfig(t, config)
+}
+
+func testServerWithConfig(t testing.TB, config *Config) *Server {
+	t.Helper()
+
 	router := NewRouter(config.StatePath())
 	server := NewServer(config, router)
 	err := server.Start()

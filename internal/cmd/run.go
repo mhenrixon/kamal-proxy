@@ -30,6 +30,11 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().IntVar(&globalConfig.MetricsPort, "metrics-port", getEnvInt("METRICS_PORT", 0), "Publish metrics on the specified port (default zero to disable)")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.HTTP3Enabled, "http3", false, "Enable HTTP/3")
 
+	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadHeaderTimeout, "read-header-timeout", getEnvDuration("READ_HEADER_TIMEOUT", server.DefaultReadHeaderTimeout), "Maximum time a client may take to send request headers (zero to disable)")
+	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadTimeout, "read-timeout", getEnvDuration("READ_TIMEOUT", server.DefaultReadTimeout), "Maximum time to read an entire request, including the body (zero to disable; non-zero truncates slow uploads)")
+	runCommand.cmd.Flags().DurationVar(&globalConfig.WriteTimeout, "write-timeout", getEnvDuration("WRITE_TIMEOUT", server.DefaultWriteTimeout), "Maximum time to write an entire response (zero to disable; non-zero truncates SSE and streaming responses)")
+	runCommand.cmd.Flags().DurationVar(&globalConfig.IdleTimeout, "idle-timeout", getEnvDuration("IDLE_TIMEOUT", server.DefaultIdleTimeout), "Maximum time an idle keep-alive connection is kept open (zero to disable)")
+
 	return runCommand
 }
 

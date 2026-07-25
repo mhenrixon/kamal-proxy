@@ -108,6 +108,19 @@ func (s *Server) HttpsPort() int {
 
 // Private
 
+// newHTTPServer builds an http.Server carrying the configured connection
+// timeouts. Every listener shares one timeout policy so none of them is left
+// unbounded.
+func (s *Server) newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: s.config.ReadHeaderTimeout,
+		ReadTimeout:       s.config.ReadTimeout,
+		WriteTimeout:      s.config.WriteTimeout,
+		IdleTimeout:       s.config.IdleTimeout,
+	}
+}
+
 func (s *Server) startHTTP3Server(handler http.Handler, httpsAddr string) error {
 	os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 
@@ -118,7 +131,8 @@ func (s *Server) startHTTP3Server(handler http.Handler, httpsAddr string) error 
 
 	s.http3Listener = http3Listener
 	s.http3Server = &http3.Server{
-		Handler: handler,
+		Handler:     handler,
+		IdleTimeout: s.config.IdleTimeout,
 		TLSConfig: &tls.Config{
 			MinVersion:     tls.VersionTLS13,
 			NextProtos:     []string{"h3"},
@@ -141,27 +155,23 @@ func (s *Server) startHTTPServers() error {
 		return err
 	}
 	s.httpListener = httpListener
-	s.httpServer = &http.Server{
-		Handler: handler,
-	}
+	s.httpServer = s.newHTTPServer(handler)
 
 	httpsListener, err := net.Listen("tcp", httpsAddr)
 	if err != nil {
 		return err
 	}
 	s.httpsListener = httpsListener
-	s.httpsServer = &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if s.config.HTTP3Enabled {
-				s.http3Server.SetQUICHeaders(w.Header())
-			}
+	s.httpsServer = s.newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.config.HTTP3Enabled {
+			s.http3Server.SetQUICHeaders(w.Header())
+		}
 
-			handler.ServeHTTP(w, r)
-		}),
-		TLSConfig: &tls.Config{
-			NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
-			GetCertificate: s.router.GetCertificate,
-		},
+		handler.ServeHTTP(w, r)
+	}))
+	s.httpsServer.TLSConfig = &tls.Config{
+		NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
+		GetCertificate: s.router.GetCertificate,
 	}
 
 	go s.httpServer.Serve(s.httpListener)
@@ -192,10 +202,8 @@ func (s *Server) startMetricsServer() error {
 		return err
 	}
 	s.metricsListener = l
-	s.metricsServer = &http.Server{
-		Addr:    addr,
-		Handler: handler,
-	}
+	s.metricsServer = s.newHTTPServer(handler)
+	s.metricsServer.Addr = addr
 
 	go s.metricsServer.Serve(s.metricsListener)
 
