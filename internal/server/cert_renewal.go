@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/basecamp/kamal-proxy/internal/metrics"
 	"github.com/basecamp/kamal-proxy/internal/server/acme"
 )
 
@@ -84,6 +85,10 @@ func (m *CertificateRenewalManager) renewalLoop() {
 }
 
 func (m *CertificateRenewalManager) checkAndRenew() {
+	// Refresh the totals/expiry gauges on every pass so they stay current even
+	// when nothing is due for renewal.
+	defer m.registry.reportCertificateMetrics()
+
 	m.registry.mu.RLock()
 	certsToRenew := make([]*ManagedCertificate, 0)
 	now := time.Now()
@@ -109,12 +114,16 @@ func (m *CertificateRenewalManager) checkAndRenew() {
 	slog.Info("Renewing certificates", "count", len(certsToRenew))
 
 	for _, cert := range certsToRenew {
-		if err := m.renewFn(cert); err != nil {
+		err := m.renewFn(cert)
+		if err != nil {
 			slog.Error("Failed to renew certificate",
 				"identifier", cert.Identifier,
 				"domains", cert.Domains,
 				"error", err,
 			)
+		}
+		for _, domain := range cert.Domains {
+			metrics.Tracker.IncCertificateRenewals(domain, err == nil)
 		}
 	}
 }
