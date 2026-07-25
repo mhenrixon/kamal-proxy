@@ -26,6 +26,14 @@ func TestRunCommand_RecheckTargetsOnRestoreFlag(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
+func TestRunCommand_ReusePortFlag(t *testing.T) {
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("reuse-port")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
+}
+
 func TestRunCommand_DataDirFlag(t *testing.T) {
 	globalConfig = server.Config{}
 

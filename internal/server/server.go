@@ -109,6 +109,24 @@ func (s *Server) HttpsPort() int {
 
 // Private
 
+// listen creates a TCP listener, optionally with SO_REUSEPORT so an
+// overlapping proxy generation can bind the same address during a handoff.
+func (s *Server) listen(network, addr string) (net.Listener, error) {
+	if s.config.ReusePort {
+		lc := net.ListenConfig{Control: reusePortControl}
+		return lc.Listen(context.Background(), network, addr)
+	}
+	return net.Listen(network, addr)
+}
+
+func (s *Server) listenPacket(network, addr string) (net.PacketConn, error) {
+	if s.config.ReusePort {
+		lc := net.ListenConfig{Control: reusePortControl}
+		return lc.ListenPacket(context.Background(), network, addr)
+	}
+	return net.ListenPacket(network, addr)
+}
+
 // newHTTPServer builds an http.Server carrying the configured connection
 // timeouts. Every listener shares one timeout policy so none of them is left
 // unbounded.
@@ -125,7 +143,7 @@ func (s *Server) newHTTPServer(handler http.Handler) *http.Server {
 func (s *Server) startHTTP3Server(handler http.Handler, httpsAddr string) error {
 	os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 
-	http3Listener, err := net.ListenPacket("udp", httpsAddr)
+	http3Listener, err := s.listenPacket("udp", httpsAddr)
 	if err != nil {
 		return err
 	}
@@ -151,14 +169,14 @@ func (s *Server) startHTTPServers() error {
 
 	handler := s.buildHandler()
 
-	httpListener, err := net.Listen("tcp", httpAddr)
+	httpListener, err := s.listen("tcp", httpAddr)
 	if err != nil {
 		return err
 	}
 	s.httpListener = httpListener
 	s.httpServer = s.newHTTPServer(handler)
 
-	httpsListener, err := net.Listen("tcp", httpsAddr)
+	httpsListener, err := s.listen("tcp", httpsAddr)
 	if err != nil {
 		return err
 	}
@@ -198,7 +216,7 @@ func (s *Server) startMetricsServer() error {
 	addr := fmt.Sprintf("%s:%d", s.config.Bind, s.config.MetricsPort)
 	handler := metrics.Enable()
 
-	l, err := net.Listen("tcp", addr)
+	l, err := s.listen("tcp", addr)
 	if err != nil {
 		return err
 	}

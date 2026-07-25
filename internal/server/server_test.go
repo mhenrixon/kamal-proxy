@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -171,6 +172,48 @@ func TestServer_StopRespectsConfiguredShutdownTimeout(t *testing.T) {
 	server.Stop()
 
 	assert.Less(t, time.Since(started), 3*time.Second, "Stop should be bounded by the configured shutdown timeout")
+}
+
+func TestServer_ReusePortAllowsOverlappingGenerations(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("SO_REUSEPORT is not supported on this platform")
+	}
+
+	configA := testConfig(t)
+	configA.ReusePort = true
+	serverA := testServerWithConfig(t, configA)
+	testDeployTarget(t, testTarget(t, func(w http.ResponseWriter, r *http.Request) {}), serverA, defaultServiceOptions)
+
+	// A second generation binds the same ports while the first still serves.
+	configB := testConfig(t)
+	configB.ReusePort = true
+	configB.HttpPort = serverA.HttpPort()
+	configB.HttpsPort = serverA.HttpsPort()
+
+	routerB := NewRouter(configB.StatePath())
+	serverB := NewServer(configB, routerB)
+	require.NoError(t, serverB.Start())
+	t.Cleanup(serverB.Stop)
+
+	testDeployTarget(t, testTarget(t, func(w http.ResponseWriter, r *http.Request) {}), serverB, defaultServiceOptions)
+
+	// Whichever generation the kernel picks, requests keep succeeding.
+	for range 5 {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", serverA.HttpPort()))
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	}
+}
+
+func TestServer_WithoutReusePortSecondBindFails(t *testing.T) {
+	serverA := testServer(t, false)
+
+	configB := testConfig(t)
+	configB.HttpPort = serverA.HttpPort()
+	configB.HttpsPort = serverA.HttpsPort()
+
+	serverB := NewServer(configB, NewRouter(configB.StatePath()))
+	require.Error(t, serverB.Start())
 }
 
 func TestServer_SavesStateOnStop(t *testing.T) {

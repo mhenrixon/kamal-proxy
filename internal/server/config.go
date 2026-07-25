@@ -51,6 +51,7 @@ type Config struct {
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
+	ReusePort         bool
 
 	AlternateConfigDir string
 
