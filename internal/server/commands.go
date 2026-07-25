@@ -14,6 +14,11 @@ var registered sync.Once
 type CommandHandler struct {
 	rpcListener net.Listener
 	router      *Router
+	server      *Server
+}
+
+type DrainArgs struct {
+	Timeout time.Duration
 }
 
 type DeployArgs struct {
@@ -137,6 +142,19 @@ func (h *CommandHandler) Close() error {
 
 func (h *CommandHandler) Deploy(args DeployArgs, reply *bool) error {
 	return h.router.DeployService(args.Service, args.TargetURLs, args.ReaderURLs, args.ServiceOptions, args.TargetOptions, args.DeploymentOptions)
+}
+
+// Drain completes synchronously: a successful reply means in-flight requests
+// finished (or timed out) and the routing state is flushed to disk. The
+// process exits shortly after.
+func (h *CommandHandler) Drain(args DrainArgs, reply *bool) error {
+	if h.server == nil {
+		return errors.New("drain is not available")
+	}
+
+	err := h.server.BeginDrain(args.Timeout)
+	*reply = err == nil
+	return err
 }
 
 func (h *CommandHandler) Pause(args PauseArgs, reply *bool) error {

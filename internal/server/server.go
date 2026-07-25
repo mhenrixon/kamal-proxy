@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/acme"
@@ -34,13 +36,71 @@ type Server struct {
 	http3Server     *http3.Server
 	metricsServer   *http.Server
 	commandHandler  *CommandHandler
+	drainOnce       sync.Once
+	shutdownCh      chan struct{}
 }
 
 func NewServer(config *Config, router *Router) *Server {
 	return &Server{
-		config: config,
-		router: router,
+		config:     config,
+		router:     router,
+		shutdownCh: make(chan struct{}),
 	}
+}
+
+// ShutdownRequested is closed once a drain has completed and the process
+// should exit.
+func (s *Server) ShutdownRequested() <-chan struct{} {
+	return s.shutdownCh
+}
+
+// BeginDrain closes the public listeners, drains in-flight requests up to
+// timeout, saves state, and signals the run loop to exit. Under SO_REUSEPORT a
+// new generation holding the same ports keeps serving while this one leaves.
+// The RPC socket and metrics server stay up so the caller's reply can flush
+// and the drain remains observable; the run loop's deferred Stop tears them
+// down. A second call is a no-op.
+func (s *Server) BeginDrain(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = cmp.Or(s.config.ShutdownTimeout, DefaultShutdownTimeout)
+	}
+
+	s.drainOnce.Do(func() {
+		slog.Info("Draining", "timeout", timeout)
+
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		PerformConcurrently(
+			func() { s.router.DrainAll(timeout) },
+			func() { s.stopHTTPServer(ctx, s.httpServer) },
+			func() { s.stopHTTPServer(ctx, s.httpsServer) },
+			func() {
+				if s.http3Server != nil {
+					s.stopHTTPServer(ctx, s.http3Server)
+				}
+			},
+		)
+
+		s.httpListener.Close()
+		s.httpsListener.Close()
+		if s.http3Listener != nil {
+			s.http3Listener.Close()
+		}
+
+		_ = s.router.SaveState()
+
+		slog.Info("Drained")
+
+		// Give the RPC reply time to flush before the run loop tears down the
+		// command socket.
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			close(s.shutdownCh)
+		}()
+	})
+
+	return nil
 }
 
 func (s *Server) Start() error {
@@ -233,6 +293,7 @@ func (s *Server) startMetricsServer() error {
 
 func (s *Server) startCommandHandler() error {
 	s.commandHandler = NewCommandHandler(s.router)
+	s.commandHandler.server = s
 	_ = os.Remove(s.config.SocketPath())
 
 	return s.commandHandler.Start(s.config.SocketPath())
