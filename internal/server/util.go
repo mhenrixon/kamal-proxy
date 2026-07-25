@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"sync"
 )
 
@@ -12,4 +13,31 @@ func PerformConcurrently(fns ...func()) {
 	}
 
 	wg.Wait()
+}
+
+// writeFileAtomic writes data to path via a same-directory temp file, syncing
+// and renaming into place, so readers never observe a partial write.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmpPath := path + ".tmp"
+
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
 }

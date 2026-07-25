@@ -92,6 +92,10 @@ func (s *Server) Stop() {
 		s.metricsListener.Close()
 	}
 
+	// Flush routing state so the next boot restores exactly what was serving,
+	// even if a mutation raced the last deferred save.
+	_ = s.router.SaveState()
+
 	slog.Info("Server stopped")
 }
 

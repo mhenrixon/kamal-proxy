@@ -2,9 +2,11 @@ package server
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"testing"
 
 	"github.com/quic-go/quic-go/http3"
@@ -102,6 +104,30 @@ func TestServer_DeployingHTTPS(t *testing.T) {
 			con.Close()
 		})
 	})
+}
+
+func TestServer_SavesStateOnStop(t *testing.T) {
+	target := testTarget(t, func(w http.ResponseWriter, r *http.Request) {})
+
+	config := testConfig(t)
+	router := NewRouter(config.StatePath())
+	server := NewServer(config, router)
+	require.NoError(t, server.Start())
+
+	testDeployTarget(t, target, server, defaultServiceOptions)
+
+	// Remove the state file the deploy wrote, to prove Stop rewrites it.
+	require.NoError(t, os.Remove(config.StatePath()))
+
+	server.Stop()
+
+	f, err := os.Open(config.StatePath())
+	require.NoError(t, err)
+	defer f.Close()
+
+	var services []*Service
+	require.NoError(t, json.NewDecoder(f).Decode(&services))
+	require.Len(t, services, 1)
 }
 
 // Helpers
