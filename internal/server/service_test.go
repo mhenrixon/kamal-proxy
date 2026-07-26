@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 func TestService_ServeRequest(t *testing.T) {
@@ -160,6 +161,11 @@ func TestServiceOptions_Validate_DynamicDomains(t *testing.T) {
 	// A source requires TLS to be enabled
 	assertNotValid(ServiceOptions{TLSDomainsSource: "/domains"}, "tls-domains-source requires TLS")
 
+	// Upstream's on-demand TLS solves the same problem through a different
+	// manager, and only one of them can serve the handshake
+	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", TLSOnDemandURL: "https://app.internal/ask"},
+		"tls-domains-source cannot be combined with tls-on-demand-url")
+
 	// The source must be a path on the service or an absolute http(s) URL
 	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "domains"}, "tls-domains-source must be a path or an http(s) URL")
 	assertNotValid(ServiceOptions{TLSEnabled: true, TLSDomainsSource: "ftp://app.internal/domains"}, "tls-domains-source must be a path or an http(s) URL")
@@ -174,10 +180,17 @@ func TestServiceOptions_Validate_DynamicDomains(t *testing.T) {
 	assertNotValid(ServiceOptions{Hosts: []string{"example.com"}, TLSEnabled: true, TLSDomainsBatchSize: 5}, "tls-domains-batch-size requires tls-domains-source")
 	assertNotValid(ServiceOptions{Hosts: []string{"example.com"}, TLSEnabled: true, TLSDomainsInterval: time.Minute}, "tls-domains-interval requires tls-domains-source")
 
+	// An explicit on-demand URL is a per-service opt-in, so it wins over the
+	// proxy-wide SAN manager rather than being silently ignored
+	onDemandService, err := NewService("on-demand",
+		ServiceOptions{TLSEnabled: true, TLSOnDemandURL: "/ask"}, defaultTargetOptions, testSANCertManager(t))
+	require.NoError(t, err)
+	assert.IsType(t, &autocert.Manager{}, onDemandService.certManager)
+
 	// A catch-all TLS service must never register the empty host for
 	// certificate provisioning
 	manager := testSANCertManager(t)
-	_, err := NewService("catch-all", ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", Hosts: []string{""}}, defaultTargetOptions, manager)
+	_, err = NewService("catch-all", ServiceOptions{TLSEnabled: true, TLSDomainsSource: "/domains", Hosts: []string{""}}, defaultTargetOptions, manager)
 	require.NoError(t, err)
 	assert.Empty(t, manager.pendingDomains)
 
