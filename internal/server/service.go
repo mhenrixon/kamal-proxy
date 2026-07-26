@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -56,7 +57,21 @@ var (
 	ErrorUnableToLoadErrorPages              = errors.New("unable to load error pages")
 	ErrorAutomaticTLSDoesNotSupportWildcards = errors.New("automatic TLS does not support wildcards")
 	ErrServiceOptionsInvalid                 = errors.New("service options invalid")
+
+	contextKeyInternalRequest = contextKey("internal-request")
 )
+
+// markInternalRequest marks the context as belonging to an internal request:
+// one synthesized inside the proxy itself, such as a TLS on-demand check
+// probe, rather than arriving over a client connection.
+func markInternalRequest(ctx context.Context) context.Context {
+	return context.WithValue(ctx, contextKeyInternalRequest, true)
+}
+
+func isInternalRequest(r *http.Request) bool {
+	internal, _ := r.Context().Value(contextKeyInternalRequest).(bool)
+	return internal
+}
 
 type TargetSlot int
 
@@ -85,6 +100,7 @@ type ServiceOptions struct {
 	TLSEnabled                  bool          `json:"tls_enabled"`
 	TLSCertificatePath          string        `json:"tls_certificate_path"`
 	TLSPrivateKeyPath           string        `json:"tls_private_key_path"`
+	TLSOnDemandURL              string        `json:"tls_on_demand_url"`
 	TLSRedirect                 bool          `json:"tls_redirect"`
 	CanonicalHost               string        `json:"canonical_host"`
 	ACMEDirectory               string        `json:"acme_directory"`
@@ -93,9 +109,15 @@ type ServiceOptions struct {
 	StripPrefix                 bool          `json:"strip_prefix"`
 	WriterAffinityTimeout       time.Duration `json:"writer_affinity_timeout"`
 	ReadTargetsAcceptWebsockets bool          `json:"read_targets_accept_websockets"`
+	ExcludeMetricsPaths         []string      `json:"exclude_metrics_paths"`
+	ClientIPHeader              string        `json:"client_ip_header"`
 	TLSDomainsSource            string        `json:"tls_domains_source,omitempty"`
 	TLSDomainsInterval          time.Duration `json:"tls_domains_interval,omitempty"`
 	TLSDomainsBatchSize         int           `json:"tls_domains_batch_size,omitempty"`
+}
+
+func (so *ServiceOptions) ShouldExcludeMetrics(r *http.Request) bool {
+	return slices.Contains(so.ExcludeMetricsPaths, RoutedTargetPath(r))
 }
 
 func (so *ServiceOptions) Normalize() {
@@ -106,8 +128,28 @@ func (so *ServiceOptions) Normalize() {
 func (so ServiceOptions) Validate() error {
 	so.Normalize()
 
+	if so.TLSOnDemandURL != "" && !so.TLSEnabled {
+		return fmt.Errorf("%w: TLS must be enabled to use a TLS on-demand URL", ErrServiceOptionsInvalid)
+	}
+
 	if so.TLSEnabled {
-		if !so.HasConfiguredHosts() && so.TLSDomainsSource == "" {
+		if so.TLSOnDemandURL != "" {
+			if so.HasConfiguredHosts() {
+				return fmt.Errorf("%w: cannot set hosts when using a TLS on-demand URL", ErrServiceOptionsInvalid)
+			}
+
+			if so.TLSCertificatePath != "" || so.TLSPrivateKeyPath != "" {
+				return fmt.Errorf("%w: cannot use a custom TLS certificate with a TLS on-demand URL", ErrServiceOptionsInvalid)
+			}
+
+			if so.CanonicalHost != "" {
+				return fmt.Errorf("%w: cannot set a canonical host when using a TLS on-demand URL", ErrServiceOptionsInvalid)
+			}
+
+			if err := validateTLSOnDemandURL(so.TLSOnDemandURL); err != nil {
+				return fmt.Errorf("%w: %w", ErrServiceOptionsInvalid, err)
+			}
+		} else if !so.HasConfiguredHosts() && so.TLSDomainsSource == "" {
 			return fmt.Errorf("%w: host must be set when using TLS", ErrServiceOptionsInvalid)
 		}
 
@@ -138,6 +180,12 @@ func (so ServiceOptions) validateDynamicDomains() error {
 
 	if !so.TLSEnabled {
 		return fmt.Errorf("%w: tls-domains-source requires TLS to be enabled", ErrServiceOptionsInvalid)
+	}
+
+	// Both provision certificates for hosts that aren't known at deploy time, but
+	// through different managers -- only one of them can serve the handshake.
+	if so.TLSOnDemandURL != "" {
+		return fmt.Errorf("%w: tls-domains-source cannot be combined with tls-on-demand-url", ErrServiceOptionsInvalid)
 	}
 
 	// Dynamic domains are routed via the host-less catch-all binding; a
@@ -294,8 +342,12 @@ func (s *Service) StopRollout() error {
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	metrics.Tracker.AddInflightRequest(s.name)
-	defer metrics.Tracker.SubtractInflightRequest(s.name)
+	if s.options.ShouldExcludeMetrics(r) {
+		LoggingRequestContext(r).ExcludeMetrics = true
+	} else {
+		metrics.Tracker.AddInflightRequest(s.name)
+		defer metrics.Tracker.SubtractInflightRequest(s.name)
+	}
 
 	s.middleware.ServeHTTP(w, r)
 }
@@ -501,8 +553,9 @@ func (s *Service) createCertManager(options ServiceOptions) (CertManager, error)
 		}
 	}
 
-	// Use the shared SAN certificate manager when available
-	if s.sanCertManager != nil {
+	// Use the shared SAN certificate manager when available. An explicit
+	// on-demand URL is a per-service opt-in, so it wins over the shared manager.
+	if s.sanCertManager != nil && options.TLSOnDemandURL == "" {
 		for _, host := range options.Hosts {
 			if host == "" {
 				// Catch-all marker, not a provisionable domain
@@ -515,17 +568,36 @@ func (s *Service) createCertManager(options ServiceOptions) (CertManager, error)
 		return s.sanCertManager, nil
 	}
 
-	if options.TLSDomainsSource != "" {
+	if options.TLSDomainsSource != "" && s.sanCertManager == nil {
 		slog.Warn("tls-domains-source requires the proxy to run with --acme-email; dynamic domains will not receive certificates",
 			"service", s.name)
 	}
 
+	certCache := autocert.DirCache(options.ScopedCachePath())
+
+	hostPolicy, err := s.createHostPolicy(options, certCache)
+	if err != nil {
+		return nil, err
+	}
+
 	return &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
-		Cache:      autocert.DirCache(options.ScopedCachePath()),
-		HostPolicy: autocert.HostWhitelist(options.Hosts...),
+		Cache:      certCache,
+		HostPolicy: hostPolicy,
 		Client:     &acme.Client{DirectoryURL: options.ACMEDirectory},
 	}, nil
+}
+
+func (s *Service) createHostPolicy(options ServiceOptions, certCache autocert.Cache) (autocert.HostPolicy, error) {
+	if options.TLSOnDemandURL != "" {
+		checker, err := newTLSOnDemandChecker(s, options.TLSOnDemandURL, certCache)
+		if err != nil {
+			return nil, err
+		}
+		return checker.hostPolicy(), nil
+	}
+
+	return autocert.HostWhitelist(options.Hosts...), nil
 }
 
 func (s *Service) createMiddleware(options ServiceOptions, targetOptions TargetOptions, certManager CertManager) (http.Handler, error) {
@@ -552,6 +624,10 @@ func (s *Service) createMiddleware(options ServiceOptions, targetOptions TargetO
 	if certManager != nil {
 		slog.Debug("Using ACME handler", "service", s.name)
 		handler = certManager.HTTPHandler(handler)
+	}
+
+	if options.ClientIPHeader != "" {
+		handler = WithClientIPMiddleware(options.ClientIPHeader, handler)
 	}
 
 	return handler, nil
@@ -626,28 +702,30 @@ func (s *Service) handleRedirectsIfNeeded(w http.ResponseWriter, r *http.Request
 // TLS redirection or canonical host redirection should occur. If no redirect is
 // needed, it returns an empty string.
 func (s *Service) redirectURLIfNeeded(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.Host)
-	if err != nil {
-		host = r.Host
-	}
+	if !isInternalRequest(r) {
+		host, _, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			host = r.Host
+		}
 
-	currentScheme := "http"
-	if r.TLS != nil {
-		currentScheme = "https"
-	}
+		currentScheme := "http"
+		if r.TLS != nil {
+			currentScheme = "https"
+		}
 
-	desiredScheme := currentScheme
-	if s.options.TLSEnabled && s.options.TLSRedirect && currentScheme == "http" {
-		desiredScheme = "https"
-	}
+		desiredScheme := currentScheme
+		if s.options.TLSEnabled && s.options.TLSRedirect && currentScheme == "http" {
+			desiredScheme = "https"
+		}
 
-	desiredHost := host
-	if s.options.CanonicalHost != "" && host != s.options.CanonicalHost {
-		desiredHost = s.options.CanonicalHost
-	}
+		desiredHost := host
+		if s.options.CanonicalHost != "" && host != s.options.CanonicalHost {
+			desiredHost = s.options.CanonicalHost
+		}
 
-	if desiredScheme != currentScheme || desiredHost != host {
-		return desiredScheme + "://" + desiredHost + r.URL.RequestURI()
+		if desiredScheme != currentScheme || desiredHost != host {
+			return desiredScheme + "://" + desiredHost + r.URL.RequestURI()
+		}
 	}
 
 	return ""

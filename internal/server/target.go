@@ -12,7 +12,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 )
@@ -87,7 +86,7 @@ type TargetOptions struct {
 }
 
 func (to *TargetOptions) IsHealthCheckRequest(r *http.Request) bool {
-	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.URL.Path == to.HealthCheckConfig.Path
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && RoutedTargetPath(r) == to.HealthCheckConfig.Path
 }
 
 func (to *TargetOptions) normalizePathTimeouts() {
@@ -249,7 +248,8 @@ func (t *Target) BeginHealthChecks(stateConsumer TargetStateConsumer) {
 		}
 
 		healthCheckURL := t.buildHealthCheckURL()
-		t.healthcheck = NewHealthCheck(t,
+		t.healthcheck = NewHealthCheck(
+			t,
 			healthCheckURL,
 			t.options.HealthCheckConfig.Interval,
 			t.options.HealthCheckConfig.Timeout,
@@ -345,7 +345,7 @@ func (t *Target) createProxyHandler(responseTimeout time.Duration) http.Handler 
 // that applies to this request's path.
 func (t *Target) handlerForRequest(req *http.Request) http.Handler {
 	for _, pathHandler := range t.pathProxyHandlers {
-		if strings.HasPrefix(EnsureTrailingSlash(req.URL.Path), EnsureTrailingSlash(pathHandler.pathPrefix)) {
+		if PathMatchesPrefix(req.URL.Path, pathHandler.pathPrefix) {
 			return pathHandler.handler
 		}
 	}
@@ -359,10 +359,7 @@ func (t *Target) rewrite(req *httputil.ProxyRequest) {
 	req.SetURL(t.targetURL)
 	req.Out.Host = req.In.Host
 
-	routingContext := RoutingContext(req.In)
-	if routingContext != nil {
-		req.Out.URL.Path = strings.TrimPrefix(req.Out.URL.Path, routingContext.MatchedPrefix)
-	}
+	req.Out.URL.Path = RoutedTargetPath(req.In)
 
 	// Ensure query params are preserved exactly, including those we could not
 	// parse.

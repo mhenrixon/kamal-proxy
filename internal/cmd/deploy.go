@@ -36,6 +36,7 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.ServiceOptions.StripPrefix, "strip-path-prefix", true, "With --path-prefix, strip prefix from request before forwarding")
 
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.ServiceOptions.TLSEnabled, "tls", false, "Configure TLS for this target (requires a non-empty host)")
+	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.TLSOnDemandURL, "tls-on-demand-url", "", "Will make an HTTP request to the given URL, asking whether a host is allowed to have a certificate issued")
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.tlsStaging, "tls-staging", false, "Use Let's Encrypt staging environment for certificate provisioning")
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.TLSCertificatePath, "tls-certificate-path", "", "Configure custom TLS certificate path (PEM format)")
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.TLSPrivateKeyPath, "tls-private-key-path", "", "Configure custom TLS private key path (PEM format)")
@@ -71,7 +72,9 @@ func newDeployCommand() *deployCommand {
 
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogRequestHeaders, "log-request-header", nil, "Additional request header to log (may be specified multiple times)")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogResponseHeaders, "log-response-header", nil, "Additional response header to log (may be specified multiple times)")
+	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ServiceOptions.ExcludeMetricsPaths, "exclude-metrics-path", nil, "Request path(s) to exclude from Prometheus metrics (may be specified multiple times)")
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.TargetOptions.ForwardHeaders, "forward-headers", false, "Forward X-Forwarded headers to target (default false if TLS enabled; otherwise true)")
+	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.ClientIPHeader, "client-ip-header", "", "Request header containing the original client IP; used to populate X-Forwarded-For when present")
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.TargetOptions.ScopeCookiePaths, "scope-cookie-paths", false, "Scope cookie paths to match path prefix")
 
 	deployCommand.cmd.MarkFlagRequired("target")

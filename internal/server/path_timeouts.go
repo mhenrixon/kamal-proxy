@@ -46,10 +46,16 @@ func NormalizePathTimeouts(pathTimeouts []PathTimeout) []PathTimeout {
 // pathTimeouts must already be normalized.
 func ResolvePathTimeout(path string, pathTimeouts []PathTimeout, fallback time.Duration) time.Duration {
 	for _, pathTimeout := range pathTimeouts {
-		if strings.HasPrefix(EnsureTrailingSlash(path), EnsureTrailingSlash(pathTimeout.PathPrefix)) {
+		if PathMatchesPrefix(path, pathTimeout.PathPrefix) {
 			return pathTimeout.Timeout
 		}
 	}
 
 	return fallback
+}
+
+// PathMatchesPrefix reports whether path falls below pathPrefix, matching on
+// whole segments the same way service path prefixes do.
+func PathMatchesPrefix(path, pathPrefix string) bool {
+	return strings.HasPrefix(EnsureTrailingSlash(path), EnsureTrailingSlash(pathPrefix))
 }

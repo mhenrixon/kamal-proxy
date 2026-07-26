@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -566,6 +569,38 @@ func TestRouter_PathBasedRoutingStripPrefix(t *testing.T) {
 	assert.Equal(t, "/app", body)
 }
 
+func TestRouter_HealthCheckWhilePausedWithPathPrefix(t *testing.T) {
+	router := testRouter(t)
+	_, backend := testBackend(t, "ok", http.StatusOK)
+
+	serviceOptions := defaultServiceOptions
+	serviceOptions.PathPrefixes = []string{"/api"}
+	serviceOptions.StripPrefix = true
+	require.NoError(t, router.DeployService("service1", []string{backend}, defaultEmptyReaders, serviceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	serviceOptions = defaultServiceOptions
+	serviceOptions.PathPrefixes = []string{"/admin"}
+	serviceOptions.StripPrefix = false
+	targetOptions := defaultTargetOptions
+	targetOptions.HealthCheckConfig.Path = "/admin/up"
+	require.NoError(t, router.DeployService("service2", []string{backend}, defaultEmptyReaders, serviceOptions, targetOptions, defaultDeploymentOptions))
+
+	require.NoError(t, router.PauseService("service1", time.Second, time.Millisecond*10))
+	require.NoError(t, router.PauseService("service2", time.Second, time.Millisecond*10))
+
+	// Health checks succeed while paused, with the health check path matched
+	// against the target's view of the path
+	statusCode, _ := sendGETRequest(router, "http://example.com/api/up")
+	assert.Equal(t, http.StatusOK, statusCode)
+
+	statusCode, _ = sendGETRequest(router, "http://example.com/admin/up")
+	assert.Equal(t, http.StatusOK, statusCode)
+
+	// Other requests are still paused
+	statusCode, _ = sendGETRequest(router, "http://example.com/api/other")
+	assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+}
+
 func TestRouter_PathBasedRoutingWithHosts(t *testing.T) {
 	router := testRouter(t)
 	_, first := testBackend(t, "first", http.StatusOK)
@@ -1011,6 +1046,41 @@ func TestRouter_ConcurrentStateSavesProduceValidState(t *testing.T) {
 	wg.Wait()
 
 	decodeStateFile(t, statePath)
+}
+
+func TestRouter_RestoreLastSavedState_TLSOnDemandURL(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	allowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("host") == "allowed.example.com" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer allowServer.Close()
+
+	_, target := testBackend(t, "first", http.StatusOK)
+
+	serviceOptions := defaultServiceOptions
+	serviceOptions.TLSEnabled = true
+	serviceOptions.TLSOnDemandURL = allowServer.URL
+
+	router := NewRouter(statePath)
+	require.NoError(t, router.DeployService("ondemand", []string{target}, defaultEmptyReaders, serviceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	router = NewRouter(statePath)
+	require.NoError(t, router.RestoreLastSavedState())
+
+	service := router.services.Get("ondemand")
+	require.NotNil(t, service)
+
+	manager, ok := service.certManager.(*autocert.Manager)
+	require.True(t, ok)
+	require.NotNil(t, manager.HostPolicy)
+
+	assert.NoError(t, manager.HostPolicy(context.Background(), "allowed.example.com"))
+	assert.Error(t, manager.HostPolicy(context.Background(), "denied.example.com"))
 }
 
 // Helpers
