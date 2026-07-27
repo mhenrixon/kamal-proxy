@@ -119,6 +119,29 @@ the original path (including the prefix), specify `--strip-path-prefix=false`:
     kamal-proxy deploy service1 --target web-1:3000 --path-prefix=/api --strip-path-prefix=false
 
 
+### Excluding paths from metrics
+
+When metrics are enabled (with `--metrics-port`), every request handled by
+the proxy is recorded in the Prometheus output. High-volume traffic from
+upstream load balancers or uptime monitors hitting health endpoints can
+both inflate the metrics pipeline and dominate aggregate measures like
+request rate, latency percentiles, and error rates, making the resulting
+metrics a poor reflection of real user traffic.
+
+To exclude one or more paths from the metrics for a service, use
+`--exclude-metrics-path` when deploying. The flag may be repeated, and
+matches are exact:
+
+    kamal-proxy deploy service1 --target web-1:3000 --exclude-metrics-path /up --exclude-metrics-path /healthz
+
+Excluded requests are still logged; only the Prometheus counters and
+in-flight gauge are skipped.
+
+Paths are specified as the upstream receives them. Services deployed using
+stripped path prefixes should specify their excluded paths in the un-prefixed
+form.
+
+
 ### Automatic TLS
 
 Kamal Proxy can automatically obtain and renew TLS certificates for your
@@ -132,6 +155,33 @@ are not maliciously requests for arbitrary hostnames).
 Additionally, when using path-based routing, TLS options must be set on the
 root path. Services deployed to other paths on the same host will use the same
 TLS settings as those specified for the root path.
+
+
+### On-demand TLS
+
+Instead of specifying a static list of hosts, Kamal Proxy can also obtain TLS
+certificates dynamically, for any host approved by an HTTP endpoint of your
+choice. This is useful when the full set of hosts is not known at deploy time,
+such as when serving customer domains.
+
+To enable this, specify `--tls-on-demand-url` (instead of `--host`) when
+deploying:
+
+    kamal-proxy deploy service1 --target web-1:3000 --tls --tls-on-demand-url="http://localhost:4567/check"
+
+The URL may be:
+
+- An external URL (like `http://localhost:4567/check`), which Kamal Proxy will
+  call directly, or
+- A path (like `/check`), which Kamal Proxy will route through the service to
+  your application, letting the application decide which hosts to allow.
+
+Before issuing a certificate for a host, Kamal Proxy will send a `GET` request
+to the endpoint, with the hostname in a `host` query parameter (for example,
+`?host=app1.example.com`) and matching `Host` header. A `200` response allows
+certificate issuance; any other response denies it, and the status code and up
+to 256 bytes of the response body are logged to help with debugging. Checks
+time out after 2 seconds, denying issuance for that attempt.
 
 
 ### Custom TLS certificate
