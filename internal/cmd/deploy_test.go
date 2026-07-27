@@ -211,3 +211,58 @@ func TestDeployCommand_CanonicalHostValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployCommand_TargetTryFlags(t *testing.T) {
+	tests := []struct {
+		name             string
+		args             []string
+		expectedError    string
+		expectedDuration time.Duration
+		expectedInterval time.Duration
+	}{
+		{
+			name: "unset leaves retries off",
+			args: []string{"--target=web:3000"},
+		},
+		{
+			name:             "try duration alone uses the default interval",
+			args:             []string{"--target=web:3000", "--target-try-duration=5s"},
+			expectedDuration: 5 * time.Second,
+		},
+		{
+			name:             "try duration with an explicit interval",
+			args:             []string{"--target=web:3000", "--target-try-duration=5s", "--target-try-interval=100ms"},
+			expectedDuration: 5 * time.Second,
+			expectedInterval: 100 * time.Millisecond,
+		},
+		{
+			name:          "an interval without a duration is rejected",
+			args:          []string{"--target=web:3000", "--target-try-interval=100ms"},
+			expectedError: "target-try-interval requires target-try-duration",
+		},
+		{
+			name:          "a negative duration is rejected",
+			args:          []string{"--target=web:3000", "--target-try-duration=-5s"},
+			expectedError: "target-try-duration cannot be negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newDeployCommand()
+			require.NoError(t, cmd.cmd.Flags().Parse(tt.args))
+
+			err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+			if tt.expectedError != "" {
+				require.ErrorIs(t, err, server.ErrServiceOptionsInvalid)
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedDuration, cmd.args.ServiceOptions.TargetTryDuration)
+			assert.Equal(t, tt.expectedInterval, cmd.args.ServiceOptions.TargetTryInterval)
+		})
+	}
+}

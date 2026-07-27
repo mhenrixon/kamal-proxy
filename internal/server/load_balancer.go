@@ -99,6 +99,9 @@ type LoadBalancer struct {
 	persistentHealthChecks bool
 	waitForHealthyContext  context.Context
 	markHealthy            context.CancelFunc
+
+	// retryPolicy is fork-only; see retry.go.
+	retryPolicy RetryPolicy
 }
 
 func NewLoadBalancer(targets TargetList, writerAffinityTimeout time.Duration, readTargetsAcceptWebsockets bool) *LoadBalancer {
@@ -197,6 +200,12 @@ func (lb *LoadBalancer) DrainAll(timeout time.Duration) {
 }
 
 func (lb *LoadBalancer) StartRequest(w http.ResponseWriter, r *http.Request) func() {
+	// Selecting a target is deferred into the closure when retries are enabled,
+	// so that waiting for one happens after the service lock is released.
+	if lb.retryPolicy.enabled() {
+		return func() { lb.serveWithRetries(w, r) }
+	}
+
 	target, req, readRequest, err := lb.claimTarget(r)
 	if err != nil {
 		SetErrorResponse(w, r, http.StatusServiceUnavailable, nil)

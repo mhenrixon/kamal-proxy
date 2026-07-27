@@ -405,6 +405,13 @@ func (t *Target) forwardHeaders(req *httputil.ProxyRequest) {
 }
 
 func (t *Target) handleProxyError(w http.ResponseWriter, r *http.Request, err error) {
+	// A failure another target could still serve is recorded rather than
+	// rendered, so no bytes reach the client before the retry.
+	if attempt := proxyAttemptFromRequest(r); attempt != nil && t.isRetryableProxyError(err, r) {
+		attempt.err = err
+		return
+	}
+
 	if t.isRequestEntityTooLarge(err) {
 		SetErrorResponse(w, r, http.StatusRequestEntityTooLarge, nil)
 		return

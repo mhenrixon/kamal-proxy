@@ -500,7 +500,8 @@ func (r *Router) createLoadBalancer(targetURLs, readerURLs []string, options Ser
 		return nil, err
 	}
 
-	lb := NewLoadBalancer(tl, options.WriterAffinityTimeout, options.ReadTargetsAcceptWebsockets)
+	lb := NewLoadBalancer(tl, options.WriterAffinityTimeout, options.ReadTargetsAcceptWebsockets).
+		WithRetryPolicy(options.RetryPolicy())
 
 	if !deploymentOptions.Force {
 		err = lb.WaitUntilHealthy(deploymentOptions.DeployTimeout)
