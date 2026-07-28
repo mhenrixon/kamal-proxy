@@ -17,7 +17,7 @@ Proxy-side roadmap for the dash fork. The cross-repo release sequencing, strateg
 | **Per-route timeouts** — per-`(host, path-prefix)` override of target timeout; each binding is already a candidate carrier | #53; SSE cluster #46/#54/#137/#186 | `pathBinding` (`internal/server/service_map.go:15`) + thread into `Target.createProxyHandler` (`internal/server/target.go:293`) |
 | **Whole-request deadline** — `--target-timeout` maps to `Transport.ResponseHeaderTimeout` only (`target.go:302`); long bodies can run forever | #53 | deadline middleware in `createMiddleware` (`internal/server/service.go:458`); must exempt WebSocket/SSE (`response_buffer_middleware.go:86` bypass logic) |
 | Retries / hold-until-healthy — retry idempotent methods on next target; brief hold during redeploy blips | #71; Caddy `lb_try_duration` | `LoadBalancer.StartRequest` (`internal/server/load_balancer.go:174`); replay needs request buffering (`internal/server/buffer.go`) |
-| Custom upstream 502/503 error pages | #49 | `ErrorPageMiddleware` already renders per-status templates — extend to proxy-error statuses |
+| Custom upstream 502/503 error pages | nginx `proxy_intercept_errors`, Apache `ProxyErrorOverride` | DONE — `--intercept-errors` (`internal/server/error_intercept_middleware.go`). Errors the *proxy* raises already rendered through `ErrorPageMiddleware`; the gap was error responses the *target* wrote itself |
 | Upstream pool tuning — `MaxConnsPerHost`, `IdleConnTimeout`, keep-alives (all defaults today; only `MaxIdleConnsPerHost=100` set) | inventory | per-target `http.Transport` (`internal/server/target.go:300`) |
 
 ## R3 — Security & access

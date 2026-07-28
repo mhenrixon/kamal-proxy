@@ -115,6 +115,11 @@ type ServiceOptions struct {
 	TLSDomainsInterval          time.Duration `json:"tls_domains_interval,omitempty"`
 	TLSDomainsBatchSize         int           `json:"tls_domains_batch_size,omitempty"`
 
+	// InterceptErrorStatuses lists the response statuses the target itself may
+	// return that should be replaced with the proxy's error pages. Empty (the
+	// default) passes every target response through untouched.
+	InterceptErrorStatuses []int `json:"intercept_error_statuses,omitempty"`
+
 	// TargetTryDuration bounds how long the load balancer keeps trying to place
 	// a request on a healthy target. Zero (the default) makes a single attempt.
 	TargetTryDuration time.Duration `json:"target_try_duration,omitempty"`
@@ -171,11 +176,25 @@ func (so ServiceOptions) Validate() error {
 		}
 	}
 
+	if err := so.validateInterceptErrorStatuses(); err != nil {
+		return err
+	}
+
 	if err := so.validateRetries(); err != nil {
 		return err
 	}
 
 	return so.validateDynamicDomains()
+}
+
+func (so ServiceOptions) validateInterceptErrorStatuses() error {
+	for _, status := range so.InterceptErrorStatuses {
+		if status < 400 || status > 599 {
+			return fmt.Errorf("%w: intercept-errors must be a 4xx or 5xx status code, got %d", ErrServiceOptionsInvalid, status)
+		}
+	}
+
+	return nil
 }
 
 func (so ServiceOptions) validateDynamicDomains() error {
@@ -622,6 +641,12 @@ func (s *Service) createMiddleware(options ServiceOptions, targetOptions TargetO
 	// through the custom error pages below.
 	if targetOptions.RequestTimeout > 0 || len(targetOptions.PathRequestTimeouts) > 0 {
 		handler = WithRequestDeadlineMiddleware(targetOptions.RequestTimeout, targetOptions.PathRequestTimeouts, handler)
+	}
+
+	// Below the error pages, so that the status the target wrote is rendered by
+	// the same templates as one the proxy produced itself.
+	if len(options.InterceptErrorStatuses) > 0 {
+		handler = WithErrorInterceptMiddleware(options.InterceptErrorStatuses, handler)
 	}
 
 	if options.ErrorPagePath != "" {
