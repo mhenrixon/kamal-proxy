@@ -83,6 +83,26 @@ type TargetOptions struct {
 	// PathRequestTimeouts overrides RequestTimeout for requests below a path
 	// prefix.
 	PathRequestTimeouts []PathTimeout `json:"path_request_timeouts,omitempty"`
+
+	// MaxConnsPerHost caps the connections -- dialing, active, and idle -- one of
+	// this target's pools will open. Zero (the default) leaves it unlimited.
+	// Requests over the cap queue rather than failing. Streaming responses hold a
+	// slot until their body is closed; connections upgraded to another protocol
+	// release theirs as soon as the upgrade completes, and so go uncounted for
+	// the life of the stream.
+	MaxConnsPerHost int `json:"max_conns_per_host,omitempty"`
+	// MaxIdleConnsPerHost caps the idle connections kept for reuse. Zero means
+	// the MaxIdleConnsPerHost default, not Go's much smaller one.
+	MaxIdleConnsPerHost int `json:"max_idle_conns_per_host,omitempty"`
+	// IdleConnTimeout is how long an idle connection to this target is kept
+	// before closing. Zero means DefaultTargetIdleConnTimeout, not "forever".
+	IdleConnTimeout time.Duration `json:"idle_conn_timeout,omitempty"`
+	// DialTimeout bounds establishing a connection to this target. Zero means
+	// DefaultTargetDialTimeout, not "no limit".
+	DialTimeout time.Duration `json:"dial_timeout,omitempty"`
+	// DisableKeepAlives closes each connection after a single request. False
+	// (the default) reuses connections.
+	DisableKeepAlives bool `json:"disable_keep_alives,omitempty"`
 }
 
 func (to *TargetOptions) IsHealthCheckRequest(r *http.Request) bool {
@@ -114,6 +134,7 @@ type Target struct {
 	options           TargetOptions
 	proxyHandler      http.Handler
 	pathProxyHandlers []pathProxyHandler
+	transports        []*http.Transport
 
 	state        TargetState
 	inflight     inflightMap
@@ -321,14 +342,16 @@ func (t *Target) buildHealthCheckURL() *url.URL {
 func (t *Target) createProxyHandler(responseTimeout time.Duration) http.Handler {
 	bufferPool := NewBufferPool(ProxyBufferSize)
 
+	// Retained so the per-path handlers' pools stay assertable: the buffering
+	// middleware below replaces handler, leaving no way back to the transport.
+	transport := newProxyTransport(t.options, responseTimeout)
+	t.transports = append(t.transports, transport)
+
 	var handler http.Handler = &httputil.ReverseProxy{
 		BufferPool:   bufferPool,
 		Rewrite:      t.rewrite,
 		ErrorHandler: t.handleProxyError,
-		Transport: &http.Transport{
-			MaxIdleConnsPerHost:   MaxIdleConnsPerHost,
-			ResponseHeaderTimeout: responseTimeout,
-		},
+		Transport:    transport,
 	}
 
 	if t.options.BufferResponses {

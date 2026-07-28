@@ -763,3 +763,17 @@ func (c *testHealthConsumer) waitUntilHealthy() error {
 		return ErrorTargetFailedToBecomeHealthy
 	}
 }
+
+func TestParseTargetURL_AlwaysUsesHTTPScheme(t *testing.T) {
+	// Tripwire for newProxyTransport: setting DialContext drops the transport to
+	// HTTP/1-only, which is free today only because a target can never be https.
+	// If this test starts failing because target URLs gained a scheme, that
+	// transport needs ForceAttemptHTTP2 and a TLSHandshakeTimeout, or the target
+	// leg silently downgrades with no other signal.
+	uri, err := parseTargetURL("app:3000")
+	require.NoError(t, err)
+	assert.Equal(t, "http", uri.Scheme)
+
+	_, err = parseTargetURL("https://app:3000")
+	assert.ErrorIs(t, err, ErrorInvalidHostPattern)
+}

@@ -267,6 +267,10 @@ func (r *Router) DeployService(name string, targetURLs, readerURLs []string, opt
 		return err
 	}
 
+	if err := targetOptions.Validate(); err != nil {
+		return err
+	}
+
 	options.Normalize()
 	slog.Info("Deploying", "service", name, "targets", targetURLs, "hosts", options.Hosts, "paths", options.PathPrefixes, "tls", options.TLSEnabled)
 

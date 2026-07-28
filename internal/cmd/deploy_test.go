@@ -313,3 +313,78 @@ func TestDeployCommand_InterceptErrorsFlag(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployCommand_TargetPoolFlags(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		expectedError string
+		expected      server.TargetOptions
+	}{
+		{
+			name:     "unset leaves every pool field at zero, so the server resolves them",
+			args:     []string{"--target=web:3000"},
+			expected: server.TargetOptions{},
+		},
+		{
+			name: "each flag binds to its own field",
+			args: []string{
+				"--target=web:3000",
+				"--target-max-conns=5",
+				"--target-max-idle-conns=3",
+				"--target-idle-conn-timeout=45s",
+				"--target-dial-timeout=3s",
+				"--target-disable-keep-alives",
+			},
+			expected: server.TargetOptions{
+				MaxConnsPerHost:     5,
+				MaxIdleConnsPerHost: 3,
+				IdleConnTimeout:     45 * time.Second,
+				DialTimeout:         3 * time.Second,
+				DisableKeepAlives:   true,
+			},
+		},
+		{
+			name:          "a negative max conns is rejected",
+			args:          []string{"--target=web:3000", "--target-max-conns=-1"},
+			expectedError: "target-max-conns cannot be negative",
+		},
+		{
+			name:          "a negative max idle conns is rejected",
+			args:          []string{"--target=web:3000", "--target-max-idle-conns=-1"},
+			expectedError: "target-max-idle-conns cannot be negative",
+		},
+		{
+			name:          "a negative idle conn timeout is rejected",
+			args:          []string{"--target=web:3000", "--target-idle-conn-timeout=-1s"},
+			expectedError: "target-idle-conn-timeout cannot be negative",
+		},
+		{
+			name:          "a negative dial timeout is rejected",
+			args:          []string{"--target=web:3000", "--target-dial-timeout=-1s"},
+			expectedError: "target-dial-timeout cannot be negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newDeployCommand()
+			require.NoError(t, cmd.cmd.Flags().Parse(tt.args))
+
+			err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+			if tt.expectedError != "" {
+				require.ErrorIs(t, err, server.ErrTargetOptionsInvalid)
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected.MaxConnsPerHost, cmd.args.TargetOptions.MaxConnsPerHost)
+			assert.Equal(t, tt.expected.MaxIdleConnsPerHost, cmd.args.TargetOptions.MaxIdleConnsPerHost)
+			assert.Equal(t, tt.expected.IdleConnTimeout, cmd.args.TargetOptions.IdleConnTimeout)
+			assert.Equal(t, tt.expected.DialTimeout, cmd.args.TargetOptions.DialTimeout)
+			assert.Equal(t, tt.expected.DisableKeepAlives, cmd.args.TargetOptions.DisableKeepAlives)
+		})
+	}
+}
