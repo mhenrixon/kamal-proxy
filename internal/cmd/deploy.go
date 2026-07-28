@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"net/rpc"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -16,6 +17,7 @@ type deployCommand struct {
 	tlsStaging          bool
 	pathTimeouts        map[string]string
 	pathRequestTimeouts map[string]string
+	basicAuth           string
 }
 
 func newDeployCommand() *deployCommand {
@@ -79,6 +81,7 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().Int64Var(&deployCommand.args.TargetOptions.MaxResponseBodySize, "max-response-body", server.DefaultMaxResponseBodySize, "Max size of response body when buffering (default of 0 means unlimited)")
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.ErrorPagePath, "error-pages", "", "Path to custom error pages")
 	deployCommand.cmd.Flags().IntSliceVar(&deployCommand.args.ServiceOptions.InterceptErrorStatuses, "intercept-errors", nil, "Replace these response statuses from the target with the proxy's error pages, as 4xx or 5xx codes (e.g. 502,503,504; default none)")
+	deployCommand.cmd.Flags().StringVar(&deployCommand.basicAuth, "basic-auth", "", "Require HTTP Basic credentials on every request to this service, as <username>:<password>. The health check path stays open. Use with --tls, or terminate TLS in front of the proxy -- Basic credentials are replayable and are sent on every request")
 
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogRequestHeaders, "log-request-header", nil, "Additional request header to log (may be specified multiple times)")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogResponseHeaders, "log-response-header", nil, "Additional response header to log (may be specified multiple times)")
@@ -130,6 +133,20 @@ func (c *deployCommand) preRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if c.basicAuth != "" {
+		username, password, err := parseBasicAuthFlag(c.basicAuth)
+		if err != nil {
+			return err
+		}
+
+		// Hash here, so the plaintext credential never crosses the RPC socket
+		// and never reaches the state file.
+		c.args.ServiceOptions.BasicAuth, err = server.EncodeBasicAuthCredential(username, password)
+		if err != nil {
+			return err
+		}
+	}
+
 	if err := c.args.TargetOptions.Validate(); err != nil {
 		return err
 	}
@@ -139,6 +156,21 @@ func (c *deployCommand) preRun(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// parseBasicAuthFlag splits a <username>:<password> flag value. It cuts at the
+// first colon, matching how net/http decodes the credentials a client sends:
+// passwords may contain colons, usernames may not.
+func parseBasicAuthFlag(value string) (string, string, error) {
+	username, password, found := strings.Cut(value, ":")
+	if !found {
+		return "", "", fmt.Errorf("%w: basic-auth must be given as <username>:<password>", server.ErrServiceOptionsInvalid)
+	}
+	if username == "" || password == "" {
+		return "", "", fmt.Errorf("%w: basic-auth needs both a username and a password", server.ErrServiceOptionsInvalid)
+	}
+
+	return username, password, nil
 }
 
 // parsePathTimeouts converts the <prefix>=<duration> flag pairs into the

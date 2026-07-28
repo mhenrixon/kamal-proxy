@@ -25,6 +25,14 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 
+	// O_CREATE only applies perm to a file it creates, and umask masks it even
+	// then. Set it explicitly, so a temp file left behind by an earlier run
+	// cannot keep looser permissions than the caller asked for.
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
+		return err
+	}
+
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err

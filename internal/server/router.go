@@ -167,7 +167,7 @@ func (r *Router) RestoreLastSavedState() error {
 		}
 	} else {
 		// Keep a last-known-good copy to recover from a future torn write.
-		if err := writeFileAtomic(r.backupPath(), data, 0644); err != nil {
+		if err := writeFileAtomic(r.backupPath(), data, 0600); err != nil {
 			slog.Warn("Failed to write state backup", "path", r.backupPath(), "error", err)
 		}
 	}
@@ -209,7 +209,7 @@ func (r *Router) restoreFromBackup(cause error) ([]*Service, error) {
 	slog.Warn("Restored state from backup after decode failure", "path", r.backupPath())
 
 	// Repair the primary so subsequent boots restore cleanly again.
-	if err := writeFileAtomic(r.statePath, data, 0644); err != nil {
+	if err := writeFileAtomic(r.statePath, data, 0600); err != nil {
 		slog.Warn("Failed to repair state file from backup", "path", r.statePath, "error", err)
 	}
 
@@ -268,6 +268,10 @@ func (r *Router) DeployService(name string, targetURLs, readerURLs []string, opt
 	}
 
 	if err := targetOptions.Validate(); err != nil {
+		return err
+	}
+
+	if err := validateBasicAuthHealthCheck(options, targetOptions); err != nil {
 		return err
 	}
 
@@ -588,7 +592,7 @@ func (r *Router) saveStateSnapshot() error {
 	r.saveLock.Lock()
 	defer r.saveLock.Unlock()
 
-	if err := writeFileAtomic(r.statePath, data, 0644); err != nil {
+	if err := writeFileAtomic(r.statePath, data, 0600); err != nil {
 		slog.Error("Unable to save state", "error", err, "path", r.statePath)
 		return err
 	}
