@@ -468,3 +468,73 @@ func TestDeployCommand_BasicAuthAbsentLeavesServiceUnprotected(t *testing.T) {
 	require.NoError(t, cmd.preRun(cmd.cmd, []string{"test-service"}))
 	assert.Empty(t, cmd.args.ServiceOptions.BasicAuth)
 }
+
+func TestDeployCommand_AllowIPFlags(t *testing.T) {
+	tests := []struct {
+		name            string
+		args            []string
+		expectedAllow   []string
+		expectedTrusted []string
+		expectedError   string
+	}{
+		{
+			name: "unset leaves the service unrestricted",
+			args: []string{"--target=web:3000"},
+		},
+		{
+			name:          "a single range",
+			args:          []string{"--target=web:3000", "--allow-ip=10.0.0.0/8"},
+			expectedAllow: []string{"10.0.0.0/8"},
+		},
+		{
+			name:          "comma-separated ranges",
+			args:          []string{"--target=web:3000", "--allow-ip=10.0.0.0/8,203.0.113.7"},
+			expectedAllow: []string{"10.0.0.0/8", "203.0.113.7"},
+		},
+		{
+			name:            "with trusted proxies",
+			args:            []string{"--target=web:3000", "--allow-ip=10.0.0.0/8", "--trusted-proxy=172.16.0.0/12"},
+			expectedAllow:   []string{"10.0.0.0/8"},
+			expectedTrusted: []string{"172.16.0.0/12"},
+		},
+		{
+			name:          "a malformed range is rejected",
+			args:          []string{"--target=web:3000", "--allow-ip=nonsense"},
+			expectedError: "allow-ip",
+		},
+		{
+			name:          "trusted proxies without an allow list are rejected",
+			args:          []string{"--target=web:3000", "--trusted-proxy=172.16.0.0/12"},
+			expectedError: "trusted-proxy requires allow-ip",
+		},
+		{
+			name:          "a default route cannot be trusted",
+			args:          []string{"--target=web:3000", "--allow-ip=10.0.0.0/8", "--trusted-proxy=0.0.0.0/0"},
+			expectedError: "default route",
+		},
+		{
+			name:          "client-ip-header without trusted proxies is rejected",
+			args:          []string{"--target=web:3000", "--allow-ip=10.0.0.0/8", "--client-ip-header=CF-Connecting-IP"},
+			expectedError: "requires trusted-proxy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newDeployCommand()
+			require.NoError(t, cmd.cmd.Flags().Parse(tt.args))
+
+			err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+			if tt.expectedError != "" {
+				require.ErrorIs(t, err, server.ErrServiceOptionsInvalid)
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedAllow, cmd.args.ServiceOptions.AllowIPs)
+			assert.Equal(t, tt.expectedTrusted, cmd.args.ServiceOptions.TrustedProxies)
+		})
+	}
+}

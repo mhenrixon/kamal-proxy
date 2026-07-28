@@ -133,6 +133,14 @@ type ServiceOptions struct {
 	// credential crosses the RPC socket or reaches the state file. Empty (the
 	// default) leaves the service open.
 	BasicAuth string `json:"basic_auth,omitempty"`
+
+	// AllowIPs restricts this service to the given addresses and CIDR ranges.
+	// Empty (the default) serves everyone. See ip_allow_list.go for which
+	// address is matched and why.
+	AllowIPs []string `json:"allow_ips,omitempty"`
+	// TrustedProxies names the proxies in front of this one, allowing AllowIPs
+	// to be matched against the forwarded chain rather than the connecting peer.
+	TrustedProxies []string `json:"trusted_proxies,omitempty"`
 }
 
 func (so *ServiceOptions) ShouldExcludeMetrics(r *http.Request) bool {
@@ -195,59 +203,11 @@ func (so ServiceOptions) Validate() error {
 		return err
 	}
 
+	if err := so.validateAllowIPs(); err != nil {
+		return err
+	}
+
 	return so.validateDynamicDomains()
-}
-
-func (so ServiceOptions) validateInterceptErrorStatuses() error {
-	for _, status := range so.InterceptErrorStatuses {
-		if status < 400 || status > 599 {
-			return fmt.Errorf("%w: intercept-errors must be a 4xx or 5xx status code, got %d", ErrServiceOptionsInvalid, status)
-		}
-	}
-
-	return nil
-}
-
-func (so ServiceOptions) validateDynamicDomains() error {
-	if so.TLSDomainsSource == "" {
-		if so.TLSDomainsBatchSize != 0 {
-			return fmt.Errorf("%w: tls-domains-batch-size requires tls-domains-source", ErrServiceOptionsInvalid)
-		}
-		if so.TLSDomainsInterval != 0 {
-			return fmt.Errorf("%w: tls-domains-interval requires tls-domains-source", ErrServiceOptionsInvalid)
-		}
-		return nil
-	}
-
-	if !so.TLSEnabled {
-		return fmt.Errorf("%w: tls-domains-source requires TLS to be enabled", ErrServiceOptionsInvalid)
-	}
-
-	// Both provision certificates for hosts that aren't known at deploy time, but
-	// through different managers -- only one of them can serve the handshake.
-	if so.TLSOnDemandURL != "" {
-		return fmt.Errorf("%w: tls-domains-source cannot be combined with tls-on-demand-url", ErrServiceOptionsInvalid)
-	}
-
-	// Dynamic domains are routed via the host-less catch-all binding; a
-	// host-scoped service would issue certificates that can never be served.
-	if so.HasConfiguredHosts() {
-		return fmt.Errorf("%w: tls-domains-source requires the service to be the catch-all (no --host)", ErrServiceOptionsInvalid)
-	}
-
-	if !validDomainSource(so.TLSDomainsSource) {
-		return fmt.Errorf("%w: tls-domains-source must be a path or an http(s) URL: %q", ErrServiceOptionsInvalid, so.TLSDomainsSource)
-	}
-
-	if so.TLSDomainsBatchSize < 0 || so.TLSDomainsBatchSize > MaxTLSDomainsBatchSize {
-		return fmt.Errorf("%w: tls-domains-batch-size must be between 1 and %d", ErrServiceOptionsInvalid, MaxTLSDomainsBatchSize)
-	}
-
-	if so.TLSDomainsInterval != 0 && so.TLSDomainsInterval < MinTLSDomainsInterval {
-		return fmt.Errorf("%w: tls-domains-interval must be at least %s", ErrServiceOptionsInvalid, MinTLSDomainsInterval)
-	}
-
-	return nil
 }
 
 func (so *ServiceOptions) WithHosts(hosts []string) ServiceOptions {
@@ -295,6 +255,7 @@ type Service struct {
 	certManager    CertManager
 	middleware     http.Handler
 	basicAuth      *basicAuthCredential
+	allowedIPs     *ipAllowList
 }
 
 func NewService(name string, options ServiceOptions, targetOptions TargetOptions, sanCertManager *SANCertManager) (*Service, error) {
@@ -537,6 +498,7 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 	s.certManager = certManager
 	s.middleware = middleware
 	s.basicAuth = s.resolveBasicAuth(options)
+	s.allowedIPs = s.resolveIPAllowList(options)
 
 	return nil
 }
@@ -686,6 +648,10 @@ func (s *Service) createMiddleware(options ServiceOptions, targetOptions TargetO
 
 func (s *Service) serviceRequestWithTarget(w http.ResponseWriter, r *http.Request) {
 	LoggingRequestContext(r).Service = s.name
+
+	if s.rejectDisallowedIP(w, r) {
+		return
+	}
 
 	if !s.options.TLSEnabled && r.TLS != nil {
 		SetErrorResponse(w, r, http.StatusServiceUnavailable, nil)

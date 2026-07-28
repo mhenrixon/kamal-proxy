@@ -34,6 +34,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().IntVar(&globalConfig.HttpPort, "http-port", getEnvInt("HTTP_PORT", server.DefaultHttpPort), "Port to serve HTTP traffic on")
 	runCommand.cmd.Flags().IntVar(&globalConfig.HttpsPort, "https-port", getEnvInt("HTTPS_PORT", server.DefaultHttpsPort), "Port to serve HTTPS traffic on")
 	runCommand.cmd.Flags().IntVar(&globalConfig.MetricsPort, "metrics-port", getEnvInt("METRICS_PORT", 0), "Publish metrics on the specified port (default zero to disable)")
+	runCommand.cmd.Flags().StringSliceVar(&globalConfig.MetricsAllowIPs, "metrics-allow-ip", nil, "Serve the metrics endpoint only to these addresses or CIDR ranges (default empty, serve everyone that can reach the port)")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.HTTP3Enabled, "http3", false, "Enable HTTP/3")
 	runCommand.cmd.Flags().BoolVar(&runCommand.ignoreRestoreErrors, "ignore-restore-errors", getEnvBool("IGNORE_RESTORE_ERRORS", false), "Boot with an empty routing state when restoring the saved state fails")
 	runCommand.cmd.Flags().BoolVar(&runCommand.recheckTargetsOnRestore, "recheck-targets-on-restore", getEnvBool("RECHECK_TARGETS_ON_RESTORE", false), "Re-verify restored targets with health checks instead of assuming they are healthy")

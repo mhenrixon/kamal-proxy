@@ -268,13 +268,20 @@ func (s *Server) startHTTPServers() error {
 }
 
 func (s *Server) startMetricsServer() error {
+	// Parsed before the disabled check, so a typo fails the boot rather than
+	// waiting until someone turns metrics on.
+	allowed, err := parseIPPrefixes(s.config.MetricsAllowIPs, "metrics-allow-ip")
+	if err != nil {
+		return err
+	}
+
 	if s.config.MetricsPort == 0 {
 		slog.Debug("Metrics server disabled")
 		return nil
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.config.Bind, s.config.MetricsPort)
-	handler := metrics.Enable()
+	handler := withMetricsAllowList(allowed, metrics.Enable())
 
 	l, err := s.listen("tcp", addr)
 	if err != nil {
