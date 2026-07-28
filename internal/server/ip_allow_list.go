@@ -108,9 +108,7 @@ func (l *ipAllowList) forwardedAddr(r *http.Request) netip.Addr {
 
 	entries := []string{}
 	for _, value := range r.Header.Values(header) {
-		for _, entry := range strings.Split(value, ",") {
-			entries = append(entries, entry)
-		}
+		entries = append(entries, strings.Split(value, ",")...)
 	}
 
 	if len(entries) > forwardedChainLimit {
