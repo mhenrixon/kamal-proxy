@@ -586,3 +586,28 @@ func testCreateServiceWithHandler(t *testing.T, options ServiceOptions, targetOp
 
 	return service
 }
+
+func TestService_MarshallingPoolState(t *testing.T) {
+	targetOptions := defaultTargetOptions
+	targetOptions.MaxConnsPerHost = 12
+	targetOptions.MaxIdleConnsPerHost = 6
+	targetOptions.IdleConnTimeout = 45 * time.Second
+	targetOptions.DialTimeout = 3 * time.Second
+	targetOptions.DisableKeepAlives = true
+
+	service := testCreateService(t, defaultServiceOptions, targetOptions)
+	t.Cleanup(service.Dispose)
+
+	var buf bytes.Buffer
+	require.NoError(t, json.NewEncoder(&buf).Encode(service))
+
+	var restored Service
+	require.NoError(t, json.NewDecoder(&buf).Decode(&restored))
+	t.Cleanup(restored.Dispose)
+
+	assert.Equal(t, 12, restored.targetOptions.MaxConnsPerHost)
+	assert.Equal(t, 6, restored.targetOptions.MaxIdleConnsPerHost)
+	assert.Equal(t, 45*time.Second, restored.targetOptions.IdleConnTimeout)
+	assert.Equal(t, 3*time.Second, restored.targetOptions.DialTimeout)
+	assert.True(t, restored.targetOptions.DisableKeepAlives)
+}

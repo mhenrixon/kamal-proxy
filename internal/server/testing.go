@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -73,6 +75,40 @@ func testBackendWithHandler(t testing.TB, handler http.HandlerFunc) (*httptest.S
 	require.NoError(t, err)
 
 	return server, serverURL.Host
+}
+
+// countingListener records how many connections a backend accepted, which is
+// the only way to observe connection reuse from outside the transport.
+type countingListener struct {
+	net.Listener
+	accepted atomic.Int64
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		l.accepted.Add(1)
+	}
+
+	return conn, err
+}
+
+// testCountingBackend starts a backend that counts accepted connections. It
+// cannot reuse testBackendWithHandler, as httptest.NewServer starts listening
+// before there is any seam to wrap the listener in.
+func testCountingBackend(t testing.TB, handler http.HandlerFunc) (*countingListener, string) {
+	t.Helper()
+
+	server := httptest.NewUnstartedServer(handler)
+	listener := &countingListener{Listener: server.Listener}
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+
+	serverURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+
+	return listener, serverURL.Host
 }
 
 // testConfig returns a Config bound to ephemeral ports, carrying the same

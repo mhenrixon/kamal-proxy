@@ -63,6 +63,12 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.TargetOptions.RequestTimeout, "request-timeout", 0, "Maximum time a whole request may take, including streaming the response body (default 0, no limit; WebSocket and event-stream responses are exempt)")
 	deployCommand.cmd.Flags().StringToStringVar(&deployCommand.pathRequestTimeouts, "path-request-timeout", nil, "Override --request-timeout below a path prefix, as <prefix>=<duration> (0 for no limit; may be specified multiple times)")
 
+	deployCommand.cmd.Flags().IntVar(&deployCommand.args.TargetOptions.MaxConnsPerHost, "target-max-conns", 0, "Max simultaneous connections to each target, including idle ones (default 0, unlimited). Requests over the cap queue rather than failing, and streaming responses hold a connection until their body closes, so pair a low limit with --request-timeout. Applies per connection pool, and each --path-timeout adds another pool")
+	deployCommand.cmd.Flags().IntVar(&deployCommand.args.TargetOptions.MaxIdleConnsPerHost, "target-max-idle-conns", 0, "Max idle connections kept open per target (default 100). Applies per connection pool, and each --path-timeout adds another pool")
+	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.TargetOptions.IdleConnTimeout, "target-idle-conn-timeout", 0, "How long an idle connection to a target is kept before closing (default 90s; set below the target's own keep-alive timeout)")
+	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.TargetOptions.DialTimeout, "target-dial-timeout", 0, "Maximum time to establish a connection to a target (default 30s); health checks use their own client and are unaffected")
+	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.TargetOptions.DisableKeepAlives, "target-disable-keep-alives", false, "Close each connection to the target after a single request")
+
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.TargetTryDuration, "target-try-duration", 0, "How long to keep trying to place a request on a healthy target before giving up (default 0, single attempt; only idempotent requests without a body are re-sent to another target)")
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.TargetTryInterval, "target-try-interval", 0, "Pause between attempts while waiting for a healthy target (default 250ms; requires --target-try-duration)")
 
@@ -121,6 +127,10 @@ func (c *deployCommand) preRun(cmd *cobra.Command, args []string) error {
 
 	c.args.TargetOptions.PathRequestTimeouts, err = parsePathTimeouts("path-request-timeout", c.pathRequestTimeouts)
 	if err != nil {
+		return err
+	}
+
+	if err := c.args.TargetOptions.Validate(); err != nil {
 		return err
 	}
 

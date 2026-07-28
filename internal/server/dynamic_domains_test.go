@@ -40,6 +40,12 @@ func testDynamicDomainManager(t testing.TB, config DynamicDomainConfig) (*Dynami
 	dm.issuer.config.Obtainer = successfulObtainer(t)
 	dm.issuer.config.Preflight = nil
 
+	// Stop the pollers before the state file's TempDir is removed. Without this
+	// a source outlives the test and races the cleanup, which surfaces as
+	// "TempDir RemoveAll cleanup: directory not empty". Stop is idempotent, so
+	// tests calling it themselves are unaffected.
+	t.Cleanup(dm.Stop)
+
 	return dm, manager
 }
 
