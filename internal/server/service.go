@@ -114,6 +114,13 @@ type ServiceOptions struct {
 	TLSDomainsSource            string        `json:"tls_domains_source,omitempty"`
 	TLSDomainsInterval          time.Duration `json:"tls_domains_interval,omitempty"`
 	TLSDomainsBatchSize         int           `json:"tls_domains_batch_size,omitempty"`
+
+	// TargetTryDuration bounds how long the load balancer keeps trying to place
+	// a request on a healthy target. Zero (the default) makes a single attempt.
+	TargetTryDuration time.Duration `json:"target_try_duration,omitempty"`
+	// TargetTryInterval is the pause between those attempts. Zero uses
+	// DefaultTargetTryInterval.
+	TargetTryInterval time.Duration `json:"target_try_interval,omitempty"`
 }
 
 func (so *ServiceOptions) ShouldExcludeMetrics(r *http.Request) bool {
@@ -162,6 +169,10 @@ func (so ServiceOptions) Validate() error {
 		if !slices.Contains(so.Hosts, so.CanonicalHost) {
 			return fmt.Errorf("%w: canonical-host '%s' must be present in the hosts list: %v", ErrServiceOptionsInvalid, so.CanonicalHost, so.Hosts)
 		}
+	}
+
+	if err := so.validateRetries(); err != nil {
+		return err
 	}
 
 	return so.validateDynamicDomains()
@@ -420,7 +431,8 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	s.active = NewLoadBalancer(activeTargets, ms.Options.WriterAffinityTimeout, ms.Options.ReadTargetsAcceptWebsockets)
+	s.active = NewLoadBalancer(activeTargets, ms.Options.WriterAffinityTimeout, ms.Options.ReadTargetsAcceptWebsockets).
+		WithRetryPolicy(ms.Options.RetryPolicy())
 	s.active.MarkAllHealthy()
 
 	rolloutTargets, err := NewTargetList(ms.RolloutTargets, ms.RolloutReaders, ms.TargetOptions)
@@ -428,7 +440,8 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if len(rolloutTargets) > 0 {
-		s.rollout = NewLoadBalancer(rolloutTargets, ms.Options.WriterAffinityTimeout, ms.Options.ReadTargetsAcceptWebsockets)
+		s.rollout = NewLoadBalancer(rolloutTargets, ms.Options.WriterAffinityTimeout, ms.Options.ReadTargetsAcceptWebsockets).
+			WithRetryPolicy(ms.Options.RetryPolicy())
 		s.rollout.MarkAllHealthy()
 	}
 

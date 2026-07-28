@@ -63,6 +63,9 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.TargetOptions.RequestTimeout, "request-timeout", 0, "Maximum time a whole request may take, including streaming the response body (default 0, no limit; WebSocket and event-stream responses are exempt)")
 	deployCommand.cmd.Flags().StringToStringVar(&deployCommand.pathRequestTimeouts, "path-request-timeout", nil, "Override --request-timeout below a path prefix, as <prefix>=<duration> (0 for no limit; may be specified multiple times)")
 
+	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.TargetTryDuration, "target-try-duration", 0, "How long to keep trying to place a request on a healthy target before giving up (default 0, single attempt; only idempotent requests without a body are re-sent to another target)")
+	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.TargetTryInterval, "target-try-interval", 0, "Pause between attempts while waiting for a healthy target (default 250ms; requires --target-try-duration)")
+
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.TargetOptions.BufferRequests, "buffer-requests", false, "Buffer requests before forwarding to target")
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.TargetOptions.BufferResponses, "buffer-responses", false, "Buffer responses before forwarding to client")
 	deployCommand.cmd.Flags().Int64Var(&deployCommand.args.TargetOptions.MaxMemoryBufferSize, "buffer-memory", server.DefaultMaxMemoryBufferSize, "Max size of memory buffer")
