@@ -266,3 +266,50 @@ func TestDeployCommand_TargetTryFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployCommand_InterceptErrorsFlag(t *testing.T) {
+	tests := []struct {
+		name             string
+		args             []string
+		expectedError    string
+		expectedStatuses []int
+	}{
+		{
+			name: "unset leaves interception off",
+			args: []string{"--target=web:3000"},
+		},
+		{
+			name:             "a comma-separated list",
+			args:             []string{"--target=web:3000", "--intercept-errors=502,503,504"},
+			expectedStatuses: []int{502, 503, 504},
+		},
+		{
+			name:             "repeated flags accumulate",
+			args:             []string{"--target=web:3000", "--intercept-errors=502", "--intercept-errors=503"},
+			expectedStatuses: []int{502, 503},
+		},
+		{
+			name:          "a status outside the error range is rejected",
+			args:          []string{"--target=web:3000", "--intercept-errors=302"},
+			expectedError: "intercept-errors must be a 4xx or 5xx status code, got 302",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newDeployCommand()
+			require.NoError(t, cmd.cmd.Flags().Parse(tt.args))
+
+			err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+			if tt.expectedError != "" {
+				require.ErrorIs(t, err, server.ErrServiceOptionsInvalid)
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedStatuses, cmd.args.ServiceOptions.InterceptErrorStatuses)
+		})
+	}
+}

@@ -72,6 +72,7 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().Int64Var(&deployCommand.args.TargetOptions.MaxRequestBodySize, "max-request-body", server.DefaultMaxRequestBodySize, "Max size of request body when buffering (default of 0 means unlimited)")
 	deployCommand.cmd.Flags().Int64Var(&deployCommand.args.TargetOptions.MaxResponseBodySize, "max-response-body", server.DefaultMaxResponseBodySize, "Max size of response body when buffering (default of 0 means unlimited)")
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.ErrorPagePath, "error-pages", "", "Path to custom error pages")
+	deployCommand.cmd.Flags().IntSliceVar(&deployCommand.args.ServiceOptions.InterceptErrorStatuses, "intercept-errors", nil, "Replace these response statuses from the target with the proxy's error pages, as 4xx or 5xx codes (e.g. 502,503,504; default none)")
 
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogRequestHeaders, "log-request-header", nil, "Additional request header to log (may be specified multiple times)")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogResponseHeaders, "log-response-header", nil, "Additional response header to log (may be specified multiple times)")
