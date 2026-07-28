@@ -142,6 +142,54 @@ stripped path prefixes should specify their excluded paths in the un-prefixed
 form.
 
 
+### Password-protecting a service
+
+To put a service behind an HTTP Basic password prompt, deploy it with
+`--basic-auth`:
+
+    kamal-proxy deploy service1 --target web-1:3000 --tls --host app.example.com --basic-auth admin:s3cr3t
+
+Requests without valid credentials get a `401` and a browser password prompt.
+The password is hashed by the CLI before it is sent to the proxy, so neither
+the RPC socket nor the saved state file ever sees the plaintext.
+
+Things worth knowing:
+
+* **Use it with TLS.** Basic credentials are replayable and are re-sent on
+  every request. On a service deployed with `--tls`, plaintext requests are
+  redirected to HTTPS *before* any challenge is issued, so the password is
+  never solicited in the clear. If you turn that redirect off with
+  `--tls-redirect=false`, or deploy without `--tls` at all, the proxy logs a
+  warning and challenges over plaintext — only do that when TLS is terminated
+  in front of the proxy.
+* **The health check path stays open.** `GET` and `HEAD` on the configured
+  `--health-check-path` are served without credentials, so downstream load
+  balancers can still see the service drain during a deploy. Deploying with
+  both `--basic-auth` and a health check path of `/` is rejected, since that
+  would leave the service's index page public.
+* **The credential is removed before forwarding.** Your application never sees
+  the proxy's `Authorization` header, so it cannot be logged by
+  `--log-request-header authorization` or read by the upstream.
+* **Rollout targets inherit it.** `kamal-proxy rollout deploy` reuses the
+  service's stored options, so rollout traffic stays protected.
+* **Redeploying without the flag removes protection.** The credential is not
+  sticky; a deploy that omits `--basic-auth` leaves the service open.
+* **Rolling the proxy image back removes protection silently.** A binary older
+  than this feature ignores the stored credential and the next state save drops
+  it. Redeploy with `--basic-auth` after any proxy rollback.
+* **The password reaches the deploy host's process table.** It is an ordinary
+  command-line argument, so it is visible to `ps` and to anything that logs the
+  command.
+* **A per-path prefix is routing, not a security boundary.** You can protect
+  part of a site by deploying it as its own `--path-prefix` service with its own
+  credential, but prefix matching does not normalize paths — give the protected
+  prefix a target that does not also serve the same content under an
+  unprotected root.
+
+If you use `--error-pages`, add a `401.html` to that directory; otherwise the
+challenge falls back to the proxy's built-in plain response.
+
+
 ### Automatic TLS
 
 Kamal Proxy can automatically obtain and renew TLS certificates for your

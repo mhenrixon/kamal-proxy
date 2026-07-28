@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -387,4 +388,83 @@ func TestDeployCommand_TargetPoolFlags(t *testing.T) {
 			assert.Equal(t, tt.expected.DisableKeepAlives, cmd.args.TargetOptions.DisableKeepAlives)
 		})
 	}
+}
+
+func TestParseBasicAuthFlag(t *testing.T) {
+	tests := []struct {
+		name             string
+		value            string
+		expectedUsername string
+		expectedPassword string
+		expectError      bool
+	}{
+		{
+			name:             "a simple credential",
+			value:            "admin:s3cr3t",
+			expectedUsername: "admin",
+			expectedPassword: "s3cr3t",
+		},
+		{
+			// Passwords may contain colons; usernames may not. Splitting anywhere
+			// but the first colon corrupts the password.
+			name:             "splits on the first colon only",
+			value:            "admin:pa:ss:word",
+			expectedUsername: "admin",
+			expectedPassword: "pa:ss:word",
+		},
+		{name: "no colon", value: "adminpass", expectError: true},
+		{name: "empty username", value: ":pass", expectError: true},
+		{name: "empty password", value: "admin:", expectError: true},
+		{name: "colon only", value: ":", expectError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			username, password, err := parseBasicAuthFlag(tt.value)
+
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedUsername, username)
+			assert.Equal(t, tt.expectedPassword, password)
+		})
+	}
+}
+
+func TestDeployCommand_BasicAuthEncodesCredential(t *testing.T) {
+	cmd := newDeployCommand()
+	require.NoError(t, cmd.cmd.Flags().Parse([]string{"--target=web:3000", "--basic-auth=admin:s3cr3t"}))
+	require.NoError(t, cmd.preRun(cmd.cmd, []string{"test-service"}))
+
+	encoded := cmd.args.ServiceOptions.BasicAuth
+	require.NotEmpty(t, encoded)
+
+	// What crosses the RPC socket must be a hash, never the credential.
+	assert.NotContains(t, encoded, "admin")
+	assert.NotContains(t, encoded, "s3cr3t")
+	assert.True(t, strings.HasPrefix(encoded, "sha256:"))
+
+	// And it must be something the server can read back.
+	require.NoError(t, server.ServiceOptions{BasicAuth: encoded}.Validate())
+}
+
+func TestDeployCommand_BasicAuthRejectsMalformedValues(t *testing.T) {
+	cmd := newDeployCommand()
+	require.NoError(t, cmd.cmd.Flags().Parse([]string{"--target=web:3000", "--basic-auth=adminpass"}))
+
+	err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+	require.ErrorIs(t, err, server.ErrServiceOptionsInvalid)
+	require.ErrorContains(t, err, "basic-auth")
+}
+
+func TestDeployCommand_BasicAuthAbsentLeavesServiceUnprotected(t *testing.T) {
+	cmd := newDeployCommand()
+	require.NoError(t, cmd.cmd.Flags().Parse([]string{"--target=web:3000"}))
+
+	require.NoError(t, cmd.preRun(cmd.cmd, []string{"test-service"}))
+	assert.Empty(t, cmd.args.ServiceOptions.BasicAuth)
 }

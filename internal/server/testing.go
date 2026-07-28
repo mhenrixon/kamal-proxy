@@ -11,7 +11,22 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/basecamp/kamal-proxy/internal/pages"
 )
+
+// testRoutedHandler wraps a router the way Server.buildHandler does, so that
+// proxy-generated statuses render through the default error pages instead of
+// falling back to http.Error. Tests asserting on a response body need this;
+// the bare router has no error page middleware in its chain.
+func testRoutedHandler(t testing.TB, router *Router) http.Handler {
+	t.Helper()
+
+	handler, err := WithErrorPageMiddleware(pages.DefaultErrorPages, true, router)
+	require.NoError(t, err)
+
+	return handler
+}
 
 var (
 	defaultHealthCheckConfig = HealthCheckConfig{Path: DefaultHealthCheckPath, Port: DefaultHealthCheckPort, Interval: DefaultHealthCheckInterval, Timeout: time.Second * 5}

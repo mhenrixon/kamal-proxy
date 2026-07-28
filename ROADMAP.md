@@ -24,7 +24,7 @@ Proxy-side roadmap for the dash fork. The cross-repo release sequencing, strateg
 
 | Item | Evidence | Anchor |
 |---|---|---|
-| Basic auth per service/path | port PR #216 (open); kamal#1604 | new `ServiceOptions` field + middleware in `createMiddleware` (`service.go:458`) |
+| Basic auth per service | port PR #216 (open); kamal#1604 | DONE — `--basic-auth <user>:<pass>` (`internal/server/basic_auth.go`). Deliberately **not** a `createMiddleware` middleware: that chain wraps `serviceRequestWithTarget`, which is where the HTTPS redirect lives, so a middleware there challenges before the 301 and the browser sends the password in cleartext. The check sits inline after `handleRedirectsIfNeeded`. Credentials are hashed CLI-side (salted SHA-256), so no plaintext crosses the RPC socket or reaches the state file. Per-path scoping is served by deploying a `--path-prefix` service with its own credential |
 | IP allow/deny (CIDR) | discussions #143/#144 | middleware; client addr extraction exists (`logging_middleware.go:70`) |
 | Per-IP rate limiting (token bucket + burst + allowlist) | rejected #20 | global chain (`server.go:211 buildHandler`) or per-service; `golang.org/x/time/rate` |
 | PROXY protocol | rejected #31, discussion #41 | `go-proxyproto` listener wrap in `server.go`; `run` flag |

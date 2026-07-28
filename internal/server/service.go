@@ -126,6 +126,13 @@ type ServiceOptions struct {
 	// TargetTryInterval is the pause between those attempts. Zero uses
 	// DefaultTargetTryInterval.
 	TargetTryInterval time.Duration `json:"target_try_interval,omitempty"`
+
+	// BasicAuth requires HTTP Basic credentials on every request to this
+	// service, stored as "<scheme>:<hex salt>:<hex digest>" over
+	// "<username>:<password>". The CLI does the hashing, so no plaintext
+	// credential crosses the RPC socket or reaches the state file. Empty (the
+	// default) leaves the service open.
+	BasicAuth string `json:"basic_auth,omitempty"`
 }
 
 func (so *ServiceOptions) ShouldExcludeMetrics(r *http.Request) bool {
@@ -181,6 +188,10 @@ func (so ServiceOptions) Validate() error {
 	}
 
 	if err := so.validateRetries(); err != nil {
+		return err
+	}
+
+	if err := so.validateBasicAuth(); err != nil {
 		return err
 	}
 
@@ -283,6 +294,7 @@ type Service struct {
 	sanCertManager *SANCertManager
 	certManager    CertManager
 	middleware     http.Handler
+	basicAuth      *basicAuthCredential
 }
 
 func NewService(name string, options ServiceOptions, targetOptions TargetOptions, sanCertManager *SANCertManager) (*Service, error) {
@@ -524,6 +536,7 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 	s.targetOptions = targetOptions
 	s.certManager = certManager
 	s.middleware = middleware
+	s.basicAuth = s.resolveBasicAuth(options)
 
 	return nil
 }
@@ -680,6 +693,13 @@ func (s *Service) serviceRequestWithTarget(w http.ResponseWriter, r *http.Reques
 	}
 
 	if s.handleRedirectsIfNeeded(w, r) {
+		return
+	}
+
+	// After the redirect, so credentials are never solicited over plaintext on a
+	// service that redirects to HTTPS. Before the pause check, so protection
+	// does not lapse while a service is paused or stopped.
+	if s.rejectUnauthenticated(w, r) {
 		return
 	}
 
