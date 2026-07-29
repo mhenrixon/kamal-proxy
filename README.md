@@ -567,10 +567,11 @@ caps the in-process store instead, which evicts least-recently-used first.
 
 With `stale-while-revalidate`, an expired entry keeps answering while the proxy
 fetches a fresh copy behind it — nobody waits for the refresh, and only one
-refresh runs however many clients arrive at once. The refresh is always an
-unconditional request: it exists to replace the stored entry, so it asks for the
-whole response rather than inheriting the `If-None-Match` of whichever client
-happened to trigger it.
+refresh runs however many clients arrive at once. The refresh carries the stored
+entry's *own* `ETag` or `Last-Modified`, not the validator of whichever client
+happened to trigger it — the question is whether that entry is still current. If
+your app answers `304`, the entry gets a fresh lifetime and its body never
+crosses the wire again.
 
 `must-revalidate` (and `proxy-revalidate`) turn the stale window off, since they
 forbid answering from an entry that has passed its lifetime. A response marked
@@ -620,6 +621,12 @@ Things worth knowing:
   `no-store` skips the cache in both directions.
 * **`X-Cache` says what happened** — `HIT`, `MISS` or `STALE` — alongside an
   `Age` header that counts any age the response already had upstream.
+* **`kamal_proxy_cache_refusals_total{service,reason}` explains a cold cache.**
+  Every response the cache declines to store is counted with the reason —
+  `not_public`, `no_lifetime`, `set_cookie`, `vary`, `content_encoding`,
+  `too_large`, `status` and so on. If a service sits at 100% miss, this is the
+  metric that says why. `--debug` adds a log line per refusal naming the flag or
+  target change that would fix it.
 * **`kamal_proxy_cache_events_total{service,result}` is the counter.** Exactly
   one of `hit`, `miss`, `stale` and `coalesced` is recorded per request the cache
   considered, so they sum to the request count and

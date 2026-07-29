@@ -151,6 +151,7 @@ func TestResponseIsStorable(t *testing.T) {
 		statusCode       int
 		headers          http.Header
 		expectedStorable bool
+		expectedRefusal  cacheRefusal
 		expectedFreshFor time.Duration
 		expectedStale    time.Duration
 	}{
@@ -367,10 +368,13 @@ func TestResponseIsStorable(t *testing.T) {
 			options := tt.options
 			options.Normalize()
 
-			freshFor, stale, storable := responseIsStorable(options, tt.statusCode, tt.headers)
+			freshFor, stale, refusal := responseIsStorable(options, tt.statusCode, tt.headers)
 
-			assert.Equal(t, tt.expectedStorable, storable)
-			if !storable {
+			assert.Equal(t, tt.expectedStorable, refusal == cacheRefusalNone, "refusal was %q", refusal)
+			if tt.expectedRefusal != "" {
+				assert.Equal(t, tt.expectedRefusal, refusal)
+			}
+			if refusal != cacheRefusalNone {
 				return
 			}
 			assert.Equal(t, tt.expectedFreshFor, freshFor)

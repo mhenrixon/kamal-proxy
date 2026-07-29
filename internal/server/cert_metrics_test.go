@@ -20,7 +20,8 @@ type fakeTracker struct {
 	renewals map[string]int       // "domain:success"/"domain:failure" -> count
 	counts   []certCountSample
 
-	cacheEvents map[string]int // "service:result" -> count
+	cacheEvents   map[string]int // "service:result" -> count
+	cacheRefusals map[string]int // "service:reason" -> count
 }
 
 type certCountSample struct {
@@ -29,10 +30,11 @@ type certCountSample struct {
 
 func newFakeTracker() *fakeTracker {
 	return &fakeTracker{
-		expiry:      make(map[string]time.Time),
-		wildcard:    make(map[string]bool),
-		renewals:    make(map[string]int),
-		cacheEvents: make(map[string]int),
+		expiry:        make(map[string]time.Time),
+		wildcard:      make(map[string]bool),
+		renewals:      make(map[string]int),
+		cacheEvents:   make(map[string]int),
+		cacheRefusals: make(map[string]int),
 	}
 }
 
@@ -44,6 +46,19 @@ func (f *fakeTracker) TrackCacheEvent(service, result string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cacheEvents[service+":"+result]++
+}
+
+func (f *fakeTracker) TrackCacheRefusal(service, reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cacheRefusals[service+":"+reason]++
+}
+
+// cacheRefusalCount reports how many times a refusal reason was recorded.
+func (f *fakeTracker) cacheRefusalCount(service, reason string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cacheRefusals[service+":"+reason]
 }
 
 // cacheEventCount reports how many times a result was recorded for a service.

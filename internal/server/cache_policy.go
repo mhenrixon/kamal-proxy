@@ -146,19 +146,34 @@ func requestAllowsStoredResponse(r *http.Request) bool {
 	return !directives.hasMaxAge || directives.maxAge > 0
 }
 
-// responseIsStorable reports whether the response may be stored, and for how
-// long it counts as fresh and then as stale-but-servable.
-func responseIsStorable(options CacheOptions, statusCode int, header http.Header) (time.Duration, time.Duration, bool) {
-	if !options.Enabled || !slices.Contains(cacheableStatuses, statusCode) {
-		return 0, 0, false
+// responseIsStorable reports how long the response counts as fresh and then as
+// stale-but-servable, along with the reason it may not be stored at all. An
+// empty reason means it may.
+//
+// The reason exists because "not cached" used to be indistinguishable from
+// "cached and never hit": an operator watching 100% MISS had nothing to go on.
+// It is reported as a metric label and a debug log line, so the answer is one
+// query away rather than a code read.
+func responseIsStorable(options CacheOptions, statusCode int, header http.Header) (time.Duration, time.Duration, cacheRefusal) {
+	if !options.Enabled {
+		return 0, 0, cacheRefusalDisabled
+	}
+
+	if !slices.Contains(cacheableStatuses, statusCode) {
+		return 0, 0, cacheRefusalStatus
 	}
 
 	directives := parseCacheControl(header.Values("Cache-Control"))
 
 	// Freshness alone is not consent. Requiring `public` means a target that
 	// forgets to mark a page private is still never shared between clients.
-	if !directives.public || directives.noStore || directives.private {
-		return 0, 0, false
+	switch {
+	case directives.noStore:
+		return 0, 0, cacheRefusalNoStore
+	case directives.private:
+		return 0, 0, cacheRefusalPrivate
+	case !directives.public:
+		return 0, 0, cacheRefusalNotPublic
 	}
 
 	// no-cache permits storing but requires the entry to be validated before
@@ -167,23 +182,23 @@ func responseIsStorable(options CacheOptions, statusCode int, header http.Header
 	// keeping it would mean serving it unvalidated, which is what the directive
 	// forbids.
 	if directives.noCache {
-		return 0, 0, false
+		return 0, 0, cacheRefusalNoCache
 	}
 
 	freshFor, ok := directives.sharedLifetime()
 	if !ok || freshFor <= 0 {
-		return 0, 0, false
+		return 0, 0, cacheRefusalNoLifetime
 	}
 	if options.MaxTTL > 0 && freshFor > options.MaxTTL {
 		freshFor = options.MaxTTL
 	}
 
 	if header.Get("Set-Cookie") != "" && !options.AllowSetCookie {
-		return 0, 0, false
+		return 0, 0, cacheRefusalSetCookie
 	}
 
 	if header.Get("Content-Range") != "" {
-		return 0, 0, false
+		return 0, 0, cacheRefusalContentRange
 	}
 
 	// A body the target encoded itself is one particular representation, and by
@@ -192,17 +207,17 @@ func responseIsStorable(options CacheOptions, statusCode int, header http.Header
 	// accept-encoding in --cache-vary-header puts it in the key and makes these
 	// storable, at the cost of an entry per distinct Accept-Encoding string.
 	if header.Get("Content-Encoding") != "" && !options.keysOnAcceptEncoding() {
-		return 0, 0, false
+		return 0, 0, cacheRefusalContentEncoding
 	}
 
 	// Holding an event stream back to store it is exactly what the client asked
 	// us not to do, and its body never ends.
 	if normalizeContentType(header.Get("Content-Type")) == eventStreamContentType {
-		return 0, 0, false
+		return 0, 0, cacheRefusalEventStream
 	}
 
 	if !varyCovered(header, options) {
-		return 0, 0, false
+		return 0, 0, cacheRefusalVary
 	}
 
 	// must-revalidate forbids answering from an entry that has passed its
@@ -214,7 +229,7 @@ func responseIsStorable(options CacheOptions, statusCode int, header http.Header
 		staleWhileRevalidate = 0
 	}
 
-	return freshFor, staleWhileRevalidate, true
+	return freshFor, staleWhileRevalidate, cacheRefusalNone
 }
 
 // varyCovered reports whether every dimension the response varies on is one the
