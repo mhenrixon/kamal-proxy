@@ -26,6 +26,12 @@ func testIdleRouter(t *testing.T, lifecycle ContainerLifecycle) *Router {
 		for _, service := range router.services.All() {
 			service.Dispose()
 		}
+
+		// Dispose stops the controllers but does not wait for a persist already in
+		// flight. SaveState takes the same saveLock, so this returns only once any
+		// in-progress write has finished -- otherwise it races t.TempDir cleanup
+		// and fails with "directory not empty", which -race makes far more likely.
+		_ = router.SaveState()
 	})
 
 	return router
