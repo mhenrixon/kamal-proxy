@@ -135,6 +135,15 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 
 	router.SetCacheStore(cacheStore)
 
+	// Only when the operator asked for it: reaching this socket is
+	// root-equivalent on the host, so an unconfigured proxy holds no such handle
+	// at all. Without it a deploy carrying --sleep-after is refused outright
+	// rather than accepted and silently never acted on.
+	if globalConfig.DockerSocketPath != "" {
+		router.SetContainerLifecycle(server.NewDockerClient(globalConfig.DockerSocketPath))
+		slog.Info("Scale-to-zero enabled", "docker_socket", globalConfig.DockerSocketPath)
+	}
+
 	var dynamicDomains *server.DynamicDomainManager
 
 	if globalConfig.ACMEEmail != "" {

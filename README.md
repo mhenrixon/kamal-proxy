@@ -687,6 +687,61 @@ or `--tls-domains-source` — serves every hostname no other service claims, so 
 client CA applies to all of them.
 
 
+### Scale to zero when idle
+
+A service can stop its containers after a period without traffic and start them
+again on the next request. On a host running several low-traffic apps this is
+the difference between paying for all of them all the time and paying for the
+ones someone is actually using — an idle Rails app holds 200–300 MB it is not
+using.
+
+Start the proxy with a container runtime socket, then deploy with `--sleep-after`:
+
+    kamal-proxy run --docker-socket /var/run/docker.sock
+    kamal-proxy deploy service1 --target web-1:3000 --host app.example.com --sleep-after 30m
+
+The first request after the containers stop is held while they start and pass a
+health check, then forwarded — body intact, including a chunked POST. Concurrent
+requests coalesce into a single start. If the containers do not come up within
+`--wake-timeout` (30s by default) the request fails with 503.
+
+> **`--docker-socket` gives the proxy root-equivalent access to the host.** Anyone
+> who can execute code in the proxy can control every container on that machine.
+> It is off by default and should stay off unless a service uses `--sleep-after`.
+> The lifecycle is isolated behind a small interface, so a restricted host-side
+> start/stop service can replace direct socket access later.
+
+**What does and does not count as traffic.** Health checks never wake a sleeping
+service — an uptime monitor polling `/up` would otherwise pin it awake forever —
+and neither do the proxy's own TLS probes. A sleeping service answers its own
+health checks with `200`, and reports `503` once a wake has actually failed, so
+monitoring reflects reality rather than the last good state.
+
+Requests rejected by `--allow-ip`, `--basic-auth` or `--rate-limit`, and paths
+answered by `--redirect`, never reach the containers and so never start them.
+Neither does a response served from `--cache`: a cached service can keep serving
+while its containers stay stopped.
+
+An open WebSocket or event stream keeps a service awake for as long as it is
+open, so a long-lived connection is never cut short by an idle timeout.
+
+**Which container gets stopped.** By default the proxy uses the target's hostname,
+which is the container id under Kamal and the container name under Compose. When
+a target names something else — a Compose service alias, or an IP address — say
+so explicitly:
+
+    kamal-proxy deploy service1 --target web:3000 --host app.example.com --sleep-after 30m --sleep-container myapp-web-1
+
+The deploy checks the reference against the runtime and fails immediately if it
+names nothing, rather than accepting the deploy and failing at the first idle
+timeout an hour later. `kamal-proxy list` shows `sleeping` or `waking` in the
+state column, and the state survives a proxy restart.
+
+**Known limitation.** `kamal deploy` prunes stopped containers, and a sleeping
+container is stopped. Kamal 2 releases before the per-role prune fix can remove
+one, after which every wake fails until the service is redeployed.
+
+
 ### Minimum TLS version
 
 The HTTPS listener negotiates TLS 1.2 and above by default. To refuse TLS 1.2 as

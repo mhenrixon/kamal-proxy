@@ -864,17 +864,6 @@ func (s *Service) serviceRequestWithTarget(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// After every gate above, so that no blocked, throttled, unauthenticated or
-	// redirected request can spend a container start. Before target selection, so
-	// the request body is still unread when the hold begins.
-	handled, endIdleRequest := s.handleIdleRequest(w, r)
-	if endIdleRequest != nil {
-		defer endIdleRequest()
-	}
-	if handled {
-		return
-	}
-
 	// Last, so that everything above -- the health check exemptions, the
 	// redirects, the allow list -- still sees the path the client asked for.
 	r = s.rewriteRequest(r)

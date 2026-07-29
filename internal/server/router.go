@@ -61,6 +61,7 @@ type Router struct {
 	dynamicDomainManager *DynamicDomainManager
 	certRegistry         *CertificateRegistry
 	cacheStore           CacheStore
+	lifecycle            ContainerLifecycle
 }
 
 type ServiceDescription struct {
@@ -218,6 +219,8 @@ func (r *Router) RestoreLastSavedState() error {
 		return nil
 	})
 
+	r.restoreSleepingServices(services)
+
 	if r.recheckOnRestore {
 		for _, service := range services {
 			service.RecheckTargetHealth()
@@ -317,6 +320,12 @@ func (r *Router) DeployService(name string, targetURLs, readerURLs []string, opt
 	}
 
 	if err := validateRateLimitHealthCheck(options, targetOptions); err != nil {
+		return err
+	}
+
+	// Before anything is installed: a reference the runtime does not know should
+	// fail on the operator's terminal, not at the first idle timeout.
+	if err := r.validateSleepConfiguration(options, targetURLs, targetOptions); err != nil {
 		return err
 	}
 
@@ -476,7 +485,7 @@ func (r *Router) ListActiveServices() ServiceDescriptionMap {
 					Path:          path,
 					Target:        target,
 					TLS:           service.options.TLSEnabled,
-					State:         service.pauseController.GetState().String(),
+					State:         describeServiceState(service),
 					Hosts:         service.options.Hosts,
 					PathPrefixes:  service.options.PathPrefixes,
 					Targets:       service.active.WriteTargets().Names(),
@@ -572,6 +581,8 @@ func (r *Router) createOrUpdateService(name string, options ServiceOptions, targ
 		}
 
 		service.SetCacheStore(r.cacheStore)
+		service.statePersister = r.persistState
+		service.SetContainerLifecycle(r.lifecycle)
 		return service, nil
 	}
 
