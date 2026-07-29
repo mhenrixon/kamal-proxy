@@ -84,6 +84,9 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.TargetTryDuration, "target-try-duration", 0, "How long to keep trying to place a request on a healthy target before giving up (default 0, single attempt; only idempotent requests without a body are re-sent to another target)")
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.TargetTryInterval, "target-try-interval", 0, "Pause between attempts while waiting for a healthy target (default 250ms; requires --target-try-duration)")
 
+	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.ServiceOptions.SessionAffinity, "session-affinity", false, "Keep each client on the target that first served it, for apps holding session state in the instance (default false, every request is rotated). The client carries an opaque HttpOnly cookie naming the target; when that target leaves the pool the next request falls through to another one and is re-pinned. Reads served by a --read-target are not pinned")
+	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.SessionAffinityCookieName, "session-affinity-cookie", "", fmt.Sprintf("Name of the --session-affinity pin cookie (default %s)", server.DefaultSessionAffinityCookieName))
+
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.TargetOptions.BufferRequests, "buffer-requests", false, "Buffer requests before forwarding to target")
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.TargetOptions.BufferResponses, "buffer-responses", false, "Buffer responses before forwarding to client")
 	deployCommand.cmd.Flags().Int64Var(&deployCommand.args.TargetOptions.MaxMemoryBufferSize, "buffer-memory", server.DefaultMaxMemoryBufferSize, "Max size of memory buffer")

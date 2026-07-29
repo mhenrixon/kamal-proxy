@@ -213,6 +213,61 @@ func TestDeployCommand_CanonicalHostValidation(t *testing.T) {
 	}
 }
 
+func TestDeployCommand_SessionAffinityFlags(t *testing.T) {
+	tests := []struct {
+		name           string
+		args           []string
+		expectedError  string
+		expectedOn     bool
+		expectedCookie string
+	}{
+		{
+			name: "unset leaves affinity off",
+			args: []string{"--target=web:3000"},
+		},
+		{
+			name:       "enabled with the default cookie",
+			args:       []string{"--target=web:3000", "--session-affinity"},
+			expectedOn: true,
+		},
+		{
+			name:           "enabled with a custom cookie",
+			args:           []string{"--target=web:3000", "--session-affinity", "--session-affinity-cookie=app-instance"},
+			expectedOn:     true,
+			expectedCookie: "app-instance",
+		},
+		{
+			name:          "a cookie name without the option is rejected",
+			args:          []string{"--target=web:3000", "--session-affinity-cookie=app-instance"},
+			expectedError: "session-affinity-cookie requires session-affinity",
+		},
+		{
+			name:          "an unusable cookie name is rejected",
+			args:          []string{"--target=web:3000", "--session-affinity", "--session-affinity-cookie=app instance"},
+			expectedError: "is not a valid cookie name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newDeployCommand()
+			require.NoError(t, cmd.cmd.Flags().Parse(tt.args))
+
+			err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+			if tt.expectedError != "" {
+				require.ErrorIs(t, err, server.ErrServiceOptionsInvalid)
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedOn, cmd.args.ServiceOptions.SessionAffinity)
+			assert.Equal(t, tt.expectedCookie, cmd.args.ServiceOptions.SessionAffinityCookieName)
+		})
+	}
+}
+
 func TestDeployCommand_TargetTryFlags(t *testing.T) {
 	tests := []struct {
 		name             string

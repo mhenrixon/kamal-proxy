@@ -103,6 +103,9 @@ type LoadBalancer struct {
 
 	// retryPolicy is fork-only; see retry.go.
 	retryPolicy RetryPolicy
+	// sessionAffinity is fork-only, and nil unless the deployment asked for it;
+	// see session_affinity.go.
+	sessionAffinity *sessionPinner
 }
 
 func NewLoadBalancer(targets TargetList, writerAffinityTimeout time.Duration, readTargetsAcceptWebsockets bool) *LoadBalancer {
@@ -219,6 +222,7 @@ func (lb *LoadBalancer) StartRequest(w http.ResponseWriter, r *http.Request) fun
 	}
 
 	lb.setTargetHeader(req, target)
+	w = lb.pinSession(w, r, target)
 
 	return func() {
 		target.SendRequest(w, req)
@@ -240,7 +244,10 @@ func (lb *LoadBalancer) claimTarget(req *http.Request) (*Target, *http.Request, 
 	readRequest := lb.isReadRequest(req)
 	treatAsReadRequest := readRequest && !lb.hasWriteCookie(req)
 
-	target := lb.nextTarget(treatAsReadRequest)
+	target := lb.pinnedTarget(req, treatAsReadRequest)
+	if target == nil {
+		target = lb.nextTarget(treatAsReadRequest)
+	}
 	if target == nil {
 		return nil, nil, false, ErrorNoHealthyTargets
 	}

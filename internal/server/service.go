@@ -133,6 +133,14 @@ type ServiceOptions struct {
 	// DefaultTargetTryInterval.
 	TargetTryInterval time.Duration `json:"target_try_interval,omitempty"`
 
+	// SessionAffinity keeps each client on the target that first served it, for
+	// apps holding session state in the instance. False (the default) rotates
+	// every request, as the proxy always has. See session_affinity.go.
+	SessionAffinity bool `json:"session_affinity,omitempty"`
+	// SessionAffinityCookieName names the pin cookie. Empty uses
+	// DefaultSessionAffinityCookieName.
+	SessionAffinityCookieName string `json:"session_affinity_cookie_name,omitempty"`
+
 	// BasicAuth requires HTTP Basic credentials on every request to this
 	// service, stored as "<scheme>:<hex salt>:<hex digest>" over
 	// "<username>:<password>". The CLI does the hashing, so no plaintext
@@ -230,6 +238,10 @@ func (so ServiceOptions) Validate() error {
 	}
 
 	if err := so.validateRetries(); err != nil {
+		return err
+	}
+
+	if err := so.validateSessionAffinity(); err != nil {
 		return err
 	}
 
@@ -485,7 +497,8 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	s.active = NewLoadBalancer(activeTargets, ms.Options.WriterAffinityTimeout, ms.Options.ReadTargetsAcceptWebsockets).
-		WithRetryPolicy(ms.Options.RetryPolicy())
+		WithRetryPolicy(ms.Options.RetryPolicy()).
+		WithSessionAffinity(ms.Options.SessionAffinityPolicy())
 	s.active.MarkAllHealthy()
 
 	rolloutTargets, err := NewTargetList(ms.RolloutTargets, ms.RolloutReaders, ms.TargetOptions)
@@ -494,7 +507,8 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 	}
 	if len(rolloutTargets) > 0 {
 		s.rollout = NewLoadBalancer(rolloutTargets, ms.Options.WriterAffinityTimeout, ms.Options.ReadTargetsAcceptWebsockets).
-			WithRetryPolicy(ms.Options.RetryPolicy())
+			WithRetryPolicy(ms.Options.RetryPolicy()).
+			WithSessionAffinity(ms.Options.SessionAffinityPolicy())
 		s.rollout.MarkAllHealthy()
 	}
 
