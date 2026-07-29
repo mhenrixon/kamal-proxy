@@ -119,6 +119,13 @@ func (p *sessionPinner) pinnedID(req *http.Request) string {
 // carries the right one. The pin lasts as long as the client's session: an
 // expiry would only decide when the client rejoins the rotation, which the pool
 // changing decides already.
+//
+// Secure tracks the request rather than being pinned on: a service the proxy
+// serves over plain HTTP -- an internal one, or one behind separate TLS
+// termination -- would never get the cookie back from a browser if it were
+// always set, and affinity would silently do nothing. Services deployed with
+// --tls redirect to HTTPS before the load balancer is ever reached, so in
+// practice their pins are only ever issued over TLS.
 func (p *sessionPinner) cookieFor(req *http.Request, target *Target) *http.Cookie {
 	id := p.ids[target]
 	if id == "" || id == p.pinnedID(req) {

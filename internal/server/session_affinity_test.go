@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,6 +58,23 @@ func TestSessionAffinity_CookieAttributes(t *testing.T) {
 	assert.True(t, cookie.HttpOnly)
 	assert.False(t, cookie.Secure, "a plain HTTP request must not get a Secure cookie it will never send back")
 	assert.True(t, cookie.Expires.IsZero(), "the pin lasts for the browser session, not a fixed window")
+}
+
+func TestSessionAffinity_PinIsSecureOverTLS(t *testing.T) {
+	lb := testPinningLoadBalancer(t, SessionAffinityPolicy{Enabled: true},
+		func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("one")) },
+	)
+	require.NoError(t, lb.WaitUntilHealthy(time.Second))
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/", nil)
+	req.TLS = &tls.ConnectionState{}
+
+	w := httptest.NewRecorder()
+	lb.StartRequest(w, req)()
+
+	cookie := sessionAffinityCookie(t, w)
+	require.NotNil(t, cookie)
+	assert.True(t, cookie.Secure, "a pin issued over TLS must not be sent back in the clear")
 }
 
 // The cookie names the target obliquely: anyone holding one must not be able to
