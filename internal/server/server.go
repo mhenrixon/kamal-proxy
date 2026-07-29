@@ -400,6 +400,10 @@ func (s *Server) buildHandler() http.Handler {
 		handler = dynamicDomains.WrapHandler(handler)
 	}
 
+	// Outermost, and unconditional: a liveness probe has to answer on a proxy
+	// with nothing deployed, and stay out of the access log.
+	handler = WithPingMiddleware(handler)
+
 	return handler
 }
 
