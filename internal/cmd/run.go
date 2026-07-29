@@ -32,6 +32,8 @@ func newRunCommand() *runCommand {
 	}
 
 	runCommand.cmd.Flags().BoolVar(&runCommand.debugLogsEnabled, "debug", getEnvBool("DEBUG", false), "Include debugging logs")
+	runCommand.cmd.Flags().StringVar(&globalConfig.LogFormat, "log-format", getEnvString("LOG_FORMAT", server.DefaultLogFormat), "Format for every log line, the access log included: json or text")
+	runCommand.cmd.Flags().StringVar(&globalConfig.TraceContext, "trace-context", getEnvString("TRACE_CONTEXT", server.DefaultTraceContextMode), "Handling of the W3C traceparent header: off, propagate (log the incoming trace) or generate (also start one when absent)")
 	runCommand.cmd.Flags().IntVar(&globalConfig.HttpPort, "http-port", getEnvInt("HTTP_PORT", server.DefaultHttpPort), "Port to serve HTTP traffic on")
 	runCommand.cmd.Flags().IntVar(&globalConfig.HttpsPort, "https-port", getEnvInt("HTTPS_PORT", server.DefaultHttpsPort), "Port to serve HTTPS traffic on")
 	runCommand.cmd.Flags().IntVar(&globalConfig.MetricsPort, "metrics-port", getEnvInt("METRICS_PORT", 0), "Publish metrics on the specified port (default zero to disable)")
@@ -62,11 +64,20 @@ func newRunCommand() *runCommand {
 	return runCommand
 }
 
-// preRun rejects a bad --min-tls before the command restores routing state or
-// registers an ACME account, so a typo costs a millisecond rather than a round
-// trip to Let's Encrypt. The listener parses it again at bind time.
+// preRun rejects a bad --min-tls, --log-format or --trace-context before the
+// command restores routing state or registers an ACME account, so a typo costs
+// a millisecond rather than a round trip to Let's Encrypt. Each value is parsed
+// again where it is used - the listener at bind time, the logger at startup.
 func (c *runCommand) preRun(cmd *cobra.Command, args []string) error {
 	if _, err := server.ParseMinTLSVersion(globalConfig.MinTLS); err != nil {
+		return err
+	}
+
+	if _, err := server.ParseLogFormat(globalConfig.LogFormat); err != nil {
+		return err
+	}
+
+	if _, err := server.ParseTraceContextMode(globalConfig.TraceContext); err != nil {
 		return err
 	}
 
@@ -74,7 +85,9 @@ func (c *runCommand) preRun(cmd *cobra.Command, args []string) error {
 }
 
 func (c *runCommand) run(cmd *cobra.Command, args []string) error {
-	c.setLogger()
+	if err := c.setLogger(); err != nil {
+		return err
+	}
 
 	// Parse DNS provider if specified
 	if c.acmeDNSProvider != "" {
@@ -204,11 +217,18 @@ func (c *runCommand) initCertificateRegistry(router *server.Router) (*server.Cer
 	return server.NewCertificateRenewalManager(registry), nil
 }
 
-func (c *runCommand) setLogger() {
+func (c *runCommand) setLogger() error {
+	format, err := server.ParseLogFormat(globalConfig.LogFormat)
+	if err != nil {
+		return err
+	}
+
 	level := slog.LevelInfo
 	if c.debugLogsEnabled {
 		level = slog.LevelDebug
 	}
 
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+	slog.SetDefault(slog.New(format.NewHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+
+	return nil
 }

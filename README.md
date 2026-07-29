@@ -174,6 +174,59 @@ stripped path prefixes should specify their excluded paths in the un-prefixed
 form.
 
 
+### Choosing a log format
+
+Logs are written as JSON by default. To write logfmt instead, start the proxy
+with `--log-format` (or the `LOG_FORMAT` environment variable):
+
+    kamal-proxy run --log-format text
+
+Accepted values are `json` and `text`; `logfmt` is accepted as a synonym for
+`text`. The setting covers the whole process — the per-request access log and
+the proxy's own startup, certificate and shutdown messages all go through the
+same handler, so a log pipeline never has to parse two shapes at once.
+
+
+### Correlating logs with distributed traces
+
+If your clients or an upstream load balancer already send a W3C
+[`traceparent`](https://www.w3.org/TR/trace-context/) header, the proxy reads it
+and adds `trace_id`, `span_id` and `trace_flags` to that request's access log
+line, so proxy logs join the trace your application is already recording. The
+header itself is forwarded byte for byte.
+
+This is on by default. Control it with `--trace-context` (or the
+`TRACE_CONTEXT` environment variable):
+
+    kamal-proxy run --trace-context generate
+
+| Value | Behaviour |
+| --- | --- |
+| `off` | The header is neither read nor logged. It still reaches the target, like any other header. |
+| `propagate` (default) | A valid incoming `traceparent` is logged and forwarded unchanged. A missing or malformed one is left exactly as it arrived. |
+| `generate` | As `propagate`, and a request arriving without a valid `traceparent` gets a newly minted one, so every request downstream carries a trace id that the access log also names. |
+
+The trace attributes appear only on requests that actually carry a trace, so
+enabling this changes nothing about the log lines of a deployment that does not
+trace.
+
+`span_id` is the **caller's** span — the one your application will parent its
+own spans to. The proxy deliberately does not mint a span of its own: it exports
+no spans to any backend, so a span id invented here would leave your application
+parented to a span that no tracing backend has ever seen.
+
+Traces minted by `generate` are marked sampled (`trace_flags` `01`). The
+alternative would be worse than not minting one at all — an application that
+would otherwise have made its own sampling decision honours the parent's
+instead, so an unsampled parent silently switches its tracing off. Use
+`generate` when you want the proxy to be the start of the trace, and leave it at
+`propagate` when your application already decides what to sample.
+
+Per the spec, a request whose `traceparent` is malformed has its `tracestate`
+dropped when `generate` replaces the header — that `tracestate` describes the
+trace that was just discarded.
+
+
 ### Password-protecting a service
 
 To put a service behind an HTTP Basic password prompt, deploy it with
