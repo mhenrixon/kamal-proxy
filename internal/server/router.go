@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -510,6 +511,18 @@ func (r *Router) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 	}
 
 	return service.certManager.GetCertificate(hello)
+}
+
+// clientCAsForHost returns the certificate authorities that client certificates
+// must chain to for the given host, or nil when the host's service does not
+// require them.
+func (r *Router) clientCAsForHost(host string) *x509.CertPool {
+	service := r.serviceForHost(host)
+	if service == nil {
+		return nil
+	}
+
+	return service.clientCAs
 }
 
 // Private

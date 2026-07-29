@@ -418,6 +418,26 @@ your certificate file and the corresponding private key:
     kamal-proxy deploy service1 --target web-1:3000 --host app1.example.com --tls --tls-certificate-path cert.pem --tls-private-key-path key.pem
 
 
+### Mutual TLS (mTLS)
+
+To require that clients present a certificate, pass a PEM bundle of the
+certificate authorities they must chain to with `--tls-client-ca-path`.
+Connections that present no certificate, or one signed by any other authority,
+are rejected during the TLS handshake:
+
+    kamal-proxy deploy service1 --target web-1:3000 --host app1.example.com --tls --tls-certificate-path cert.pem --tls-private-key-path key.pem --tls-client-ca-path ca.pem
+
+The requirement is per-service and applies to the hosts that service serves, so
+services on the same proxy can have different client certificate rules. This is
+how you enable [Cloudflare Authenticated Origin
+Pulls](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/),
+ensuring only Cloudflare can reach your origin.
+
+Note that a service deployed without `--host` — one using `--tls-on-demand-url`
+or `--tls-domains-source` — serves every hostname no other service claims, so its
+client CA applies to all of them.
+
+
 ### SAN Certificate Batching
 
 When started with `--acme-email` (or the `ACME_EMAIL` environment variable),

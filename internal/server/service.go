@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -111,9 +112,13 @@ type ServiceOptions struct {
 	ReadTargetsAcceptWebsockets bool          `json:"read_targets_accept_websockets"`
 	ExcludeMetricsPaths         []string      `json:"exclude_metrics_paths"`
 	ClientIPHeader              string        `json:"client_ip_header"`
-	TLSDomainsSource            string        `json:"tls_domains_source,omitempty"`
-	TLSDomainsInterval          time.Duration `json:"tls_domains_interval,omitempty"`
-	TLSDomainsBatchSize         int           `json:"tls_domains_batch_size,omitempty"`
+	// TLSClientCACertificatePath is a PEM bundle of certificate authorities that
+	// client certificates must chain to. Set, it turns on mTLS for the hosts this
+	// service serves; empty (the default) leaves the handshake untouched.
+	TLSClientCACertificatePath string        `json:"tls_client_ca_certificate_path,omitempty"`
+	TLSDomainsSource           string        `json:"tls_domains_source,omitempty"`
+	TLSDomainsInterval         time.Duration `json:"tls_domains_interval,omitempty"`
+	TLSDomainsBatchSize        int           `json:"tls_domains_batch_size,omitempty"`
 
 	// InterceptErrorStatuses lists the response statuses the target itself may
 	// return that should be replaced with the proxy's error pages. Empty (the
@@ -170,6 +175,10 @@ func (so ServiceOptions) Validate() error {
 
 	if so.TLSOnDemandURL != "" && !so.TLSEnabled {
 		return fmt.Errorf("%w: TLS must be enabled to use a TLS on-demand URL", ErrServiceOptionsInvalid)
+	}
+
+	if so.TLSClientCACertificatePath != "" && !so.TLSEnabled {
+		return fmt.Errorf("%w: TLS must be enabled to require client certificates", ErrServiceOptionsInvalid)
 	}
 
 	if so.TLSEnabled {
@@ -270,6 +279,7 @@ type Service struct {
 
 	sanCertManager *SANCertManager
 	certManager    CertManager
+	clientCAs      *x509.CertPool
 	middleware     http.Handler
 	basicAuth      *basicAuthCredential
 	allowedIPs     *ipAllowList
@@ -509,6 +519,13 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 		return err
 	}
 
+	// Loaded here rather than at handshake time so a bad path fails the deploy.
+	// Silently serving without client verification would be a security hole.
+	clientCAs, err := s.createClientCAs(options)
+	if err != nil {
+		return err
+	}
+
 	middleware, err := s.createMiddleware(options, targetOptions, certManager)
 	if err != nil {
 		return err
@@ -517,6 +534,7 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 	s.options = options
 	s.targetOptions = targetOptions
 	s.certManager = certManager
+	s.clientCAs = clientCAs
 	s.middleware = middleware
 	s.basicAuth = s.resolveBasicAuth(options)
 	s.allowedIPs = s.resolveIPAllowList(options)
@@ -615,6 +633,14 @@ func (s *Service) createCertManager(options ServiceOptions) (CertManager, error)
 		HostPolicy: hostPolicy,
 		Client:     &acme.Client{DirectoryURL: options.ACMEDirectory},
 	}, nil
+}
+
+func (s *Service) createClientCAs(options ServiceOptions) (*x509.CertPool, error) {
+	if options.TLSClientCACertificatePath == "" {
+		return nil, nil
+	}
+
+	return loadClientCAs(options.TLSClientCACertificatePath)
 }
 
 func (s *Service) createHostPolicy(options ServiceOptions, certCache autocert.Cache) (autocert.HostPolicy, error) {
