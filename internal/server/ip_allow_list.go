@@ -31,11 +31,37 @@ const (
 // names -- is written by the client and is only consulted when the peer itself
 // is one of the operator's declared proxies.
 type ipAllowList struct {
-	prefixes       []netip.Prefix
-	trusted        []netip.Prefix
-	clientIPHeader string
+	forwardedResolver
+
+	prefixes []netip.Prefix
 
 	denied *tokenBucket
+}
+
+// forwardedResolver works out which address on a request represents the client.
+//
+// It is embedded by everything that makes a per-client decision -- the allow
+// list here, and the rate limiter -- so that the trust rules below have exactly
+// one implementation. Three bypasses closed here (repeated header lines,
+// IPv4-mapped IPv6, unresolvable chains) would otherwise have to be fixed once
+// per caller, and the one that got missed would be the vulnerable one.
+type forwardedResolver struct {
+	trusted        []netip.Prefix
+	clientIPHeader string
+}
+
+func newForwardedResolver(trustedProxies []string, clientIPHeader string) (forwardedResolver, error) {
+	trusted, err := parseIPPrefixes(trustedProxies, "trusted-proxy")
+	if err != nil {
+		return forwardedResolver{}, err
+	}
+
+	header := ""
+	if clientIPHeader != "" {
+		header = http.CanonicalHeaderKey(clientIPHeader)
+	}
+
+	return forwardedResolver{trusted: trusted, clientIPHeader: header}, nil
 }
 
 func newIPAllowList(allowIPs, trustedProxies []string, clientIPHeader string) (*ipAllowList, error) {
@@ -44,21 +70,15 @@ func newIPAllowList(allowIPs, trustedProxies []string, clientIPHeader string) (*
 		return nil, err
 	}
 
-	trusted, err := parseIPPrefixes(trustedProxies, "trusted-proxy")
+	resolver, err := newForwardedResolver(trustedProxies, clientIPHeader)
 	if err != nil {
 		return nil, err
 	}
 
-	header := ""
-	if clientIPHeader != "" {
-		header = http.CanonicalHeaderKey(clientIPHeader)
-	}
-
 	return &ipAllowList{
-		prefixes:       prefixes,
-		trusted:        trusted,
-		clientIPHeader: header,
-		denied:         newTokenBucket(deniedLogBurst, deniedLogInterval),
+		forwardedResolver: resolver,
+		prefixes:          prefixes,
+		denied:            newTokenBucket(deniedLogBurst, deniedLogInterval),
 	}, nil
 }
 
@@ -82,14 +102,14 @@ func (l *ipAllowList) permits(addr netip.Addr) bool {
 // chain returns the zero Addr, which denies: falling back to the peer would be
 // a bypass on the very plausible configuration where the allow list contains
 // the proxy's own range.
-func (l *ipAllowList) clientAddr(r *http.Request) netip.Addr {
+func (f forwardedResolver) clientAddr(r *http.Request) netip.Addr {
 	peer := parseHostAddr(r.RemoteAddr)
 
-	if len(l.trusted) == 0 || !peer.IsValid() || !containsAddr(l.trusted, peer) {
+	if len(f.trusted) == 0 || !peer.IsValid() || !containsAddr(f.trusted, peer) {
 		return peer
 	}
 
-	return l.forwardedAddr(r)
+	return f.forwardedAddr(r)
 }
 
 // forwardedAddr walks the forwarded chain from the nearest hop backwards.
@@ -98,12 +118,12 @@ func (l *ipAllowList) clientAddr(r *http.Request) netip.Addr {
 // entries, and a hop that appends its own line rather than folding into the
 // client's leaves the client's forged line first. Reading only that line would
 // hand the whole walk to the attacker.
-func (l *ipAllowList) forwardedAddr(r *http.Request) netip.Addr {
+func (f forwardedResolver) forwardedAddr(r *http.Request) netip.Addr {
 	header := "X-Forwarded-For"
-	if l.clientIPHeader != "" {
+	if f.clientIPHeader != "" {
 		// ClientIPMiddleware rewrites X-Forwarded-For from this header before we
 		// run, so read the original rather than the value it left behind.
-		header = l.clientIPHeader
+		header = f.clientIPHeader
 	}
 
 	entries := []string{}
@@ -121,7 +141,7 @@ func (l *ipAllowList) forwardedAddr(r *http.Request) netip.Addr {
 			return netip.Addr{}
 		}
 
-		if !containsAddr(l.trusted, addr) {
+		if !containsAddr(f.trusted, addr) {
 			return addr
 		}
 	}
@@ -228,8 +248,10 @@ func parseIPPrefixes(entries []string, flagName string) ([]netip.Prefix, error) 
 }
 
 func (so ServiceOptions) validateAllowIPs() error {
-	if len(so.TrustedProxies) > 0 && len(so.AllowIPs) == 0 {
-		return fmt.Errorf("%w: trusted-proxy requires allow-ip", ErrServiceOptionsInvalid)
+	// Rate limiting resolves the client the same way, so it is a second
+	// legitimate reason to declare the proxies in front of this one.
+	if len(so.TrustedProxies) > 0 && len(so.AllowIPs) == 0 && so.RateLimit <= 0 {
+		return fmt.Errorf("%w: trusted-proxy requires allow-ip or rate-limit", ErrServiceOptionsInvalid)
 	}
 
 	if len(so.AllowIPs) > 0 && so.ClientIPHeader != "" && len(so.TrustedProxies) == 0 {
