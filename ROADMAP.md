@@ -58,5 +58,5 @@ Proxy-side roadmap for the dash fork. The cross-repo release sequencing, strateg
 
 - New per-service knobs go in `ServiceOptions` (`service.go:82`), per-target in `TargetOptions` (`target.go:65`), one-shot in `DeploymentOptions` (`service.go:76`); flags register in `internal/cmd/deploy.go` / `run.go`; RPC arg structs in `internal/server/commands.go:19-63`.
 - `ServiceOptions`/`TargetOptions` are JSON-persisted across restarts — new fields must round-trip `Service.MarshalJSON/UnmarshalJSON` (`service.go:273/294`) and be default-safe against old state files.
-- Never rename module/binary/RPC/socket (see CLAUDE.md Never Do #1). Image tags stay four-segment.
+- Never rename module/binary/RPC/socket (see CLAUDE.md Never Do #1). Image tags stay four-segment `vX.Y.Z.N`, all four segments ours to choose.
 - Anything reachable from deploy.yml also needs gem-side plumbing — see the flag-mapping table workflow in `../kamal` (one file for plain options: `lib/kamal/configuration/proxy.rb`; three when the loadbalancer tier must carry it too).

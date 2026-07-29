@@ -8,8 +8,10 @@ on:
         required: true
 
   push:
-    # Four-segment fork tags only (vX.Y.Z.N) - upstream's vX.Y.Z tags never match.
-    tags: [ "v[0-9]+.[0-9]+.[0-9]+.[0-9]+" ]
+    # Release tags are four-segment vX.Y.Z.N; plain vX.Y.Z publishes too, so a
+    # tag is never pushed that silently fails to build. Keep the shapes here in
+    # step with script/release-dash.
+    tags: [ "v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+.[0-9]+" ]
 
 permissions: {}
 

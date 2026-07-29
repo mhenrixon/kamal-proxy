@@ -62,7 +62,7 @@ make test              # go test ./...
 gofmt -l internal/ cmd/  # must be empty — CI enforces, golangci-lint isn't installed locally
 ```
 
-`make lint` requires golangci-lint (CI-only) — don't rely on it locally as a gate.
+`make lint` runs golangci-lint; install the version `ci.yml` pins and it is a real local gate.
 
 ## Release & Cross-Repo Agents
 

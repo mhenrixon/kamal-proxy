@@ -1,6 +1,6 @@
 # Upstream Sync Rules
 
-Branch roles: `main` mirrors basecamp/kamal-proxy (fast-forward only, never commit). `dash` is the integration + release branch. Feature branches merge `main` forward — never rebase published branches. `git rerere` is enabled, so previously-seen conflicts auto-replay their resolutions.
+Branch roles: `main` tracks basecamp/kamal-proxy (fast-forward only, never commit) purely so their fixes can be merged forward — we own dash-proxy, and nothing here defers to their conventions. `dash` is the integration + release branch. Feature branches merge `main` forward — never rebase published branches. `git rerere` is enabled, so previously-seen conflicts auto-replay their resolutions.
 
 ## Routine sync
 
@@ -32,23 +32,23 @@ git push origin dash
 | `internal/server/config.go` | union: shared `ACMEEmail`/`ACMEDirectory` + wildcard's provider fields; keep both `ACMEStatePath` and `CertificateStatePath` |
 | `internal/server/router.go` | union: `sanCertManager` AND `certRegistry` fields + both method pairs |
 | `internal/server/service.go` | preserve upstream changes AND feature wiring; read both sides before resolving |
-| `Dockerfile`, `Makefile`, `script/release` | always upstream's — the fork never edits them |
+| `Dockerfile`, `Makefile`, `script/release` | take basecamp's unless there is a reason not to — fewer conflicts next sync. `script/release-dash` is ours |
 
 ## Release procedure
 
 ```bash
 git checkout dash
-script/release-dash v0.9.2.1     # validates vX.Y.Z.N grammar, make test, tags, pushes the tag
-# CI publishes ghcr.io/mhenrixon/kamal-proxy:v0.9.2.1 (+ :latest)
-docker buildx imagetools inspect ghcr.io/mhenrixon/kamal-proxy:v0.9.2.1   # verify amd64+arm64
+script/release-dash v1.0.0.0     # validates vX.Y.Z.N grammar, make test, tags, pushes the tag
+# CI publishes ghcr.io/mhenrixon/kamal-proxy:v1.0.0.0 (+ :latest)
+docker buildx imagetools inspect ghcr.io/mhenrixon/kamal-proxy:v1.0.0.0   # verify amd64+arm64
 ```
 
-Base = latest upstream tag reachable from main (`git describe --tags --abbrev=0 main`); bump the counter for fork-only changes on the same base. Then update `MINIMUM_VERSION` in the kamal fork and release the gem (see that repo's `.claude/rules/upstream-sync.md`).
+Pick the next number yourself — it reflects what shipped here, not what basecamp happened to tag. Then update `MINIMUM_VERSION` in the `dash` gem and release it (see that repo's `.claude/rules/upstream-sync.md`); the proxy image must be published first, because `MINIMUM_VERSION` has to name a tag that exists.
 
 ## Never
 
 - rebase published branches
-- three-segment `v*` tags (upstream's namespace)
+- suffix tags like `v1.0.0-rc1` — `Gem::Version` sorts them below the release they name
 - `git push --tags` — single-tag pushes only
 - publish an image without the `org.opencontainers.image.title=kamal-proxy` label
 - let the ghcr package go private — kamal pulls it anonymously

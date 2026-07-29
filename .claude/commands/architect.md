@@ -82,7 +82,7 @@ Reference: `CLAUDE.md` "Architecture" section for the one-line version; `ROADMAP
 | Register RPC name twice | `CommandHandler` registration is `sync.Once` — extend existing methods, don't re-register |
 | Skip `gofmt` | CI enforces `gofmt -l` clean; run it before every push |
 | Forget the gem side | Anything in `deploy.yml` needs `../kamal` plumbing too (ROADMAP implementation notes) |
-| Plain `v*` git tag | Fork tags are four-segment `vX.Y.Z.N`; three-segment is upstream's namespace |
+| Suffix git tag (`v1.0.0-rc1`) | Release tags are four-segment `vX.Y.Z.N`; `Gem::Version` sorts a hyphen suffix below the release it names |
 | Skip tests | TDD — tests first, table-driven, colocated `*_test.go` |
 
 ## Verification Checklist

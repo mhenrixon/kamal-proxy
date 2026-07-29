@@ -98,7 +98,7 @@ Note `git rerere` is enabled: previously-seen conflicts auto-replay their resolu
    gofmt -l internal/ cmd/     # must print nothing
    make build
    make test
-   # golangci-lint (make lint) is CI-only — not runnable locally; expect CI to be the verifier
+   # golangci-lint (make lint) runs locally once installed; run it before pushing rather than expecting CI to be the verifier
    ```
 5. Commit the merge (keep git's standard merge-commit message; add a body line naming any non-obvious resolution choice) and `git push` — a merge commit never needs force.
 
@@ -118,7 +118,7 @@ Follow that command's full process. The slash command is at `.claude/commands/gi
 
 1. Identify failing checks via `gh pr checks <PR>` — expect `build`, `test`, `golangci-lint`, `actionlint`/`zizmor` from `ci.yml`.
 2. Fetch failure logs via `gh run view <RUN_ID> --job=<JOB_ID> --log-failed`.
-3. Diagnose root cause for each — `gofmt` drift, `go test ./...` failure, `golangci-lint` finding (CI-only, not runnable locally), or a build break.
+3. Diagnose root cause for each — `gofmt` drift, `go test ./...` failure, `golangci-lint` finding (reproduce locally with `make lint`), or a build break.
 4. Fix locally — `gofmt -l internal/ cmd/` first (fast, deterministic, the one local proxy for `golangci-lint`), then `make test`, then `make build` issues.
 5. Verify locally before commit (`gofmt -l internal/ cmd/` must be empty, `make test` green, `make build` clean).
 6. Commit + push + report which checks are now running.

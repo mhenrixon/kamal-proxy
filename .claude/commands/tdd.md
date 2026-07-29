@@ -120,7 +120,7 @@ make test              # go test ./...
 gofmt -l internal/ cmd/  # must print nothing — CI enforces this, it's not auto-fixed
 ```
 
-`make lint` (golangci-lint) is CI-only, not installed locally — `gofmt -l` is the local stand-in. Don't skip it.
+`make lint` (golangci-lint) is a real local gate — install the version `ci.yml` pins with `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.3`. `gofmt -l` alone does not catch what staticcheck does.
 
 ## Coverage Requirements
 

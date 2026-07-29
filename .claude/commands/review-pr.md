@@ -23,7 +23,7 @@ Review PR for fork-rule compliance, Go idioms, and pattern issues. Be concise.
 | Check | Violation = blocker |
 |---|---|
 | Base branch | Targets `main` instead of `dash` |
-| Tag grammar (if PR touches release scripts/CI) | Three-segment `vX.Y.Z` instead of four-segment `vX.Y.Z.N` |
+| Tag grammar (if PR touches release scripts/CI) | `script/release-dash` and `docker-publish.yml`'s tag filter drifting apart — a tag that pushes but never builds |
 | `kamal-proxy` naming | Renames the module, binary, RPC service name, or socket path |
 | Upstream-owned files | Edits `Dockerfile`, `Makefile`, or `script/release` outside a sync merge (`.claude/rules/upstream-sync.md` says these are always upstream's) |
 | OCI label | Touches `docker-publish.yml` without preserving `org.opencontainers.image.title=kamal-proxy` |
@@ -67,7 +67,7 @@ Direct target dial bypassing LoadBalancer    -> route through LoadBalancer.Start
 - [ ] Targets `dash`, not `main`
 - [ ] No `kamal-proxy` renames (module/binary/RPC/socket)
 - [ ] No edits to Dockerfile/Makefile/script/release outside a sync merge
-- [ ] Tag/version references are four-segment if touched
+- [ ] Tag/version references are four-segment `vX.Y.Z.N` if touched
 - [ ] `go mod tidy` clean, `go-acme/lego/v4` intact
 
 ## Suggestions (non-blocking)
@@ -92,7 +92,7 @@ make build              -> Compile bin/kamal-proxy
 make test               -> go test ./...
 gofmt -l internal/ cmd/ -> Must be empty; CI enforces this
 go vet ./...            -> Catch mutex-copy and other static issues
-make lint                -> golangci-lint (not installed locally; CI runs it — skip if unavailable, note in review)
+make lint                -> golangci-lint (install the version ci.yml pins; run it — skip if unavailable, note in review)
 ```
 
 ## Cross-References

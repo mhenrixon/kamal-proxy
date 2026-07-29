@@ -87,7 +87,7 @@ Reuse the package's existing test helpers instead of hand-rolling servers — `t
 
 - [ ] Tests written BEFORE implementation
 - [ ] `make test` passes (`go test ./...`)
-- [ ] `gofmt -l internal/ cmd/` empty — CI enforces, `golangci-lint` isn't installed locally so gofmt is your only local signal until CI runs
+- [ ] `gofmt -l internal/ cmd/` empty and `make lint` clean — both run in CI, and both can be run locally
 - [ ] Coverage meets requirements (100% for Router, LoadBalancer, SANCertManager, cert registry, RPC commands)
 - [ ] No skipped tests without a reason
 - [ ] Edge cases covered (empty target list, illegal host patterns, unhealthy targets, expired/missing certs)
@@ -99,7 +99,7 @@ Reuse the package's existing test helpers instead of hand-rolling servers — `t
 ```bash
 make test    # go test ./... — full suite, no Docker
 make bench   # go test -bench=. -benchmem -run=^# ./...
-make lint    # golangci-lint run — NOT installed locally; CI is authoritative
+make lint    # golangci-lint run — install the version ci.yml pins, then this matches CI
 make docker && docker run --rm kamal-proxy kamal-proxy -h   # image smoke test
 ```
 
