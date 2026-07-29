@@ -154,7 +154,14 @@ func (lb *LoadBalancer) HealthyTargets() TargetList {
 }
 
 func (lb *LoadBalancer) WaitUntilHealthy(timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(lb.waitForHealthyContext, timeout)
+	// Locked because ResumeFromSleep replaces this context at runtime. Until
+	// scale-to-zero existed it was written once in NewLoadBalancer before the
+	// value was published, and reading it unlocked was safe.
+	lb.lock.Lock()
+	waitForHealthy := lb.waitForHealthyContext
+	lb.lock.Unlock()
+
+	ctx, cancel := context.WithTimeout(waitForHealthy, timeout)
 	defer cancel()
 
 	<-ctx.Done()
@@ -183,6 +190,59 @@ func (lb *LoadBalancer) RecheckHealth() {
 	lb.persistentHealthChecks = true
 	lb.lock.Unlock()
 
+	lb.all.BeginHealthChecks(lb)
+}
+
+// SuspendForSleep empties the pool and stops probing, so a container that is
+// deliberately stopped is neither routed to nor dialled once a second for the
+// whole nap.
+//
+// Called before the containers go down. The idle controller holds arriving
+// requests while this runs, so the empty pool is never observable to a client.
+func (lb *LoadBalancer) SuspendForSleep() {
+	lb.all.StopHealthChecks()
+
+	for _, target := range lb.all {
+		target.updateState(TargetStateUnhealthy)
+	}
+
+	lb.lock.Lock()
+	defer lb.lock.Unlock()
+
+	lb.writers = TargetList{}
+	lb.readers = TargetList{}
+}
+
+// ResumeFromSleep puts the pool back in the state a fresh deployment starts in --
+// unverified, health-checked -- and re-arms WaitUntilHealthy so a caller can wait
+// for the woken containers to actually answer.
+//
+// Re-arming is the whole point. A single-target pool stops probing once its
+// target first goes healthy, so markHealthy has already fired and the context is
+// already cancelled; without this, WaitUntilHealthy returns nil instantly against
+// a container that has not started, and the wake forwards its held request into a
+// connection refused.
+//
+// The context is replaced rather than cancelled: WaitUntilHealthy reports any
+// non-deadline cancellation as success, so cancelling would tell a waiter that
+// parked before the resume "healthy" at the exact moment every target was marked
+// unverified.
+func (lb *LoadBalancer) ResumeFromSleep() {
+	lb.lock.Lock()
+	lb.waitForHealthyContext, lb.markHealthy = context.WithCancel(context.Background())
+	lb.lock.Unlock()
+
+	// Adding, not Healthy: a successful probe promotes Adding to Healthy, while a
+	// failed one only ever demotes Healthy to Unhealthy. A container that never
+	// comes up therefore stays out of the pool instead of flapping into it.
+	for _, target := range lb.all {
+		target.updateState(TargetStateAdding)
+	}
+
+	// Safe to reuse rather than needing a separate restart path: BeginHealthChecks
+	// now assigns stateConsumer under the inflight lock. NewHealthCheck runs one
+	// immediate probe before it starts ticking, so readiness costs a round trip
+	// rather than a whole check interval.
 	lb.all.BeginHealthChecks(lb)
 }
 
