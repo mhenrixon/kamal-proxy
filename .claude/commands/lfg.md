@@ -16,7 +16,7 @@ Execute a complete engineering workflow with verification at each phase, respect
 1. Check the current branch: `git branch --show-current`
 2. If NOT on `main`, switch: `git checkout main`
 3. Sync with upstream (do not assume `origin/main` is current): `git fetch upstream --tags --prune && git merge --ff-only upstream/main && git push origin main`
-4. Create feature branch **off `main`** (keeps it upstream-PR-able): `git checkout -b feature/{description}` (or `fix/{description}`, `issue-{number}-{brief-description}`)
+4. Create feature branch **off `dash`** (`dash` is this fork's main branch): `git checkout -b feature/{description}` (or `fix/{description}`, `issue-{number}-{brief-description}`)
 5. The branch merges **forward** into `dash` at PR time — never rebase it once pushed. See `.claude/rules/git-workflow.md` and `.claude/rules/upstream-sync.md`.
 
 ---
@@ -327,7 +327,7 @@ The tests prove the CODE is right; this phase keeps the USER's mental model righ
 - [ ] `make test` passes
 - [ ] `go vet ./...` clean
 - [ ] Backwards compatibility maintained (state files, RPC contract, `kamal-proxy` naming untouched)
-- [ ] Branch rooted off `main`, PR opened against `dash`
+- [ ] Branch rooted off `dash`, PR opened against `dash`
 - [ ] PR created with description
 - [ ] PR body ends with `## Deviations & judgment calls` (from implementation-notes.md, since deleted)
 - [ ] Comprehension close-out delivered (decisions + three merge-gate questions)
