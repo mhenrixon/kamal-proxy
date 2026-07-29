@@ -15,6 +15,23 @@ func (s *Service) SetCacheStore(store CacheStore) {
 }
 
 func (s *Service) sendRequestToTarget(w http.ResponseWriter, r *http.Request) {
+	// The idle gate lives here rather than beside the other checks, because this
+	// is the first point a request is known to actually need the target. A cache
+	// hit never reaches it, so serving stored responses does not wake a sleeping
+	// container -- which is the whole reason to run both features on one service.
+	//
+	// Everything above still applies: this sits below the auth, allow-list, rate
+	// limit and redirect gates, so none of those can spend a container start. It
+	// is also still above target selection, and net/http does not read a request
+	// body until the handler asks, so a request held here is handed on unread.
+	handled, endIdleRequest := s.handleIdleRequest(w, r)
+	if endIdleRequest != nil {
+		defer endIdleRequest()
+	}
+	if handled {
+		return
+	}
+
 	sendRequest := s.startLoadBalancerRequest(w, r)
 	if sendRequest != nil {
 		sendRequest()

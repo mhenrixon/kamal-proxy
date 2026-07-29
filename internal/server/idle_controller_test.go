@@ -18,8 +18,9 @@ type fakeLifecycle struct {
 	starts atomic.Int64
 	stops  atomic.Int64
 
-	startFunc func(ctx context.Context, ref string) error
-	stopFunc  func(ctx context.Context, ref string) error
+	startFunc  func(ctx context.Context, ref string) error
+	stopFunc   func(ctx context.Context, ref string) error
+	existsFunc func(ctx context.Context, ref string) error
 }
 
 func (f *fakeLifecycle) StartContainer(ctx context.Context, ref string) error {
@@ -39,6 +40,9 @@ func (f *fakeLifecycle) StopContainer(ctx context.Context, ref string) error {
 }
 
 func (f *fakeLifecycle) ContainerExists(ctx context.Context, ref string) error {
+	if f.existsFunc != nil {
+		return f.existsFunc(ctx, ref)
+	}
 	return nil
 }
 

@@ -78,9 +78,16 @@ func (s *Service) configureIdleController(options ServiceOptions) {
 			Persist:   s.persistState,
 		})
 
+		// Configure first: it treats a changed container set as a redeploy and
+		// forces the state back to active, which would undo the restore below. A
+		// brand-new controller always sees its refs as changed.
+		s.idleController.Configure(options.SleepAfter, options.WakeTimeout, s.containerRefs(options))
+
 		if s.restoredIdleState == IdleStateSleeping {
 			s.idleController.RestoreSleeping()
 		}
+
+		return
 	}
 
 	s.idleController.Configure(options.SleepAfter, options.WakeTimeout, s.containerRefs(options))
