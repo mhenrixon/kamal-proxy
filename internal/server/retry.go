@@ -93,24 +93,34 @@ func (lb *LoadBalancer) serveWithRetries(w http.ResponseWriter, r *http.Request)
 		w = newLoadBalancerReponseWriter(w, lb.writerAffinityTimeout)
 	}
 
+	retrying := false
+
 	for {
 		var attempt *proxyAttempt
 		claiming := r
+		// A session pin is honoured on the first attempt only: once its target
+		// has failed to serve, the request has to rotate like any other.
+		if retrying {
+			claiming = ignoreSessionPin(claiming)
+		}
 		if replayable {
 			attempt = &proxyAttempt{}
-			claiming = r.WithContext(context.WithValue(r.Context(), contextKeyProxyAttempt, attempt))
+			claiming = claiming.WithContext(context.WithValue(claiming.Context(), contextKeyProxyAttempt, attempt))
 		}
 
 		target, req, _, err := lb.claimTarget(claiming)
 		if err != nil {
 			if !loop.again(r.Context()) {
+				clearSessionPin(w)
 				SetErrorResponse(w, r, http.StatusServiceUnavailable, nil)
 				return
 			}
+			retrying = true
 			continue
 		}
 
 		lb.setTargetHeader(req, target)
+		w = lb.pinSession(w, r, target)
 		target.SendRequest(w, req)
 
 		if attempt == nil || attempt.err == nil {
@@ -118,11 +128,13 @@ func (lb *LoadBalancer) serveWithRetries(w http.ResponseWriter, r *http.Request)
 		}
 
 		if !loop.again(r.Context()) {
+			clearSessionPin(w)
 			// The original request carries no attempt, so the target renders the
 			// response it would have sent had we never deferred it.
 			target.handleProxyError(w, r, attempt.err)
 			return
 		}
+		retrying = true
 	}
 }
 

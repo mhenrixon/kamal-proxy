@@ -267,6 +267,38 @@ func TestLoadBalancer_HealthyTargets(t *testing.T) {
 	assert.Empty(t, unhealthy.HealthyTargets())
 }
 
+// BenchmarkLoadBalancer_ClaimTarget measures target selection alone -- the work
+// every request pays for before anything is forwarded. Real backends would put
+// a round trip in the way and drown it out.
+func BenchmarkLoadBalancer_ClaimTarget(b *testing.B) {
+	lb := benchmarkLoadBalancer(b)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		target, claimed, _, err := lb.claimTarget(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		target.endInflightRequest(claimed)
+	}
+}
+
+func benchmarkLoadBalancer(b *testing.B) *LoadBalancer {
+	b.Helper()
+
+	tl, err := NewTargetList([]string{"one:3000", "two:3000", "three:3000"}, []string{}, defaultTargetOptions)
+	require.NoError(b, err)
+
+	lb := NewLoadBalancer(tl, DefaultWriterAffinityTimeout, false)
+	b.Cleanup(lb.Dispose)
+
+	lb.MarkAllHealthy()
+	tl.StopHealthChecks()
+
+	return lb
+}
+
 // Helpers
 
 func testLoadBalancerWithHandlers(t *testing.T, handlers ...http.HandlerFunc) *LoadBalancer {
