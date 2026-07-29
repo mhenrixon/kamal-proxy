@@ -240,6 +240,41 @@ Things worth knowing:
 If you use `--error-pages`, add a `403.html` to that directory.
 
 
+### Preserving client addresses behind a load balancer
+
+An L4 load balancer (a DigitalOcean load balancer, an AWS NLB) replaces every
+connection's source address with its own, which blinds the access log,
+`X-Forwarded-For`, and `--allow-ip`. If the balancer can send the [PROXY
+protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt), run the
+proxy with `--proxy-protocol` to read the client address it forwards:
+
+    kamal-proxy run --proxy-protocol --proxy-protocol-allow-ip 10.0.0.0/8
+
+Things worth knowing:
+
+* **The header is optional per connection.** Connections that do not start
+  with a PROXY preamble are served on their own address, so balancer health
+  checks and direct probes keep working whether or not they send it.
+* **Restrict who may assert an address.** A PROXY header is just bytes; any
+  peer that can reach the port could send one and impersonate another client.
+  `--proxy-protocol-allow-ip` lists the addresses or CIDR ranges (your
+  balancer's private ranges) whose headers are honoured — anyone else's header
+  is read and discarded, and the connection is served on its real address.
+  Leaving the list empty trusts every peer, which is only safe when nothing
+  but the balancer can reach the proxy's ports.
+* **It applies to the HTTP and HTTPS listeners.** The preamble is read before
+  the TLS handshake, as the protocol requires. The metrics listener never
+  parses PROXY headers — `--metrics-allow-ip` matches the connecting address,
+  and honouring a spoofable header there would undermine it. HTTP/3 runs over
+  UDP, which the stream-based PROXY protocol does not cover; front it with an
+  L7 balancer or leave `--http3` off behind an NLB.
+* **`--allow-ip` composes with it.** Once the real client address is restored,
+  service allow lists match against it directly — no `--trusted-proxy`
+  configuration is needed for the balancer hop itself.
+* **Both versions of the protocol are accepted** (v1 text and v2 binary),
+  which covers DigitalOcean and AWS balancers without further configuration.
+
+
 ### Automatic TLS
 
 Kamal Proxy can automatically obtain and renew TLS certificates for your

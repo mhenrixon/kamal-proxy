@@ -57,6 +57,15 @@ type Config struct {
 	ShutdownTimeout   time.Duration
 	ReusePort         bool
 
+	// ProxyProtocol accepts PROXY protocol v1/v2 preambles on the HTTP and
+	// HTTPS listeners, so client addresses survive an L4 load balancer hop.
+	ProxyProtocol bool
+
+	// ProxyProtocolAllowIPs restricts which peers may assert a client address
+	// via a PROXY preamble to these addresses and CIDR ranges. Empty (the
+	// default) trusts every peer that can reach the port.
+	ProxyProtocolAllowIPs []string
+
 	AlternateConfigDir string
 
 	// ACME configuration for automatic certificate management

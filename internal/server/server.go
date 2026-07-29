@@ -224,6 +224,13 @@ func (s *Server) startHTTP3Server(handler http.Handler, httpsAddr string) error 
 }
 
 func (s *Server) startHTTPServers() error {
+	// Parsed before the enabled check, so a typo fails the boot rather than
+	// waiting until someone turns PROXY protocol on.
+	proxyProtocolAllowed, err := parseIPPrefixes(s.config.ProxyProtocolAllowIPs, "proxy-protocol-allow-ip")
+	if err != nil {
+		return err
+	}
+
 	httpAddr := fmt.Sprintf("%s:%d", s.config.Bind, s.config.HttpPort)
 	httpsAddr := fmt.Sprintf("%s:%d", s.config.Bind, s.config.HttpsPort)
 
@@ -233,12 +240,18 @@ func (s *Server) startHTTPServers() error {
 	if err != nil {
 		return err
 	}
+	if s.config.ProxyProtocol {
+		httpListener = withProxyProtocol(httpListener, proxyProtocolAllowed, s.config.ReadHeaderTimeout)
+	}
 	s.httpListener = httpListener
 	s.httpServer = s.newHTTPServer(handler)
 
 	httpsListener, err := s.listen("tcp", httpsAddr)
 	if err != nil {
 		return err
+	}
+	if s.config.ProxyProtocol {
+		httpsListener = withProxyProtocol(httpsListener, proxyProtocolAllowed, s.config.ReadHeaderTimeout)
 	}
 	s.httpsListener = httpsListener
 	s.httpsServer = s.newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -251,6 +264,17 @@ func (s *Server) startHTTPServers() error {
 	s.httpsServer.TLSConfig = &tls.Config{
 		NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
 		GetCertificate: s.router.GetCertificate,
+	}
+
+	if s.config.ProxyProtocol {
+		slog.Info("PROXY protocol enabled", "allow", s.config.ProxyProtocolAllowIPs)
+
+		if s.config.HTTP3Enabled {
+			// The stream-based PROXY protocol cannot cover the UDP listener, so
+			// clients negotiating HTTP/3 are seen at the balancer's address while
+			// their TCP requests carry the restored one.
+			slog.Warn("HTTP/3 requests bypass PROXY protocol; their client addresses will be the load balancer's")
+		}
 	}
 
 	go s.httpServer.Serve(s.httpListener)
