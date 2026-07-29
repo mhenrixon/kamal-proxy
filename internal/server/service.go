@@ -423,6 +423,14 @@ type marshalledService struct {
 }
 
 func (s *Service) MarshalJSON() ([]byte, error) {
+	// Saving state marshals every service while deploys may be replacing their
+	// load balancers: saveStateSnapshot holds only the router's read lock, and
+	// UpdateLoadBalancer writes s.active and s.rollout under this one. Lock order
+	// is routerLock then serviceLock, matching installLoadBalancer, so this
+	// cannot invert.
+	s.serviceLock.RLock()
+	defer s.serviceLock.RUnlock()
+
 	// Specs rather than Names, so that a target's weight survives a restart. It
 	// renders as a bare address unless a weight was actually set, so unweighted
 	// state files stay exactly what they have always been.
