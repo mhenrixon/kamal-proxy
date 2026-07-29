@@ -34,6 +34,24 @@ func TestRunCommand_ReusePortFlag(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
+func TestRunCommand_ProxyProtocolFlags(t *testing.T) {
+	globalConfig = server.Config{}
+
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("proxy-protocol")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
+
+	require.NoError(t, cmd.Flags().Parse([]string{
+		"--proxy-protocol",
+		"--proxy-protocol-allow-ip=10.0.0.0/8,203.0.113.7",
+	}))
+
+	assert.True(t, globalConfig.ProxyProtocol)
+	assert.Equal(t, []string{"10.0.0.0/8", "203.0.113.7"}, globalConfig.ProxyProtocolAllowIPs)
+}
+
 func TestRunCommand_DataDirFlag(t *testing.T) {
 	globalConfig = server.Config{}
 

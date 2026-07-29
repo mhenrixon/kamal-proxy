@@ -40,6 +40,8 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().BoolVar(&runCommand.recheckTargetsOnRestore, "recheck-targets-on-restore", getEnvBool("RECHECK_TARGETS_ON_RESTORE", false), "Re-verify restored targets with health checks instead of assuming they are healthy")
 	runCommand.cmd.Flags().StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/kamal-proxy)")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ReusePort, "reuse-port", getEnvBool("REUSE_PORT", false), "Bind listeners with SO_REUSEPORT so an overlapping proxy generation can share the ports during a handoff")
+	runCommand.cmd.Flags().BoolVar(&globalConfig.ProxyProtocol, "proxy-protocol", getEnvBool("PROXY_PROTOCOL", false), "Accept PROXY protocol v1/v2 headers on the HTTP and HTTPS listeners, preserving client addresses behind an L4 load balancer")
+	runCommand.cmd.Flags().StringSliceVar(&globalConfig.ProxyProtocolAllowIPs, "proxy-protocol-allow-ip", nil, "Honor PROXY protocol headers only from these addresses or CIDR ranges (default empty, trust every peer that can reach the port)")
 
 	// Listener connection timeouts
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadHeaderTimeout, "read-header-timeout", getEnvDuration("READ_HEADER_TIMEOUT", server.DefaultReadHeaderTimeout), "Maximum time a client may take to send request headers (zero to disable)")

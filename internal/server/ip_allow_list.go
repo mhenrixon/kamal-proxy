@@ -25,8 +25,11 @@ const (
 // ipAllowList decides whether a request's client address is permitted.
 //
 // The address it matches is the one net/http wrote into r.RemoteAddr from the
-// accepted TCP connection. Nothing in this proxy lets a client influence that
-// value, which is what makes the filter meaningful. Every other IP-shaped value
+// accepted TCP connection. Ordinarily nothing in this proxy lets a client
+// influence that value, which is what makes the filter meaningful; under
+// --proxy-protocol it is rewritten from the PROXY preamble, and is then only
+// as trustworthy as the peers --proxy-protocol-allow-ip lets assert it (see
+// proxy_protocol.go). Every other IP-shaped value
 // on a request -- X-Forwarded-For, X-Real-IP, and whatever --client-ip-header
 // names -- is written by the client and is only consulted when the peer itself
 // is one of the operator's declared proxies.
