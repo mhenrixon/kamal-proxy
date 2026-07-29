@@ -90,7 +90,7 @@ func (h *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// A request may refuse the stored copy for itself and still populate the
 	// cache for everyone behind it, which is what makes a reload useful.
 	if requestAllowsStoredResponse(r) {
-		if entry, found := h.config.Store.Get(r.Context(), key); found {
+		if entry, found := h.config.Store.Get(r.Context(), key); found && entryReadableBy(entry, r) {
 			now := h.now()
 
 			if entry.needsRevalidation(now) {
