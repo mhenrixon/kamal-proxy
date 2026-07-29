@@ -52,6 +52,9 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.TLSDomainsSource, "tls-domains-source", "", "Fetch additional TLS domains from this endpoint (path resolved against the service, or absolute URL)")
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.TLSDomainsInterval, "tls-domains-interval", 0, "Interval between domain source polls (default 5m)")
 	deployCommand.cmd.Flags().IntVar(&deployCommand.args.ServiceOptions.TLSDomainsBatchSize, "tls-domains-batch-size", 0, "Dynamic domains to batch per certificate (default 1, max 25)")
+	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.SleepAfter, "sleep-after", 0, "Stop this service's target containers after this long with no traffic, and start them again on the next request (default 0, never). Requires the proxy to run with --docker-socket. Health checks and the proxy's own TLS probes are not traffic and never wake a sleeping service")
+	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.WakeTimeout, "wake-timeout", server.DefaultWakeTimeout, "Maximum time a request waits for a sleeping service's containers to start and pass a health check before failing with 503")
+	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.args.ServiceOptions.SleepContainers, "sleep-container", nil, "Container to stop and start for --sleep-after, replacing what the proxy infers from the target address. Needed when a target names a network alias rather than a container (may be specified multiple times)")
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.CanonicalHost, "canonical-host", "", "Redirect all requests to this host (e.g., force root or www)")
 
 	// StringArray rather than StringSlice: a pattern or a replacement may

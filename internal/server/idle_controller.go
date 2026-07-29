@@ -315,6 +315,56 @@ func (c *IdleController) EndRequest() {
 	c.signal()
 }
 
+// Configure applies a redeploy's settings in place. The controller is created
+// once per Service lifetime and reconfigured thereafter, so the request path can
+// read s.idleController without a lock.
+//
+// Changing the container set means the same thing a redeploy does -- the service
+// is awake and pointed somewhere new -- so this takes the same generation bump
+// Reset does, invalidating any lifecycle goroutine started against the old set.
+func (c *IdleController) Configure(sleepAfter, wakeTimeout time.Duration, refs []string) {
+	if wakeTimeout <= 0 {
+		wakeTimeout = DefaultWakeTimeout
+	}
+
+	c.lock.Lock()
+	changed := !slices.Equal(c.refs, refs)
+
+	c.sleepAfter = sleepAfter
+	c.wakeTimeout = wakeTimeout
+	c.refs = slices.Clone(refs)
+
+	var cancel context.CancelFunc
+	if changed {
+		c.lastRequest = time.Now()
+		c.lastErr, c.failures, c.retryAfter = nil, 0, time.Time{}
+
+		cancel = c.cancel
+		c.cancel = nil
+
+		if c.state == IdleStateActive {
+			c.generation++
+		} else {
+			c.setStateLocked(IdleStateActive)
+		}
+	}
+	c.lock.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	c.signal()
+}
+
+// LastWakeError reports why the most recent wake failed, so a health check can
+// stop claiming a service is fine once it can no longer start. Nil once a wake
+// has succeeded.
+func (c *IdleController) LastWakeError() error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	return c.lastErr
+}
+
 func (c *IdleController) WakeTimeout() time.Duration {
 	c.lock.Lock()
 	defer c.lock.Unlock()

@@ -46,6 +46,15 @@ type Config struct {
 	MetricsPort  int
 	HTTP3Enabled bool
 
+	// DockerSocketPath enables scale-to-zero by giving the proxy a container
+	// runtime to stop and start with. Empty (the default) leaves the feature
+	// unavailable, and a deploy asking for --sleep-after is refused rather than
+	// accepted and silently never acted on.
+	//
+	// Reaching this socket is root-equivalent on the host, which is why it is
+	// opt-in and off by default.
+	DockerSocketPath string
+
 	// MinTLS is the lowest TLS version the HTTPS listener will negotiate,
 	// written as "1.2" or "1.3". Empty means 1.2, which is also Go's own
 	// minimum, so this setting can only ever narrow what the listener accepts -
