@@ -17,6 +17,7 @@ type tracker interface {
 	IncCertificateRenewals(domain string, success bool)
 	SetCertificateCount(total, wildcard, http01 int)
 	TrackCacheEvent(service, result string)
+	TrackCacheRefusal(service, reason string)
 }
 
 var Tracker tracker = &nullTracker{}
@@ -35,6 +36,7 @@ func (nullTracker) SetCertificateExpiry(domain string, isWildcard bool, expiryTi
 func (nullTracker) IncCertificateRenewals(domain string, success bool)                        {}
 func (nullTracker) SetCertificateCount(total, wildcard, http01 int)                           {}
 func (nullTracker) TrackCacheEvent(service, result string)                                    {}
+func (nullTracker) TrackCacheRefusal(service, reason string)                                  {}
 
 type prometheusTracker struct {
 	httpRequests     *prometheus.CounterVec
@@ -47,7 +49,8 @@ type prometheusTracker struct {
 	certCount    *prometheus.GaugeVec
 
 	// Response cache metrics
-	cacheEvents *prometheus.CounterVec
+	cacheEvents   *prometheus.CounterVec
+	cacheRefusals *prometheus.CounterVec
 }
 
 func NewPrometheusTracker() *prometheusTracker {
@@ -113,6 +116,16 @@ func NewPrometheusTracker() *prometheusTracker {
 			[]string{"service", "result"},
 		),
 
+		cacheRefusals: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:      "cache_refusals_total",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "Responses the cache declined to store, labeled by service and reason. A service sitting at 100% miss is explained here.",
+			},
+			[]string{"service", "reason"},
+		),
+
 		certCount: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name:      "certificates_total",
@@ -132,6 +145,7 @@ func NewPrometheusTracker() *prometheusTracker {
 		tracker.certRenewals,
 		tracker.certCount,
 		tracker.cacheEvents,
+		tracker.cacheRefusals,
 	)
 
 	return tracker
@@ -177,6 +191,10 @@ func (p *prometheusTracker) SetCertificateCount(total, wildcard, http01 int) {
 
 func (p *prometheusTracker) TrackCacheEvent(service, result string) {
 	p.cacheEvents.WithLabelValues(service, result).Inc()
+}
+
+func (p *prometheusTracker) TrackCacheRefusal(service, reason string) {
+	p.cacheRefusals.WithLabelValues(service, reason).Inc()
 }
 
 // Private

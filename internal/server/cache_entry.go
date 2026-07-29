@@ -90,6 +90,27 @@ func (e *CacheEntry) size() int64 {
 	return size
 }
 
+// refreshed is the entry after the target confirmed, with a 304, that the
+// stored body is still current. RFC 9111 section 4.3.4 says to restart the
+// entry's lifetime and update its metadata, which is what makes a revalidation
+// cost headers rather than a whole body.
+//
+// The lifetime is re-derived from the stored headers rather than carried over,
+// so a --cache-max-ttl raised or lowered since the entry was written takes
+// effect on the next refresh instead of at the next cold fetch.
+func (e *CacheEntry) refreshed(options CacheOptions, now time.Time) *CacheEntry {
+	refreshed := e.clone()
+	refreshed.StoredAt = now
+	refreshed.InitialAge = 0
+
+	if freshFor, staleWhileRevalidate, refusal := responseIsStorable(options, e.StatusCode, e.Header); refusal == cacheRefusalNone {
+		refreshed.FreshFor = freshFor
+		refreshed.StaleWhileRevalidate = staleWhileRevalidate
+	}
+
+	return refreshed
+}
+
 // clone returns a copy safe to hand to a request goroutine. The memory store
 // keeps entries live, and a served response must not be able to mutate the
 // stored headers on its way out.

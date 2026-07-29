@@ -40,6 +40,9 @@ const (
 	// rate and understated the hit rate on exactly the workload the feature is
 	// for.
 	cacheResultRevalidated = "revalidated"
+	// cacheResultNotModified is a revalidation the target answered 304, which
+	// refreshed the entry without transferring its body again.
+	cacheResultNotModified = "not_modified"
 )
 
 type CacheConfig struct {
@@ -92,7 +95,7 @@ func (h *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if entry.needsRevalidation(now) {
 				// RFC 5861: answer from the stale copy now, refresh behind it.
-				h.revalidate(r, key)
+				h.revalidate(r, key, entry)
 				h.replay(w, r, entry, cacheStatusStale, cacheResultStale, now)
 				return
 			}
@@ -143,6 +146,13 @@ func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key stri
 // be stored. It returns the entry it stored, which is also what any request
 // coalesced behind this one is answered from.
 func (h *CacheMiddleware) forward(w http.ResponseWriter, r *http.Request, key string, onUnstorable func()) *CacheEntry {
+	entry, _ := h.forwardRecording(w, r, key, onUnstorable)
+	return entry
+}
+
+// forwardRecording is forward plus the status the target answered with, which
+// the revalidation path needs in order to recognise a 304.
+func (h *CacheMiddleware) forwardRecording(w http.ResponseWriter, r *http.Request, key string, onUnstorable func()) (*CacheEntry, int) {
 	recorder := &cachingResponseWriter{
 		ResponseWriter: w,
 		options:        h.config.Options,
@@ -156,27 +166,53 @@ func (h *CacheMiddleware) forward(w http.ResponseWriter, r *http.Request, key st
 
 	entry := recorder.entry(h.config.Service, r, h.now())
 	if entry == nil {
-		return nil
+		h.reportRefusal(r, recorder.refusal)
+		return nil, recorder.statusCode
 	}
 
-	// Detached from the request: the client may already have disconnected, and
-	// the response it paid for should still reach the cache.
+	h.store(r, key, entry)
+	return entry, recorder.statusCode
+}
+
+// store writes an entry, detached from the request: the client may already have
+// disconnected, and the response it paid for should still reach the cache.
+func (h *CacheMiddleware) store(r *http.Request, key string, entry *CacheEntry) {
 	if err := h.config.Store.Set(context.WithoutCancel(r.Context()), key, entry); err != nil {
 		slog.Warn("Failed to store cached response", "service", h.config.Service, "path", r.URL.Path, "error", err)
 		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultError)
-	} else {
-		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultStore)
+		return
 	}
 
-	// Returned whether or not the store took it: requests waiting behind this
-	// one can still be answered from it, which is the point of coalescing.
-	return entry
+	metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultStore)
+}
+
+// reportRefusal records why a response was not stored. Without it, a service
+// sitting at 100% miss looks the same whether the target never marks anything
+// public, the response varies on a header the key does not carry, or the body is
+// simply over the size limit.
+func (h *CacheMiddleware) reportRefusal(r *http.Request, refusal cacheRefusal) {
+	if refusal == cacheRefusalNone {
+		return
+	}
+
+	metrics.Tracker.TrackCacheRefusal(h.config.Service, string(refusal))
+
+	attrs := []any{"service", h.config.Service, "path", r.URL.Path, "reason", string(refusal)}
+	if advice := refusal.advice(); advice != "" {
+		attrs = append(attrs, "advice", advice)
+	}
+	slog.Debug("Not caching response", attrs...)
 }
 
 // revalidate refreshes a stale entry behind the request that was just answered
 // from it. Joining the same group as a foreground fetch is what keeps a burst of
 // stale hits to a single upstream request.
-func (h *CacheMiddleware) revalidate(r *http.Request, key string) {
+//
+// The refresh carries the stored entry's own validator rather than the client's
+// -- a client may be holding something older, or nothing at all, and the
+// question being asked is whether *this entry* is still current. A 304 then
+// costs no body at all: the stored copy is given a fresh lifetime in place.
+func (h *CacheMiddleware) revalidate(r *http.Request, key string, stored *CacheEntry) {
 	call, leader := h.inflight.join(key)
 	if !leader {
 		return
@@ -192,16 +228,51 @@ func (h *CacheMiddleware) revalidate(r *http.Request, key string) {
 	background.Body = http.NoBody
 	background.ContentLength = 0
 	stripPreconditions(background.Header)
+	validated := addStoredValidators(background.Header, stored)
 
 	go func() {
 		defer cancel()
 
-		var stored *CacheEntry
-		defer func() { h.inflight.settle(key, call, stored) }()
+		var refreshed *CacheEntry
+		defer func() { h.inflight.settle(key, call, refreshed) }()
 
 		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultRevalidated)
-		stored = h.forward(backgroundResponseWriter{header: http.Header{}}, background, key, nil)
+
+		entry, statusCode := h.forwardRecording(backgroundResponseWriter{header: http.Header{}}, background, key, nil)
+
+		// A 304 is only meaningful against a validator we actually sent. Without
+		// one it says nothing about the stored copy, so it is left to be counted
+		// as an ordinary refusal.
+		if entry == nil && validated && statusCode == http.StatusNotModified {
+			refreshed = stored.refreshed(h.config.Options, h.now())
+			h.store(background, key, refreshed)
+			metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultNotModified)
+			return
+		}
+
+		refreshed = entry
 	}()
+}
+
+// addStoredValidators makes the refresh conditional on the entry still being
+// current, and reports whether it could. An entry the target gave no validator
+// for is refreshed by a plain fetch.
+func addStoredValidators(header http.Header, stored *CacheEntry) bool {
+	validated := false
+
+	if etag := stored.Header.Get("ETag"); etag != "" {
+		header.Set("If-None-Match", etag)
+		validated = true
+	}
+
+	// Only when there is no ETag: sending both invites a target to answer the
+	// weaker of the two.
+	if lastModified := stored.Header.Get("Last-Modified"); !validated && lastModified != "" {
+		header.Set("If-Modified-Since", lastModified)
+		validated = true
+	}
+
+	return validated
 }
 
 // replay writes a stored response to a client.

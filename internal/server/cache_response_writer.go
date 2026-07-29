@@ -42,6 +42,7 @@ type cachingResponseWriter struct {
 	hijacked    bool
 
 	capturing            bool
+	refusal              cacheRefusal
 	body                 []byte
 	header               http.Header
 	initialAge           time.Duration
@@ -70,7 +71,7 @@ func (w *cachingResponseWriter) Write(data []byte) (int, error) {
 	if w.capturing {
 		if int64(len(w.body)+len(data)) > w.options.maxBodySize() {
 			// Too big to keep, but the client asked for all of it.
-			w.abandon()
+			w.refuse(cacheRefusalTooLarge)
 		} else {
 			w.body = append(w.body, data...)
 		}
@@ -95,7 +96,7 @@ func (w *cachingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 	// The connection stops being a response we could frame, let alone store.
 	w.hijacked = true
-	w.abandon()
+	w.refuse(cacheRefusalHijacked)
 
 	return hijacker.Hijack()
 }
@@ -134,12 +135,18 @@ func (w *cachingResponseWriter) entry(service string, r *http.Request, now time.
 // Private
 
 func (w *cachingResponseWriter) decide() {
-	freshFor, stale, storable := responseIsStorable(w.options, w.statusCode, w.Header())
+	freshFor, stale, refusal := responseIsStorable(w.options, w.statusCode, w.Header())
 
 	// A HEAD response is a body-less description of a GET. Storing it would
-	// answer later GETs with nothing at all.
-	if !storable || !w.bodyExpected {
-		w.release()
+	// answer later GETs with nothing at all. It is checked after the response
+	// itself so that a HEAD of something uncacheable reports the more useful of
+	// the two reasons.
+	if refusal == cacheRefusalNone && !w.bodyExpected {
+		refusal = cacheRefusalHeadRequest
+	}
+
+	if refusal != cacheRefusalNone {
+		w.refuse(refusal)
 		return
 	}
 
@@ -150,7 +157,14 @@ func (w *cachingResponseWriter) decide() {
 	w.header = storableHeader(w.Header())
 }
 
-func (w *cachingResponseWriter) abandon() {
+// refuse records why nothing will be stored and drops whatever was captured so
+// far. The first reason wins: a body that overran the size limit was already
+// storable on its headers, and "too_large" is the useful half of that.
+func (w *cachingResponseWriter) refuse(reason cacheRefusal) {
+	if w.refusal == cacheRefusalNone {
+		w.refusal = reason
+	}
+
 	w.capturing = false
 	w.body = nil
 	w.header = nil

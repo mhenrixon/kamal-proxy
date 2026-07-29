@@ -1,8 +1,10 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,12 +35,44 @@ func staleRevalidatingHandler(origin *atomic.Int64, conditional *atomic.Bool, bo
 	}
 }
 
-// A background revalidation exists to replace the stored entry, so it must ask
-// for the whole response. Inheriting the client's validator meant the target
-// answered 304, nothing was stored, and -- because the inflight call settled
-// with nothing -- the next stale hit started the whole thing again. Five stale
-// requests cost six upstream fetches instead of one.
-func TestCacheMiddleware_RevalidationDoesNotInheritClientValidators(t *testing.T) {
+// The refresh asks whether *the stored entry* is still current, so it carries
+// that entry's validator. A client may be holding something older, or nothing at
+// all -- its validator answers a different question and must not be inherited.
+func TestCacheMiddleware_RevalidationUsesTheStoredValidatorNotTheClients(t *testing.T) {
+	var origin atomic.Int64
+	seen := make(chan string, 4)
+
+	middleware, _ := testCacheHandler(t, CacheOptions{Enabled: true}, func(w http.ResponseWriter, r *http.Request) {
+		if origin.Add(1) > 1 {
+			seen <- r.Header.Get("If-None-Match")
+		}
+		w.Header().Set("Cache-Control", "public, max-age=1, stale-while-revalidate=600")
+		w.Header().Set("ETag", `"current"`)
+		w.Write([]byte("body"))
+	})
+
+	now := time.Now()
+	middleware.now = func() time.Time { return now }
+
+	getCached(middleware, "http://example.com/p")
+	now = now.Add(30 * time.Second)
+
+	// The client is holding a stale validator of its own.
+	stale := httptest.NewRequest(http.MethodGet, "http://example.com/p", nil)
+	stale.Header.Set("If-None-Match", `"long-gone"`)
+	require.Equal(t, cacheStatusStale, sendCacheRequest(middleware, stale).Header().Get("X-Cache"))
+
+	select {
+	case validator := <-seen:
+		assert.Equal(t, `"current"`, validator, "the refresh should ask about the entry it holds")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a background revalidation")
+	}
+}
+
+// A 304 means the stored body is still good, so the entry gets a fresh lifetime
+// without the body crossing the wire again.
+func TestCacheMiddleware_RevalidationRefreshesFromA304WithoutABody(t *testing.T) {
 	var origin, bodies atomic.Int64
 	var conditional atomic.Bool
 
@@ -52,28 +86,105 @@ func TestCacheMiddleware_RevalidationDoesNotInheritClientValidators(t *testing.T
 	require.Equal(t, int64(1), origin.Load())
 
 	now = now.Add(30 * time.Second)
+	require.Equal(t, cacheStatusStale, getCached(middleware, "http://example.com/p").Header().Get("X-Cache"))
 
-	conditionalGET := func() *http.Request {
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/p", nil)
-		req.Header.Set("If-None-Match", `"v1"`)
-		return req
-	}
-
-	// The first stale hit is answered from the entry and starts one refresh.
-	assert.Equal(t, cacheStatusStale, sendCacheRequest(middleware, conditionalGET()).Header().Get("X-Cache"))
-
-	// The refresh replaces the entry, so requests go back to being hits. With
-	// the validator inherited the target answered 304, nothing was stored, and
-	// this stayed STALE forever -- restarting a revalidation every time.
 	// Polling costs no upstream requests: a revalidation is already in flight,
 	// so a stale hit joins it rather than starting another.
 	require.Eventually(t, func() bool {
-		return sendCacheRequest(middleware, conditionalGET()).Header().Get("X-Cache") == cacheStatusHit
-	}, 2*time.Second, 10*time.Millisecond, "the entry should have been refreshed")
+		return getCached(middleware, "http://example.com/p").Header().Get("X-Cache") == cacheStatusHit
+	}, 2*time.Second, 10*time.Millisecond, "the 304 should have refreshed the entry")
 
-	assert.False(t, conditional.Load(), "the background fetch must not carry the client's validator")
-	assert.Equal(t, int64(2), bodies.Load(), "the revalidation fetched a full body")
+	assert.True(t, conditional.Load(), "the refresh asked conditionally")
+	assert.Equal(t, int64(1), bodies.Load(), "and the body was never sent a second time")
 	assert.Equal(t, int64(2), origin.Load(), "one warm-up and one revalidation, not one fetch per stale hit")
+
+	// The refreshed entry still serves the original body.
+	assert.Equal(t, "body", getCached(middleware, "http://example.com/p").Body.String())
+}
+
+// When the target says the resource changed, the new body replaces the entry.
+func TestCacheMiddleware_RevalidationTakesAChangedBody(t *testing.T) {
+	var origin atomic.Int64
+
+	middleware, _ := testCacheHandler(t, CacheOptions{Enabled: true}, func(w http.ResponseWriter, r *http.Request) {
+		count := origin.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=1, stale-while-revalidate=600")
+		w.Header().Set("ETag", `"v`+strconv.FormatInt(count, 10)+`"`)
+		fmt.Fprintf(w, "body-%d", count)
+	})
+
+	now := time.Now()
+	middleware.now = func() time.Time { return now }
+
+	require.Equal(t, "body-1", getCached(middleware, "http://example.com/p").Body.String())
+	now = now.Add(30 * time.Second)
+
+	require.Equal(t, "body-1", getCached(middleware, "http://example.com/p").Body.String(), "the stale copy answers first")
+
+	assert.Eventually(t, func() bool {
+		return getCached(middleware, "http://example.com/p").Body.String() == "body-2"
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// An entry the target gave no validator for is refreshed by a plain fetch --
+// there is nothing to ask about.
+func TestCacheMiddleware_RevalidationIsUnconditionalWithoutAValidator(t *testing.T) {
+	var origin atomic.Int64
+	seen := make(chan http.Header, 4)
+
+	middleware, _ := testCacheHandler(t, CacheOptions{Enabled: true}, func(w http.ResponseWriter, r *http.Request) {
+		if origin.Add(1) > 1 {
+			seen <- r.Header.Clone()
+		}
+		w.Header().Set("Cache-Control", "public, max-age=1, stale-while-revalidate=600")
+		w.Write([]byte("body"))
+	})
+
+	now := time.Now()
+	middleware.now = func() time.Time { return now }
+
+	getCached(middleware, "http://example.com/p")
+	now = now.Add(30 * time.Second)
+	getCached(middleware, "http://example.com/p")
+
+	select {
+	case header := <-seen:
+		assert.Empty(t, header.Get("If-None-Match"))
+		assert.Empty(t, header.Get("If-Modified-Since"))
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a background revalidation")
+	}
+}
+
+// Last-Modified stands in when the target offers no ETag.
+func TestCacheMiddleware_RevalidationFallsBackToLastModified(t *testing.T) {
+	var origin atomic.Int64
+	seen := make(chan http.Header, 4)
+	lastModified := time.Now().UTC().Add(-time.Hour).Format(http.TimeFormat)
+
+	middleware, _ := testCacheHandler(t, CacheOptions{Enabled: true}, func(w http.ResponseWriter, r *http.Request) {
+		if origin.Add(1) > 1 {
+			seen <- r.Header.Clone()
+		}
+		w.Header().Set("Cache-Control", "public, max-age=1, stale-while-revalidate=600")
+		w.Header().Set("Last-Modified", lastModified)
+		w.Write([]byte("body"))
+	})
+
+	now := time.Now()
+	middleware.now = func() time.Time { return now }
+
+	getCached(middleware, "http://example.com/p")
+	now = now.Add(30 * time.Second)
+	getCached(middleware, "http://example.com/p")
+
+	select {
+	case header := <-seen:
+		assert.Equal(t, lastModified, header.Get("If-Modified-Since"))
+		assert.Empty(t, header.Get("If-None-Match"), "one validator, not both")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a background revalidation")
+	}
 }
 
 // The same holds for the other precondition headers, which would each turn the
