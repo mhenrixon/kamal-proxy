@@ -70,7 +70,7 @@ func clientAcceptsEncoding(r *http.Request, contentEncoding string) bool {
 		return true
 	}
 
-	accepted, wildcard, hasWildcard := parseAcceptEncoding(r.Header.Get("Accept-Encoding"))
+	accepted, wildcard, hasWildcard := parseAcceptEncoding(joinHeaderValues(r, "Accept-Encoding"))
 
 	if quality, named := accepted[contentEncoding]; named {
 		return quality > 0
@@ -87,12 +87,35 @@ func entryReadableBy(entry *CacheEntry, r *http.Request) bool {
 // keyValueFor returns what the cache key should carry for a request header. Every
 // header is keyed on as sent, except Accept-Encoding -- see above.
 func keyValueFor(r *http.Request, name string) string {
-	value := r.Header.Get(name)
+	value := joinHeaderValues(r, name)
 	if name == acceptEncodingHeader {
 		return normalizeAcceptEncoding(value)
 	}
 
 	return value
+}
+
+// joinHeaderValues reads every field line a header was sent on, not just the
+// first.
+//
+// RFC 9110 section 5.3 lets a client send a list header as several field lines,
+// and says they mean exactly what the single comma-separated line means. Reading
+// only the first was a cache-poisoning hole rather than a missed optimization: a
+// request sending "Accept: text/html" then "Accept: application/json" keyed
+// identically to one sending only the first, so two clients wanting different
+// representations shared one entry and whichever arrived first decided what the
+// other got.
+func joinHeaderValues(r *http.Request, name string) string {
+	values := r.Header.Values(name)
+
+	switch len(values) {
+	case 0:
+		return ""
+	case 1:
+		return values[0]
+	default:
+		return strings.Join(values, ", ")
+	}
 }
 
 // encodingIsKeyable reports whether a coding is one the cache would key on, which

@@ -638,11 +638,26 @@ Things worth knowing:
   cold URL together cost the app one request; the rest are answered from what it
   returned. If the response turns out not to be storable they are released
   immediately rather than held behind it.
-* **`Vary` is honoured by refusing to guess.** Name the dimensions in
-  `--cache-vary-header` (or `--cache-vary-cookie` for apps that vary on a cookie
-  without saying so) and they become part of the key. A response that varies on
-  anything you did not name is passed through uncached rather than risking one
-  client's copy answering another's request.
+* **`Vary` is honoured automatically, per URL.** A response naming
+  `Vary: Accept` or `Vary: Origin` is stored once per representation, keyed on
+  exactly what it varies on — only that URL pays, and only for the dimensions it
+  actually negotiates. You no longer need a flag to make a varying endpoint
+  cacheable, and fixing one endpoint no longer fragments the whole service.
+* **A resource holds at most `--cache-max-variants` representations** (32 by
+  default). The proxy can normalise only `Accept-Encoding`; every other dimension
+  is keyed on whatever the client sent, so the cap is what stops one careless
+  `Vary` filling the cache with near-duplicates. Over the limit the response
+  still reaches the client, it is just not stored, and
+  `cache_refusals_total{reason="variant_limit"}` says so. `--cache-max-variants -1`
+  switches automatic variants off entirely.
+* **Some headers are refused outright** — `Cookie`, `Authorization`,
+  `User-Agent`, `Referer`. They differ for practically every client, so keying on
+  them would store one body per client. `--cache-vary-header` is the override, at
+  the cost of putting the header in the key for every path in the service.
+  `Vary: *` is never storable.
+* **`--cache-vary-cookie` is unchanged**, and deliberately does *not* lift the
+  `Vary: Cookie` refusal — it names cookies for the key, which is a different
+  question from whether a cookie-varying response may be shared at all.
 * **`Accept-Encoding` needs no entry.** The cache stores what your app produced
   and sits inside `--compress`, so one entry serves every encoding. A response
   your app encoded *itself* is not stored by default, since the key does not

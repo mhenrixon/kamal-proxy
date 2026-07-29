@@ -102,18 +102,30 @@ func TestCacheOptions_Normalize(t *testing.T) {
 	assert.Equal(t, []string{"locale"}, options.VaryCookies)
 }
 
-// Accept-Encoding is only in the key when an operator asks for it, which is
-// what makes a response the target encoded itself storable.
-func TestCacheOptions_KeysOnAcceptEncodingOnlyWhenAsked(t *testing.T) {
-	assert.False(t, CacheOptions{Enabled: true}.keysOnAcceptEncoding())
+// A field already in the primary key must not also be keyed per variant: that
+// would cost a second lookup for a dimension the first one already carried.
+func TestCacheOptions_CoversVaryField(t *testing.T) {
+	assert.False(t, CacheOptions{Enabled: true}.coversVaryField(acceptEncodingHeader))
 
 	options := CacheOptions{Enabled: true, VaryHeaders: []string{"Accept-Language"}}
 	options.Normalize()
-	assert.False(t, options.keysOnAcceptEncoding())
+	assert.True(t, options.coversVaryField("accept-language"))
+	assert.False(t, options.coversVaryField(acceptEncodingHeader))
 
 	options = CacheOptions{Enabled: true, VaryHeaders: []string{"Accept-Encoding"}}
 	options.Normalize()
-	assert.True(t, options.keysOnAcceptEncoding())
+	assert.True(t, options.coversVaryField(acceptEncodingHeader))
+}
+
+// A negative cap is the escape hatch back to the older behaviour, where a
+// response varying on anything undeclared was refused rather than keyed.
+func TestCacheOptions_AutomaticVary(t *testing.T) {
+	assert.True(t, CacheOptions{Enabled: true}.automaticVary())
+	assert.True(t, CacheOptions{Enabled: true, MaxVariants: 4}.automaticVary())
+	assert.False(t, CacheOptions{Enabled: true, MaxVariants: -1}.automaticVary())
+
+	assert.Equal(t, DefaultCacheMaxVariants, CacheOptions{Enabled: true}.maxVariants())
+	assert.Equal(t, 4, CacheOptions{Enabled: true, MaxVariants: 4}.maxVariants())
 }
 
 func TestCacheOptions_Defaults(t *testing.T) {

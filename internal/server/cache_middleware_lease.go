@@ -71,13 +71,19 @@ func (h *CacheMiddleware) releaser(lease CacheLease) func() {
 }
 
 // awaitLease waits for the proxy holding key to publish, and answers from what
-// it published. It reports whether the request was served; false means fetch.
+// it published. It returns the entry it served, or nil to mean "fetch".
+//
+// Returning the entry rather than a bool is what lets this node hand the result
+// to its OWN followers: the waiter is its node's inflight leader, so settling
+// that call with nothing sent every local follower to the origin -- one request
+// saved across the fleet and a dozen made behind it, which is the amplification
+// the lease exists to remove.
 //
 // Only a fresh entry ends the wait: a stale one would itself need revalidating,
 // which is the fetch the wait exists to avoid.
-func (h *CacheMiddleware) awaitLease(w http.ResponseWriter, r *http.Request, key string) bool {
+func (h *CacheMiddleware) awaitLease(w http.ResponseWriter, r *http.Request, key string) *CacheEntry {
 	if h.leaseWait <= 0 {
-		return false
+		return nil
 	}
 
 	deadline := time.NewTimer(h.leaseWait)
@@ -91,26 +97,29 @@ func (h *CacheMiddleware) awaitLease(w http.ResponseWriter, r *http.Request, key
 		case <-ticker.C:
 			entry, held := h.leaser.ProbeLease(r.Context(), key)
 
-			if entry != nil && entry.fresh(h.now()) {
+			// Gated like every other serve site: the lease is keyed on the
+			// resource, so the holder may have published a different variant
+			// than this waiter asked for.
+			if entry != nil && entry.fresh(h.now()) && entryAnswers(entry, key, r) {
 				h.trackLeaseWait(cacheLeaseWaitServed)
 				h.replay(w, r, entry, cacheStatusHit, cacheResultCoalesced, h.now())
-				return true
+				return entry
 			}
 
 			if !held {
 				// The holder finished with nothing storable, or died, or the
 				// store stopped answering. Either way there is nothing coming.
 				h.trackLeaseWait(cacheLeaseWaitReleased)
-				return false
+				return nil
 			}
 
 		case <-deadline.C:
 			h.trackLeaseWait(cacheLeaseWaitExpired)
-			return false
+			return nil
 
 		case <-r.Context().Done():
 			h.trackLeaseWait(cacheLeaseWaitAbandoned)
-			return false
+			return nil
 		}
 	}
 }

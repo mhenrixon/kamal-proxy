@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/basecamp/kamal-proxy/internal/metrics"
@@ -107,35 +108,63 @@ func (h *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := cacheKey(h.config.Service, h.variantFor(r), r, h.config.Options)
+	lookup := newCacheLookup(cacheKey(h.config.Service, h.variantFor(r), r, h.config.Options))
 
 	// A request may refuse the stored copy for itself and still populate the
 	// cache for everyone behind it, which is what makes a reload useful.
 	allowsStored := requestAllowsStoredResponse(r)
 	if allowsStored {
-		if entry, found := h.config.Store.Get(r.Context(), key); found && entryReadableBy(entry, r) {
-			now := h.now()
+		entry, found := h.config.Store.Get(r.Context(), lookup.variant)
 
-			if entry.needsRevalidation(now) {
-				// RFC 5861: answer from the stale copy now, refresh behind it.
-				h.revalidate(r, key, entry)
-				h.replay(w, r, entry, cacheStatusStale, cacheResultStale, now)
-				return
-			}
+		// An index is not a response: it names the fields this resource
+		// negotiates on, which is what makes a second, variant-specific lookup
+		// possible. Only a resource that negotiates has one.
+		if found && entryIsIndex(entry) {
+			lookup = lookup.following(entry, r)
+			entry, found = h.config.Store.Get(r.Context(), lookup.variant)
+		}
 
-			if entry.servable(now) {
-				h.replay(w, r, entry, cacheStatusHit, cacheResultHit, now)
-				return
-			}
+		if found && h.serve(w, r, entry, lookup) {
+			return
 		}
 	}
 
-	h.fetch(w, r, key, allowsStored)
+	h.fetch(w, r, lookup, allowsStored)
+}
+
+// serve answers from a stored entry if it may. Every looked-up entry reaches a
+// client through here, so no caller can skip the gate.
+func (h *CacheMiddleware) serve(w http.ResponseWriter, r *http.Request, entry *CacheEntry, lookup cacheLookup) bool {
+	if !entryAnswers(entry, lookup.primary, r) {
+		return false
+	}
+
+	now := h.now()
+
+	if entry.needsRevalidation(now) {
+		// RFC 5861: answer from the stale copy now, refresh behind it.
+		h.revalidate(r, lookup, entry)
+		h.replay(w, r, entry, cacheStatusStale, cacheResultStale, now)
+		return true
+	}
+
+	if entry.servable(now) {
+		h.replay(w, r, entry, cacheStatusHit, cacheResultHit, now)
+		return true
+	}
+
+	return false
 }
 
 // Private
 
-func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key string, allowsStored bool) {
+func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, lookup cacheLookup, allowsStored bool) {
+	// The flight is keyed on the RESOURCE, not the variant: with a two-level
+	// scheme nobody knows which variant this is until the response arrives. That
+	// makes the key a collapsing hint and nothing more -- entryAnswers below
+	// re-derives the variant from each waiter's own headers, so a wrong guess
+	// costs a fetch and never a wrong body.
+	key := lookup.primary
 	call, leader := h.inflight.join(key)
 
 	if leader {
@@ -148,7 +177,11 @@ func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key stri
 		if lease.taken() {
 			// Another proxy is already fetching. Wait briefly for what it
 			// publishes rather than making the same request.
-			if h.awaitLease(w, r, key) {
+			if served := h.awaitLease(w, r, key); served != nil {
+				// Hand it to this node's own followers too. Settling with
+				// nothing would send every one of them to the origin, which is
+				// the amplification the lease exists to remove.
+				stored = served
 				return
 			}
 		}
@@ -157,7 +190,7 @@ func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key stri
 		defer release()
 
 		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultMiss)
-		stored = h.forward(w, r, key, func() {
+		stored = h.forward(w, r, lookup, func() {
 			h.inflight.settle(key, call, nil)
 			// Hand the key back the instant it is known nothing storable is
 			// coming, rather than holding the fleet off for the whole TTL.
@@ -168,7 +201,11 @@ func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key stri
 
 	select {
 	case <-call.done:
-		if call.entry != nil {
+		// TRAP: the group was keyed before anyone knew this resource
+		// negotiates, so a follower can be a different variant's request
+		// entirely. The leader's entry is only this request's answer if this
+		// request reproduces the values it was stored for.
+		if entryAnswers(call.entry, lookup.primary, r) {
 			h.replay(w, r, call.entry, cacheStatusHit, cacheResultCoalesced, h.now())
 			return
 		}
@@ -181,20 +218,20 @@ func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key stri
 	// to ask for its own. It does not register as a new leader: whatever made
 	// the response unshareable will do so again.
 	metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultMiss)
-	h.forward(w, r, key, nil)
+	h.forward(w, r, lookup, nil)
 }
 
 // forward sends the request upstream, keeping a copy of the response if it may
 // be stored. It returns the entry it stored, which is also what any request
 // coalesced behind this one is answered from.
-func (h *CacheMiddleware) forward(w http.ResponseWriter, r *http.Request, key string, onUnstorable func()) *CacheEntry {
-	entry, _ := h.forwardRecording(w, r, key, onUnstorable)
+func (h *CacheMiddleware) forward(w http.ResponseWriter, r *http.Request, lookup cacheLookup, onUnstorable func()) *CacheEntry {
+	entry, _ := h.forwardRecording(w, r, lookup, onUnstorable)
 	return entry
 }
 
 // forwardRecording is forward plus the status the target answered with, which
 // the revalidation path needs in order to recognise a 304.
-func (h *CacheMiddleware) forwardRecording(w http.ResponseWriter, r *http.Request, key string, onUnstorable func()) (*CacheEntry, int) {
+func (h *CacheMiddleware) forwardRecording(w http.ResponseWriter, r *http.Request, lookup cacheLookup, onUnstorable func()) (*CacheEntry, int) {
 	recorder := &cachingResponseWriter{
 		ResponseWriter: w,
 		options:        h.config.Options,
@@ -206,14 +243,34 @@ func (h *CacheMiddleware) forwardRecording(w http.ResponseWriter, r *http.Reques
 	h.next.ServeHTTP(recorder, r)
 	recorder.finish()
 
-	entry := recorder.entry(h.config.Service, r, h.now())
+	entry := recorder.entry(h.config.Service, lookup.primary, r, h.now())
 	if entry == nil {
-		h.reportRefusal(r, recorder.refusal)
+		h.reportRefusal(r, recorder.refusal, recorder.refusalDetail)
 		return nil, recorder.statusCode
 	}
 
-	h.store(r, key, entry)
+	h.storeVariant(r, lookup, entry)
 	return entry, recorder.statusCode
+}
+
+// storeVariant writes the response under the key its own Vary set derives, and
+// publishes the index that lets a later lookup find it.
+//
+// Variant first: an index that lands without its variant costs a miss, while a
+// variant that lands without its index is unreachable until the next store.
+// Both recover in one request. Serving the wrong body does not.
+func (h *CacheMiddleware) storeVariant(r *http.Request, lookup cacheLookup, entry *CacheEntry) {
+	index, admitted := admitVariant(h.config.Options, lookup.index, entry, lookup.primary)
+	if !admitted {
+		h.reportRefusal(r, cacheRefusalVariantLimit, strings.Join(entry.VaryOn, ","))
+		return
+	}
+
+	h.store(r, storageKeyFor(entry, lookup.primary), entry)
+
+	if index != nil {
+		h.store(r, lookup.primary, index)
+	}
 }
 
 // store writes an entry, detached from the request: the client may already have
@@ -232,14 +289,19 @@ func (h *CacheMiddleware) store(r *http.Request, key string, entry *CacheEntry) 
 // sitting at 100% miss looks the same whether the target never marks anything
 // public, the response varies on a header the key does not carry, or the body is
 // simply over the size limit.
-func (h *CacheMiddleware) reportRefusal(r *http.Request, refusal cacheRefusal) {
+func (h *CacheMiddleware) reportRefusal(r *http.Request, refusal cacheRefusal, detail string) {
 	if refusal == cacheRefusalNone {
 		return
 	}
 
+	// The reason is a bounded label; the detail is application-chosen and stays
+	// out of the metric.
 	metrics.Tracker.TrackCacheRefusal(h.config.Service, string(refusal))
 
 	attrs := []any{"service", h.config.Service, "path", r.URL.Path, "reason", string(refusal)}
+	if detail != "" {
+		attrs = append(attrs, "field", detail)
+	}
 	if advice := refusal.advice(); advice != "" {
 		attrs = append(attrs, "advice", advice)
 	}
@@ -254,7 +316,8 @@ func (h *CacheMiddleware) reportRefusal(r *http.Request, refusal cacheRefusal) {
 // -- a client may be holding something older, or nothing at all, and the
 // question being asked is whether *this entry* is still current. A 304 then
 // costs no body at all: the stored copy is given a fresh lifetime in place.
-func (h *CacheMiddleware) revalidate(r *http.Request, key string, stored *CacheEntry) {
+func (h *CacheMiddleware) revalidate(r *http.Request, lookup cacheLookup, stored *CacheEntry) {
+	key := lookup.primary
 	call, leader := h.inflight.join(key)
 	if !leader {
 		return
@@ -290,14 +353,14 @@ func (h *CacheMiddleware) revalidate(r *http.Request, key string, stored *CacheE
 
 		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultRevalidated)
 
-		entry, statusCode := h.forwardRecording(backgroundResponseWriter{header: http.Header{}}, background, key, nil)
+		entry, statusCode := h.forwardRecording(backgroundResponseWriter{header: http.Header{}}, background, lookup, nil)
 
 		// A 304 is only meaningful against a validator we actually sent. Without
 		// one it says nothing about the stored copy, so it is left to be counted
 		// as an ordinary refusal.
 		if entry == nil && validated && statusCode == http.StatusNotModified {
 			refreshed = stored.refreshed(h.config.Options, h.now())
-			h.store(background, key, refreshed)
+			h.store(background, storageKeyFor(refreshed, lookup.primary), refreshed)
 			metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultNotModified)
 			return
 		}

@@ -154,13 +154,22 @@ func requestAllowsStoredResponse(r *http.Request) bool {
 // "cached and never hit": an operator watching 100% MISS had nothing to go on.
 // It is reported as a metric label and a debug log line, so the answer is one
 // query away rather than a code read.
-func responseIsStorable(options CacheOptions, statusCode int, header http.Header) (time.Duration, time.Duration, cacheRefusal) {
+type cachePolicy struct {
+	freshFor             time.Duration
+	staleWhileRevalidate time.Duration
+	// varyOn are the fields a variant of this response must be keyed on, beyond
+	// what the primary key already carries. Nil for the great majority of
+	// responses, which are stored at the resource's own key.
+	varyOn []string
+}
+
+func responseIsStorable(options CacheOptions, statusCode int, header http.Header) (cachePolicy, cacheRefusal, string) {
 	if !options.Enabled {
-		return 0, 0, cacheRefusalDisabled
+		return cachePolicy{}, cacheRefusalDisabled, ""
 	}
 
 	if !slices.Contains(cacheableStatuses, statusCode) {
-		return 0, 0, cacheRefusalStatus
+		return cachePolicy{}, cacheRefusalStatus, ""
 	}
 
 	directives := parseCacheControl(header.Values("Cache-Control"))
@@ -169,11 +178,11 @@ func responseIsStorable(options CacheOptions, statusCode int, header http.Header
 	// forgets to mark a page private is still never shared between clients.
 	switch {
 	case directives.noStore:
-		return 0, 0, cacheRefusalNoStore
+		return cachePolicy{}, cacheRefusalNoStore, ""
 	case directives.private:
-		return 0, 0, cacheRefusalPrivate
+		return cachePolicy{}, cacheRefusalPrivate, ""
 	case !directives.public:
-		return 0, 0, cacheRefusalNotPublic
+		return cachePolicy{}, cacheRefusalNotPublic, ""
 	}
 
 	// no-cache permits storing but requires the entry to be validated before
@@ -182,52 +191,34 @@ func responseIsStorable(options CacheOptions, statusCode int, header http.Header
 	// keeping it would mean serving it unvalidated, which is what the directive
 	// forbids.
 	if directives.noCache {
-		return 0, 0, cacheRefusalNoCache
+		return cachePolicy{}, cacheRefusalNoCache, ""
 	}
 
 	freshFor, ok := directives.sharedLifetime()
 	if !ok || freshFor <= 0 {
-		return 0, 0, cacheRefusalNoLifetime
+		return cachePolicy{}, cacheRefusalNoLifetime, ""
 	}
 	if options.MaxTTL > 0 && freshFor > options.MaxTTL {
 		freshFor = options.MaxTTL
 	}
 
 	if header.Get("Set-Cookie") != "" && !options.AllowSetCookie {
-		return 0, 0, cacheRefusalSetCookie
+		return cachePolicy{}, cacheRefusalSetCookie, ""
 	}
 
 	if header.Get("Content-Range") != "" {
-		return 0, 0, cacheRefusalContentRange
-	}
-
-	// A body the target encoded itself is one particular representation, and by
-	// default the key does not record which -- handing it to a client that asked
-	// for a different encoding, or none, would be bytes it cannot read. Naming
-	// accept-encoding in --cache-vary-header puts it in the key, and the key
-	// carries the normalized set of codings the client accepts rather than the
-	// raw header, so that costs a handful of entries rather than one per browser.
-	if contentEncoding := header.Get("Content-Encoding"); contentEncoding != "" {
-		if !options.keysOnAcceptEncoding() {
-			return 0, 0, cacheRefusalContentEncoding
-		}
-
-		// A coding the key does not distinguish clients by cannot be stored
-		// safely: two clients differing only in whether they accept it would
-		// land on the same entry.
-		if !encodingIsKeyable(contentEncoding) {
-			return 0, 0, cacheRefusalContentEncoding
-		}
+		return cachePolicy{}, cacheRefusalContentRange, ""
 	}
 
 	// Holding an event stream back to store it is exactly what the client asked
 	// us not to do, and its body never ends.
 	if normalizeContentType(header.Get("Content-Type")) == eventStreamContentType {
-		return 0, 0, cacheRefusalEventStream
+		return cachePolicy{}, cacheRefusalEventStream, ""
 	}
 
-	if !varyCovered(header, options) {
-		return 0, 0, cacheRefusalVary
+	varyOn, refusal, detail := varyFieldsFor(options, header)
+	if refusal != cacheRefusalNone {
+		return cachePolicy{}, refusal, detail
 	}
 
 	// must-revalidate forbids answering from an entry that has passed its
@@ -239,42 +230,7 @@ func responseIsStorable(options CacheOptions, statusCode int, header http.Header
 		staleWhileRevalidate = 0
 	}
 
-	return freshFor, staleWhileRevalidate, cacheRefusalNone
-}
-
-// varyCovered reports whether every dimension the response varies on is one the
-// cache accounts for. When it is not, the response is passed through uncached:
-// serving a variant keyed without the dimension that produced it would hand one
-// client another's content. `--cache-vary-header` is the lever that brings such
-// a response back into the cache.
-func varyCovered(header http.Header, options CacheOptions) bool {
-	for _, value := range header.Values("Vary") {
-		for _, field := range strings.Split(value, ",") {
-			field = strings.ToLower(strings.TrimSpace(field))
-			if field == "" {
-				continue
-			}
-
-			if field == "*" {
-				return false
-			}
-
-			// Accept-Encoding is accounted for without being in the key: the
-			// entry holds what the target produced and the compression
-			// middleware above encodes it per client. Applications announce
-			// this dimension constantly, so treating it as unkeyed would leave
-			// almost nothing cacheable.
-			if field == acceptEncodingHeader {
-				continue
-			}
-
-			if !slices.Contains(options.VaryHeaders, field) {
-				return false
-			}
-		}
-	}
-
-	return true
+	return cachePolicy{freshFor: freshFor, staleWhileRevalidate: staleWhileRevalidate, varyOn: varyOn}, cacheRefusalNone, ""
 }
 
 // cacheKey identifies a stored response. Every proxy in a fleet computes it the
@@ -286,6 +242,10 @@ func cacheKey(service, variant string, r *http.Request, options CacheOptions) st
 	}
 
 	hasher := sha256.New()
+	// Salted per key generation, so records written by a build that framed them
+	// differently are simply unreachable rather than misread. See
+	// cacheKeyVersion.
+	writeKeyField(hasher, cacheKeyVersion)
 	// The method is deliberately absent: a HEAD is answered from the stored GET
 	// with its body dropped, so both must land on the same key.
 	writeKeyField(hasher, service)

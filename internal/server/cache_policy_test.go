@@ -313,13 +313,49 @@ func TestResponseIsStorable(t *testing.T) {
 			headers:    http.Header{"Cache-Control": {"public, max-age=60"}, "Content-Type": {"text/event-stream"}},
 		},
 		{
-			// Vary on a dimension the key does not carry would let one client's
-			// variant answer another's request, so the response is passed
-			// through uncached instead.
-			name:       "vary on an unkeyed header",
-			options:    enabled,
-			statusCode: http.StatusOK,
-			headers:    http.Header{"Cache-Control": {"public, max-age=60"}, "Vary": {"Accept-Language"}},
+			// Keyed as a variant now, rather than refused: the response is
+			// stored under a key carrying this client's Accept-Language, and
+			// only that client's requests reach it.
+			name:             "vary on an undeclared header",
+			options:          enabled,
+			statusCode:       http.StatusOK,
+			headers:          http.Header{"Cache-Control": {"public, max-age=60"}, "Vary": {"Accept-Language"}},
+			expectedStorable: true,
+			expectedFreshFor: time.Minute,
+		},
+		{
+			// A header that differs for practically every client would store one
+			// body per client, which costs memory and returns nothing.
+			name:            "vary on a header nobody can key",
+			options:         enabled,
+			statusCode:      http.StatusOK,
+			headers:         http.Header{"Cache-Control": {"public, max-age=60"}, "Vary": {"Cookie"}},
+			expectedRefusal: cacheRefusalVaryUnkeyable,
+		},
+		{
+			// Naming it is the override, at the documented cost of putting it in
+			// the key for every path in the service.
+			name:             "an unkeyable field the operator named anyway",
+			options:          CacheOptions{Enabled: true, VaryHeaders: []string{"cookie"}},
+			statusCode:       http.StatusOK,
+			headers:          http.Header{"Cache-Control": {"public, max-age=60"}, "Vary": {"Cookie"}},
+			expectedStorable: true,
+			expectedFreshFor: time.Minute,
+		},
+		{
+			name:            "more dimensions than a shared cache can key",
+			options:         enabled,
+			statusCode:      http.StatusOK,
+			headers:         http.Header{"Cache-Control": {"public, max-age=60"}, "Vary": {"a,b,c,d,e,f,g,h,i"}},
+			expectedRefusal: cacheRefusalVaryTooMany,
+		},
+		{
+			// The escape hatch back to the older behaviour, exactly.
+			name:            "automatic variants switched off",
+			options:         CacheOptions{Enabled: true, MaxVariants: -1},
+			statusCode:      http.StatusOK,
+			headers:         http.Header{"Cache-Control": {"public, max-age=60"}, "Vary": {"Accept-Language"}},
+			expectedRefusal: cacheRefusalVary,
 		},
 		{
 			name:             "vary on a keyed header",
@@ -340,12 +376,23 @@ func TestResponseIsStorable(t *testing.T) {
 			expectedFreshFor: time.Minute,
 		},
 		{
-			// This one really is encoding-specific, and the key does not say
-			// which encoding it is.
-			name:       "body the target encoded itself",
-			options:    enabled,
-			statusCode: http.StatusOK,
-			headers:    http.Header{"Cache-Control": {"public, max-age=60"}, "Content-Encoding": {"gzip"}, "Vary": {"Accept-Encoding"}},
+			// Storable now: the key carries the encoding automatically, so a
+			// Rack::Deflater response needs no flag at all.
+			name:             "body the target encoded itself",
+			options:          enabled,
+			statusCode:       http.StatusOK,
+			headers:          http.Header{"Cache-Control": {"public, max-age=60"}, "Content-Encoding": {"gzip"}, "Vary": {"Accept-Encoding"}},
+			expectedStorable: true,
+			expectedFreshFor: time.Minute,
+		},
+		{
+			// A coding the cache cannot key on: two clients differing only in
+			// whether they accept it would land on the same entry.
+			name:            "body encoded with a coding the cache cannot key",
+			options:         enabled,
+			statusCode:      http.StatusOK,
+			headers:         http.Header{"Cache-Control": {"public, max-age=60"}, "Content-Encoding": {"exi"}},
+			expectedRefusal: cacheRefusalContentEncoding,
 		},
 		{
 			name:             "body the target encoded, with accept-encoding keyed",
@@ -368,7 +415,7 @@ func TestResponseIsStorable(t *testing.T) {
 			options := tt.options
 			options.Normalize()
 
-			freshFor, stale, refusal := responseIsStorable(options, tt.statusCode, tt.headers)
+			policy, refusal, _ := responseIsStorable(options, tt.statusCode, tt.headers)
 
 			assert.Equal(t, tt.expectedStorable, refusal == cacheRefusalNone, "refusal was %q", refusal)
 			if tt.expectedRefusal != "" {
@@ -377,8 +424,8 @@ func TestResponseIsStorable(t *testing.T) {
 			if refusal != cacheRefusalNone {
 				return
 			}
-			assert.Equal(t, tt.expectedFreshFor, freshFor)
-			assert.Equal(t, tt.expectedStale, stale)
+			assert.Equal(t, tt.expectedFreshFor, policy.freshFor)
+			assert.Equal(t, tt.expectedStale, policy.staleWhileRevalidate)
 		})
 	}
 }
