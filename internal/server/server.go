@@ -209,6 +209,8 @@ func (s *Server) startHTTP3Server(handler http.Handler, httpsAddr string) error 
 	}
 
 	http3Config := &tls.Config{
+		// QUIC is defined only over TLS 1.3 (RFC 9001), so --min-tls can
+		// neither lower this listener nor needs to raise it.
 		MinVersion:     tls.VersionTLS13,
 		NextProtos:     []string{"h3"},
 		GetCertificate: s.router.GetCertificate,
@@ -230,6 +232,13 @@ func (s *Server) startHTTPServers() error {
 	// Parsed before the enabled check, so a typo fails the boot rather than
 	// waiting until someone turns PROXY protocol on.
 	proxyProtocolAllowed, err := parseIPPrefixes(s.config.ProxyProtocolAllowIPs, "proxy-protocol-allow-ip")
+	if err != nil {
+		return err
+	}
+
+	// Parsed here too, not just in the run command, so a Config built directly
+	// cannot start a listener that silently ignores the setting.
+	minTLSVersion, err := ParseMinTLSVersion(s.config.MinTLS)
 	if err != nil {
 		return err
 	}
@@ -265,11 +274,19 @@ func (s *Server) startHTTPServers() error {
 		handler.ServeHTTP(w, r)
 	}))
 	httpsConfig := &tls.Config{
+		MinVersion:     minTLSVersion,
 		NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
 		GetCertificate: s.router.GetCertificate,
 	}
 	httpsConfig.GetConfigForClient = s.clientCertificateConfig(httpsConfig)
 	s.httpsServer.TLSConfig = httpsConfig
+
+	if minTLSVersion > tls.VersionTLS12 {
+		// Worth a line in the boot log: it is the operator's only confirmation
+		// that the narrowing took effect, and clients it locks out fail in the
+		// handshake with nothing to show for it at the HTTP layer.
+		slog.Info("Minimum TLS version raised", "min_tls", tls.VersionName(minTLSVersion))
+	}
 
 	if s.config.ProxyProtocol {
 		slog.Info("PROXY protocol enabled", "allow", s.config.ProxyProtocolAllowIPs)

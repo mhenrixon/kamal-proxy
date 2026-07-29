@@ -25,9 +25,10 @@ type runCommand struct {
 func newRunCommand() *runCommand {
 	runCommand := &runCommand{}
 	runCommand.cmd = &cobra.Command{
-		Use:   "run",
-		Short: "Run the server",
-		RunE:  runCommand.run,
+		Use:     "run",
+		Short:   "Run the server",
+		PreRunE: runCommand.preRun,
+		RunE:    runCommand.run,
 	}
 
 	runCommand.cmd.Flags().BoolVar(&runCommand.debugLogsEnabled, "debug", getEnvBool("DEBUG", false), "Include debugging logs")
@@ -51,6 +52,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ShutdownTimeout, "shutdown-timeout", getEnvDuration("SHUTDOWN_TIMEOUT", server.DefaultShutdownTimeout), "Maximum time to wait for in-flight requests to drain on shutdown")
 
 	// ACME/TLS configuration
+	runCommand.cmd.Flags().StringVar(&globalConfig.MinTLS, "min-tls", getEnvString("MIN_TLS", server.DefaultMinTLSVersion), "Lowest TLS version the HTTPS listener will negotiate: 1.2 or 1.3 (TLS 1.0 and 1.1 cannot be enabled; HTTP/3 is always 1.3)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEEmail, "acme-email", getEnvString("ACME_EMAIL", ""), "Email address for ACME account registration (required for automatic TLS)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEDirectory, "acme-directory", getEnvString("ACME_DIRECTORY", server.LetsEncryptProduction), "ACME directory URL")
 	runCommand.cmd.Flags().StringVar(&runCommand.acmeDNSProvider, "acme-dns-provider", getEnvString("ACME_DNS_PROVIDER", "auto"), "DNS provider for DNS-01 challenges (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto)")
@@ -58,6 +60,17 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEHTTPFallback, "acme-http-fallback", getEnvBool("ACME_HTTP_FALLBACK", true), "Fall back to HTTP-01 challenge if DNS-01 fails")
 
 	return runCommand
+}
+
+// preRun rejects a bad --min-tls before the command restores routing state or
+// registers an ACME account, so a typo costs a millisecond rather than a round
+// trip to Let's Encrypt. The listener parses it again at bind time.
+func (c *runCommand) preRun(cmd *cobra.Command, args []string) error {
+	if _, err := server.ParseMinTLSVersion(globalConfig.MinTLS); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (c *runCommand) run(cmd *cobra.Command, args []string) error {

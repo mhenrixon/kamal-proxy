@@ -438,6 +438,35 @@ or `--tls-domains-source` — serves every hostname no other service claims, so 
 client CA applies to all of them.
 
 
+### Minimum TLS version
+
+The HTTPS listener negotiates TLS 1.2 and above by default. To refuse TLS 1.2 as
+well and serve only TLS 1.3, start the proxy with `--min-tls` (or the `MIN_TLS`
+environment variable):
+
+    kamal-proxy run --min-tls 1.3
+
+Accepted values are `1.2` and `1.3`. TLS 1.0 and 1.1 cannot be enabled — they are
+deprecated by [RFC 8996](https://www.rfc-editor.org/rfc/rfc8996) and Go's TLS
+stack already declines to serve them, so the proxy refuses to start rather than
+pretend the setting took effect. The `tls1_2` / `tls1_3` spellings are accepted
+too, so a configuration written against upstream kamal-proxy keeps working.
+
+This is a listener-wide setting: it applies to every service, including hosts
+that require client certificates. The HTTP/3 listener is always TLS 1.3, since
+QUIC is only defined over TLS 1.3 ([RFC 9001](https://www.rfc-editor.org/rfc/rfc9001)),
+and `--min-tls` neither lowers nor raises it.
+
+Raising the minimum locks out clients that cannot reach it, and they fail during
+the handshake — before the request reaches the HTTP layer, so nothing appears in
+the access log. Check what your clients actually negotiate before setting `1.3`.
+
+Cipher suites are deliberately not configurable. Go does not allow selecting TLS
+1.3 cipher suites at all, and its TLS 1.2 defaults already exclude the RC4, 3DES
+and static-RSA suites that a hardening baseline asks you to remove — so a cipher
+flag could only weaken the proxy, while silently doing nothing on TLS 1.3.
+
+
 ### SAN Certificate Batching
 
 When started with `--acme-email` (or the `ACME_EMAIL` environment variable),

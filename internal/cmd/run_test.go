@@ -155,3 +155,67 @@ func TestGetEnvDuration(t *testing.T) {
 		})
 	}
 }
+
+func TestRunCommand_MinTLSFlag(t *testing.T) {
+	// This feature teaches operators to export MIN_TLS, so a developer running the
+	// suite is unusually likely to have it set. The prefixed key wins in findEnv,
+	// so pinning it here makes the default deterministic. Setting MIN_TLS to ""
+	// would not work: findEnv reports an empty value as present.
+	t.Setenv("KAMAL_PROXY_MIN_TLS", server.DefaultMinTLSVersion)
+
+	globalConfig = server.Config{}
+
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("min-tls")
+	require.NotNil(t, flag)
+	assert.Equal(t, server.DefaultMinTLSVersion, flag.DefValue)
+
+	require.NoError(t, cmd.Flags().Parse([]string{"--min-tls=1.3"}))
+	assert.Equal(t, "1.3", globalConfig.MinTLS)
+}
+
+func TestRunCommand_MinTLSPreRun(t *testing.T) {
+	tests := []struct {
+		name          string
+		value         string
+		expectedError string
+	}{
+		// The accepted spellings have to be exercised through the command, not
+		// just through ParseMinTLSVersion: preRun is what an operator's value
+		// actually passes through, and the README promises upstream's tls1_2
+		// grammar keeps working here.
+		{name: "default", value: server.DefaultMinTLSVersion},
+		{name: "1.3", value: "1.3"},
+		{name: "upstream tls1_2 grammar", value: "tls1_2"},
+		{name: "upstream tls1_3 grammar", value: "tls1_3"},
+		{name: "TLSv prefix", value: "TLSv1.3"},
+
+		{name: "TLS 1.0", value: "1.0", expectedError: "cannot be enabled"},
+		{name: "TLS 1.1", value: "1.1", expectedError: "cannot be enabled"},
+		{name: "upstream tls1_0 grammar", value: "tls1_0", expectedError: "cannot be enabled"},
+		{name: "not a version", value: "banana", expectedError: "is not a TLS version"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			globalConfig = server.Config{}
+
+			runCommand := newRunCommand()
+			require.NoError(t, runCommand.cmd.Flags().Parse([]string{"--min-tls=" + tt.value}))
+
+			err := runCommand.preRun(runCommand.cmd, nil)
+
+			if tt.expectedError != "" {
+				require.ErrorContains(t, err, tt.expectedError)
+				require.ErrorContains(t, err, "min-tls")
+				return
+			}
+
+			require.NoError(t, err)
+			// The server parses this same string again at bind time, so what
+			// preRun accepted has to be what reaches the listener.
+			assert.Equal(t, tt.value, globalConfig.MinTLS)
+		})
+	}
+}
