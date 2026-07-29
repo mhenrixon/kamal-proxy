@@ -538,3 +538,96 @@ func TestDeployCommand_AllowIPFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployCommand_RateLimitFlags(t *testing.T) {
+	tests := []struct {
+		name            string
+		args            []string
+		expectedLimit   float64
+		expectedBurst   int
+		expectedExempt  []string
+		expectedTrusted []string
+		expectedError   string
+	}{
+		{
+			name: "unset leaves the service unlimited",
+			args: []string{"--target=web:3000"},
+		},
+		{
+			name:          "a bare rate",
+			args:          []string{"--target=web:3000", "--rate-limit=10"},
+			expectedLimit: 10,
+		},
+		{
+			name:          "a fractional rate",
+			args:          []string{"--target=web:3000", "--rate-limit=0.5"},
+			expectedLimit: 0.5,
+		},
+		{
+			name:          "rate with an explicit burst",
+			args:          []string{"--target=web:3000", "--rate-limit=10", "--rate-limit-burst=50"},
+			expectedLimit: 10,
+			expectedBurst: 50,
+		},
+		{
+			name:           "rate with exemptions",
+			args:           []string{"--target=web:3000", "--rate-limit=10", "--rate-limit-exempt=10.0.0.0/8,203.0.113.7"},
+			expectedLimit:  10,
+			expectedExempt: []string{"10.0.0.0/8", "203.0.113.7"},
+		},
+		{
+			// Rate limiting is now a second reason to declare the proxies in
+			// front, so this no longer needs --allow-ip alongside it.
+			name:            "rate with trusted proxies and no allow list",
+			args:            []string{"--target=web:3000", "--rate-limit=10", "--trusted-proxy=172.16.0.0/12"},
+			expectedLimit:   10,
+			expectedTrusted: []string{"172.16.0.0/12"},
+		},
+		{
+			name:          "a negative rate is rejected",
+			args:          []string{"--target=web:3000", "--rate-limit=-1"},
+			expectedError: "rate-limit cannot be negative",
+		},
+		{
+			name:          "a burst without a rate is rejected",
+			args:          []string{"--target=web:3000", "--rate-limit-burst=50"},
+			expectedError: "rate-limit-burst requires rate-limit",
+		},
+		{
+			name:          "exemptions without a rate are rejected",
+			args:          []string{"--target=web:3000", "--rate-limit-exempt=10.0.0.0/8"},
+			expectedError: "rate-limit-exempt requires rate-limit",
+		},
+		{
+			name:          "a malformed exemption is rejected",
+			args:          []string{"--target=web:3000", "--rate-limit=10", "--rate-limit-exempt=nonsense"},
+			expectedError: "rate-limit-exempt",
+		},
+		{
+			name:          "client-ip-header without trusted proxies is rejected",
+			args:          []string{"--target=web:3000", "--rate-limit=10", "--client-ip-header=CF-Connecting-IP"},
+			expectedError: "requires trusted-proxy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newDeployCommand()
+			require.NoError(t, cmd.cmd.Flags().Parse(tt.args))
+
+			err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+			if tt.expectedError != "" {
+				require.ErrorIs(t, err, server.ErrServiceOptionsInvalid)
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedLimit, cmd.args.ServiceOptions.RateLimit)
+			assert.Equal(t, tt.expectedBurst, cmd.args.ServiceOptions.RateLimitBurst)
+			assert.Equal(t, tt.expectedExempt, cmd.args.ServiceOptions.RateLimitExempt)
+			assert.Equal(t, tt.expectedTrusted, cmd.args.ServiceOptions.TrustedProxies)
+		})
+	}
+}

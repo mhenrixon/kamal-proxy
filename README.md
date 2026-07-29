@@ -239,6 +239,56 @@ Things worth knowing:
 
 If you use `--error-pages`, add a `403.html` to that directory.
 
+### Rate limiting a service per client
+
+To cap how fast a single client may hit a service, deploy it with
+`--rate-limit`:
+
+    kamal-proxy deploy service1 --target web-1:3000 --rate-limit 20
+
+Requests over the limit get a `429` with a `Retry-After` header. The limit is
+requests per second and may be fractional (`--rate-limit 0.5` is one request
+every two seconds). Clients may also spend a burst back to back before the rate
+applies — by default the rate rounded up, or set it explicitly:
+
+    kamal-proxy deploy service1 --target web-1:3000 --rate-limit 20 --rate-limit-burst 100
+
+Monitoring and internal networks can be exempted:
+
+    kamal-proxy deploy service1 --target web-1:3000 --rate-limit 20 --rate-limit-exempt 10.0.0.0/8
+
+Things worth knowing:
+
+* **Behind a load balancer or CDN, set `--trusted-proxy`.** Without it every
+  request carries the balancer's address, so the whole internet shares one
+  bucket and the first burst locks everyone out. The client is resolved exactly
+  as it is for `--allow-ip`, with the same rules about listing every hop and the
+  same refusal to trust a header from an untrusted peer.
+* **IPv6 clients are counted per `/64`, not per address.** Every IPv6 client
+  holds at least a `/64` and can pick a fresh source address for each request,
+  so counting whole addresses would let anyone walk straight past the limit. A
+  `/64` is the smallest allocation guaranteed to be one subnet, so this does not
+  charge one customer for another's traffic. IPv4 is counted per address.
+* **Redirects are free.** A `301` from `--tls` or `--canonical-host` never
+  reaches your app, so it does not spend a token — `--rate-limit 20` means
+  twenty real requests per second, not ten plus their redirects.
+* **It applies before the basic auth challenge**, so `--basic-auth` and
+  `--rate-limit` together bound password guessing. Failed attempts spend budget.
+* **The health check path stays open**, so a downstream load balancer's probes
+  are never throttled — a `429` there reads as "down". Deploying with both
+  `--rate-limit` and a health check path of `/` is rejected.
+* **Memory is bounded.** Up to 50,000 clients are counted individually; past
+  that, further clients share one bucket rather than going uncounted. Idle
+  clients are forgotten once their budget has fully refilled, which by then
+  carries no information.
+* **Budgets are per service and reset on redeploy**, since the limiter is
+  rebuilt with the service's options.
+* **This is an application-level limit, not DDoS protection.** It protects your
+  app from a busy or abusive client; it does not protect the proxy's own
+  listener from a flood, which needs something in front of it.
+
+If you use `--error-pages`, add a `429.html` to that directory.
+
 
 ### Automatic TLS
 

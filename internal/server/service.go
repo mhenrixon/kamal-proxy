@@ -139,8 +139,21 @@ type ServiceOptions struct {
 	// address is matched and why.
 	AllowIPs []string `json:"allow_ips,omitempty"`
 	// TrustedProxies names the proxies in front of this one, allowing AllowIPs
-	// to be matched against the forwarded chain rather than the connecting peer.
+	// and the rate limit to be matched against the forwarded chain rather than
+	// the connecting peer.
 	TrustedProxies []string `json:"trusted_proxies,omitempty"`
+
+	// RateLimit caps how many requests per second a single client may make to
+	// this service. Zero (the default) does not limit anything. See
+	// rate_limit.go for what counts as one client.
+	RateLimit float64 `json:"rate_limit,omitempty"`
+	// RateLimitBurst is how many requests a client may make back to back before
+	// the rate applies. Zero uses the rate rounded up, so a limit reads as
+	// "n per second" without a second flag.
+	RateLimitBurst int `json:"rate_limit_burst,omitempty"`
+	// RateLimitExempt lists addresses and CIDR ranges the limit does not apply
+	// to, such as monitoring or an internal network.
+	RateLimitExempt []string `json:"rate_limit_exempt,omitempty"`
 }
 
 func (so *ServiceOptions) ShouldExcludeMetrics(r *http.Request) bool {
@@ -207,6 +220,10 @@ func (so ServiceOptions) Validate() error {
 		return err
 	}
 
+	if err := so.validateRateLimit(); err != nil {
+		return err
+	}
+
 	return so.validateDynamicDomains()
 }
 
@@ -256,6 +273,7 @@ type Service struct {
 	middleware     http.Handler
 	basicAuth      *basicAuthCredential
 	allowedIPs     *ipAllowList
+	rateLimiter    *rateLimiter
 }
 
 func NewService(name string, options ServiceOptions, targetOptions TargetOptions, sanCertManager *SANCertManager) (*Service, error) {
@@ -499,6 +517,7 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 	s.middleware = middleware
 	s.basicAuth = s.resolveBasicAuth(options)
 	s.allowedIPs = s.resolveIPAllowList(options)
+	s.rateLimiter = s.resolveRateLimiter(options)
 
 	return nil
 }
@@ -659,6 +678,13 @@ func (s *Service) serviceRequestWithTarget(w http.ResponseWriter, r *http.Reques
 	}
 
 	if s.handleRedirectsIfNeeded(w, r) {
+		return
+	}
+
+	// After the redirect, so a 301 -- which never reaches the upstream -- does
+	// not spend a token. Before the basic auth challenge, so a password-guessing
+	// flood is limited rather than answered indefinitely.
+	if s.rejectRateLimited(w, r) {
 		return
 	}
 
