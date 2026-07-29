@@ -367,6 +367,47 @@ Things worth knowing:
   deploy rather than reaching the wire.
 
 
+### Redirecting and rewriting paths
+
+`--canonical-host` moves a whole service from one host to another. To move a
+path — an old URL that now lives somewhere else, or a single-page app serving
+its own routes — use `--redirect` and `--rewrite`. A redirect answers the client
+with a `Location`; a rewrite changes only the path your app receives, leaving
+the browser's URL alone. Both may be given more than once:
+
+    kamal-proxy deploy service1 --target web-1:3000 \
+      --redirect '/old-page=/new-page' \
+      --redirect '/blog/(.*)=/news/$1' \
+      --redirect '/shop/(.*)=https://shop.example.com/$1;status=302' \
+      --rewrite '/[^.]*=/index.html'
+
+Things worth knowing:
+
+* **The pattern is a regular expression matched against the whole path.**
+  `/old-page` fires on `/old-page` and nothing else; write `/old(/.*)?` to cover
+  what is below it too. Capture groups expand as `$1` in the replacement.
+* **One hop, not two.** A rule naming a path is answered with the scheme and
+  host the request was headed for anyway, so `--tls --canonical-host example.com
+  --redirect '/old=/new'` sends `http://www.example.com/old` straight to
+  `https://example.com/new`.
+* **The query survives.** `/blog/hello?page=2` becomes `/news/hello?page=2`,
+  unless the replacement carries a query of its own.
+* **Redirects are `301` by default.** Add `;status=302` (or `303`, `307`, `308`)
+  for anything you may want to take back — browsers cache a `301` for a long
+  time.
+* **A rule that resolves to the request's own URL is skipped**, so a catch-all
+  like `--redirect '/(.*)=/$1'` does not send a client round in circles.
+* **Rewrites are the SPA case.** `--rewrite '/[^.]*=/index.html'` hands every
+  extensionless path to your app's index while `/assets/app.js` still reaches
+  the file. Your app sees the rewritten path; the access log, the metrics and
+  the `X-Forwarded-*` headers keep the path the client asked for.
+* **Redirects win over rewrites**, and both are evaluated in the order given,
+  first match wins.
+* **Patterns are compiled at deploy time.** An unparseable expression, a
+  replacement that is neither an absolute path nor a full URL, or a status that
+  is not a redirect fails the deploy rather than the request.
+
+
 ### Automatic TLS
 
 Kamal Proxy can automatically obtain and renew TLS certificates for your

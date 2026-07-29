@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"slices"
@@ -154,6 +155,11 @@ type ServiceOptions struct {
 	// RateLimitExempt lists addresses and CIDR ranges the limit does not apply
 	// to, such as monitoring or an internal network.
 	RateLimitExempt []string `json:"rate_limit_exempt,omitempty"`
+
+	// Redirects answer a matching request with a Location; Rewrites change only
+	// the path the target receives. See redirect_rules.go.
+	Redirects []PathRule `json:"redirects,omitempty"`
+	Rewrites  []PathRule `json:"rewrites,omitempty"`
 }
 
 func (so *ServiceOptions) ShouldExcludeMetrics(r *http.Request) bool {
@@ -224,6 +230,10 @@ func (so ServiceOptions) Validate() error {
 		return err
 	}
 
+	if err := so.validatePathRules(); err != nil {
+		return err
+	}
+
 	return so.validateDynamicDomains()
 }
 
@@ -274,6 +284,8 @@ type Service struct {
 	basicAuth      *basicAuthCredential
 	allowedIPs     *ipAllowList
 	rateLimiter    *rateLimiter
+	redirects      *pathRuleSet
+	rewrites       *pathRuleSet
 }
 
 func NewService(name string, options ServiceOptions, targetOptions TargetOptions, sanCertManager *SANCertManager) (*Service, error) {
@@ -514,6 +526,13 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 		return err
 	}
 
+	redirects, rewrites, err := s.resolvePathRules(options)
+	if err != nil {
+		return err
+	}
+
+	s.redirects = redirects
+	s.rewrites = rewrites
 	s.options = options
 	s.targetOptions = targetOptions
 	s.certManager = certManager
@@ -702,6 +721,10 @@ func (s *Service) serviceRequestWithTarget(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Last, so that everything above -- the health check exemptions, the
+	// redirects, the allow list -- still sees the path the client asked for.
+	r = s.rewriteRequest(r)
+
 	sendRequest := s.startLoadBalancerRequest(w, r)
 	if sendRequest != nil {
 		sendRequest()
@@ -743,43 +766,51 @@ func (s *Service) handlePausedAndStoppedRequests(w http.ResponseWriter, r *http.
 }
 
 func (s *Service) handleRedirectsIfNeeded(w http.ResponseWriter, r *http.Request) bool {
-	if url := s.redirectURLIfNeeded(r); url != "" {
+	if url, status := s.redirectURLIfNeeded(r); url != "" {
 		w.Header().Set("Connection", "close")
-		http.Redirect(w, r, url, http.StatusMovedPermanently)
+		http.Redirect(w, r, url, status)
 		return true
 	}
 	return false
 }
 
-// redirectURLIfNeeded returns a full absolute URL to redirect to when either
-// TLS redirection or canonical host redirection should occur. If no redirect is
-// needed, it returns an empty string.
-func (s *Service) redirectURLIfNeeded(r *http.Request) string {
-	if !isInternalRequest(r) {
-		host, _, err := net.SplitHostPort(r.Host)
-		if err != nil {
-			host = r.Host
-		}
-
-		currentScheme := "http"
-		if r.TLS != nil {
-			currentScheme = "https"
-		}
-
-		desiredScheme := currentScheme
-		if s.options.TLSEnabled && s.options.TLSRedirect && currentScheme == "http" {
-			desiredScheme = "https"
-		}
-
-		desiredHost := host
-		if s.options.CanonicalHost != "" && host != s.options.CanonicalHost {
-			desiredHost = s.options.CanonicalHost
-		}
-
-		if desiredScheme != currentScheme || desiredHost != host {
-			return desiredScheme + "://" + desiredHost + r.URL.RequestURI()
-		}
+// redirectURLIfNeeded returns a full absolute URL to redirect to, and the status
+// to answer with, when TLS redirection, canonical host redirection or a
+// redirect rule should occur. If no redirect is needed, it returns an empty
+// string.
+func (s *Service) redirectURLIfNeeded(r *http.Request) (string, int) {
+	if isInternalRequest(r) {
+		return "", 0
 	}
 
-	return ""
+	host, _, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		host = r.Host
+	}
+
+	currentScheme := "http"
+	if r.TLS != nil {
+		currentScheme = "https"
+	}
+
+	desiredScheme := currentScheme
+	if s.options.TLSEnabled && s.options.TLSRedirect && currentScheme == "http" {
+		desiredScheme = "https"
+	}
+
+	desiredHost := host
+	if s.options.CanonicalHost != "" && host != s.options.CanonicalHost {
+		desiredHost = s.options.CanonicalHost
+	}
+
+	current := url.URL{Scheme: currentScheme, Host: host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
+	if location, status := s.redirectRuleURL(current, url.URL{Scheme: desiredScheme, Host: desiredHost}); location != "" {
+		return location, status
+	}
+
+	if desiredScheme != currentScheme || desiredHost != host {
+		return desiredScheme + "://" + desiredHost + r.URL.RequestURI(), http.StatusMovedPermanently
+	}
+
+	return "", 0
 }

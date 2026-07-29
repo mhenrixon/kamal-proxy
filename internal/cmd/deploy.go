@@ -20,6 +20,8 @@ type deployCommand struct {
 	basicAuth           string
 	requestHeaderRules  server.HeaderRuleFlags
 	responseHeaderRules server.HeaderRuleFlags
+	redirects           []string
+	rewrites            []string
 }
 
 func newDeployCommand() *deployCommand {
@@ -50,6 +52,11 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.ServiceOptions.TLSDomainsInterval, "tls-domains-interval", 0, "Interval between domain source polls (default 5m)")
 	deployCommand.cmd.Flags().IntVar(&deployCommand.args.ServiceOptions.TLSDomainsBatchSize, "tls-domains-batch-size", 0, "Dynamic domains to batch per certificate (default 1, max 25)")
 	deployCommand.cmd.Flags().StringVar(&deployCommand.args.ServiceOptions.CanonicalHost, "canonical-host", "", "Redirect all requests to this host (e.g., force root or www)")
+
+	// StringArray rather than StringSlice: a pattern or a replacement may
+	// contain commas, which StringSlice would split into separate rules.
+	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.redirects, "redirect", nil, "Answer matching requests with a redirect, as '<pattern>=<replacement>[;status=<code>]' (e.g. '/blog/(.*)=/news/$1', default status 301, also 302/303/307/308). The pattern is a regular expression matched against the whole request path; the replacement is a path on this host or a full URL, and keeps the request's query unless it carries one of its own. Rules are tried in order, first match wins (may be specified multiple times)")
+	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.rewrites, "rewrite", nil, "Change the path forwarded to the target without telling the client, as '<pattern>=<replacement>' (e.g. '/[^.]*=/index.html' to serve an SPA's own routes). Same matching as --redirect; the replacement must be a path (may be specified multiple times)")
 
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.DeploymentOptions.DeployTimeout, "deploy-timeout", server.DefaultDeployTimeout, "Maximum time to wait for the new target to become healthy")
 	deployCommand.cmd.Flags().DurationVar(&deployCommand.args.DeploymentOptions.DrainTimeout, "drain-timeout", server.DefaultDrainTimeout, "Maximum time to allow existing connections to drain before removing old target")
@@ -170,6 +177,16 @@ func (c *deployCommand) preRun(cmd *cobra.Command, args []string) error {
 	}
 
 	c.args.TargetOptions.ResponseHeaderRules, err = server.NewResponseHeaderRules(c.responseHeaderRules)
+	if err != nil {
+		return err
+	}
+
+	c.args.ServiceOptions.Redirects, err = server.NewRedirectRules(c.redirects)
+	if err != nil {
+		return err
+	}
+
+	c.args.ServiceOptions.Rewrites, err = server.NewRewriteRules(c.rewrites)
 	if err != nil {
 		return err
 	}
