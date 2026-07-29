@@ -563,6 +563,34 @@ as a miss and the request goes to the target as usual. Redis owns expiry, so a
 proxy that restarts comes back to a warm cache. `--cache-memory-size` (256MB)
 caps the in-process store instead, which evicts least-recently-used first.
 
+#### Surviving a restart without Redis
+
+The in-process store is emptied by a proxy restart. For a single host that is the
+difference between an asset served from Go and one fetched from the app again —
+and with `--sleep-after`, between a container that stays asleep and one woken to
+re-serve a file that has not changed in a year.
+
+A `file://` store keeps entries on disk instead:
+
+    kamal-proxy run --cache-store file:///var/lib/kamal-proxy/cache
+
+The directory must be a volume that outlives the container, or this does nothing
+a restart will notice. `--cache-memory-size` caps it, the same as it caps the
+memory store, evicting least-recently-used first. Entries are written to a temp
+file and renamed into place, so a crash mid-write leaves nothing a later read can
+trip over, and a file that cannot be decoded is dropped rather than making the
+cache unopenable.
+
+It is a **single-host** store. Two proxies pointed at one directory each keep
+their own index and will fight over it — use Redis for a fleet. For the same
+reason it does not coalesce fetches across nodes the way a shared store does;
+on one proxy the in-process single flight already does that.
+
+Digested Rails assets are what this is for. They carry
+`Cache-Control: public, max-age=31536000, immutable`, so the app serves each one
+exactly once and the proxy serves it thereafter — across restarts, deploys, and
+naps.
+
 #### Stale while revalidating
 
 With `stale-while-revalidate`, an expired entry keeps answering while the proxy
