@@ -21,13 +21,25 @@ const (
 
 // Metric outcomes. They are finer than the header: a coalesced response is a
 // hit to the client but a very different thing to whoever is sizing the cache.
+//
+// Exactly one of hit, miss, stale and coalesced is recorded per request the
+// cache considered, so they sum to the request count and a hit rate can be read
+// straight off them. The rest describe what the cache did rather than what a
+// client got, and are deliberately outside that sum.
 const (
 	cacheResultHit       = "hit"
 	cacheResultMiss      = "miss"
 	cacheResultStale     = "stale"
 	cacheResultCoalesced = "coalesced"
-	cacheResultStore     = "store"
-	cacheResultError     = "error"
+
+	cacheResultStore = "store"
+	cacheResultError = "error"
+	// cacheResultRevalidated is a background stale-while-revalidate fetch. It
+	// has no client waiting on it, so counting it as a miss -- which it was
+	// until this label existed -- inflated the miss count by the revalidation
+	// rate and understated the hit rate on exactly the workload the feature is
+	// for.
+	cacheResultRevalidated = "revalidated"
 )
 
 type CacheConfig struct {
@@ -104,6 +116,7 @@ func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key stri
 		var stored *CacheEntry
 		defer func() { h.inflight.settle(key, call, stored) }()
 
+		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultMiss)
 		stored = h.forward(w, r, key, func() { h.inflight.settle(key, call, nil) })
 		return
 	}
@@ -122,6 +135,7 @@ func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key stri
 	// The leader's response turned out not to be shareable, so this request has
 	// to ask for its own. It does not register as a new leader: whatever made
 	// the response unshareable will do so again.
+	metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultMiss)
 	h.forward(w, r, key, nil)
 }
 
@@ -139,8 +153,6 @@ func (h *CacheMiddleware) forward(w http.ResponseWriter, r *http.Request, key st
 
 	h.next.ServeHTTP(recorder, r)
 	recorder.finish()
-
-	metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultMiss)
 
 	entry := recorder.entry(h.config.Service, r, h.now())
 	if entry == nil {
@@ -179,6 +191,7 @@ func (h *CacheMiddleware) revalidate(r *http.Request, key string) {
 	background := r.Clone(ctx)
 	background.Body = http.NoBody
 	background.ContentLength = 0
+	stripPreconditions(background.Header)
 
 	go func() {
 		defer cancel()
@@ -186,6 +199,7 @@ func (h *CacheMiddleware) revalidate(r *http.Request, key string) {
 		var stored *CacheEntry
 		defer func() { h.inflight.settle(key, call, stored) }()
 
+		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultRevalidated)
 		stored = h.forward(backgroundResponseWriter{header: http.Header{}}, background, key, nil)
 	}()
 }
@@ -215,6 +229,30 @@ func (h *CacheMiddleware) replay(w http.ResponseWriter, r *http.Request, entry *
 	}
 
 	metrics.Tracker.TrackCacheEvent(h.config.Service, result)
+}
+
+// preconditionHeaders make a request conditional on the client's own copy. A
+// revalidation is not that request: it exists to replace the stored entry, so it
+// has to ask for the whole response.
+//
+// Carrying them meant a client holding an expired copy with an ETag got a
+// revalidation that the target answered 304. A 304 is not storable, so nothing
+// was written, the inflight call settled with nothing, and the next stale hit
+// started another revalidation -- turning the single-flight guarantee into one
+// upstream fetch per stale request, on exactly the workload
+// stale-while-revalidate exists to protect.
+var preconditionHeaders = []string{
+	"If-None-Match",
+	"If-Modified-Since",
+	"If-Match",
+	"If-Unmodified-Since",
+	"If-Range",
+}
+
+func stripPreconditions(header http.Header) {
+	for _, name := range preconditionHeaders {
+		header.Del(name)
+	}
 }
 
 func (h *CacheMiddleware) variantFor(r *http.Request) string {

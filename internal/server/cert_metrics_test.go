@@ -19,6 +19,8 @@ type fakeTracker struct {
 	wildcard map[string]bool      // domain -> isWildcard
 	renewals map[string]int       // "domain:success"/"domain:failure" -> count
 	counts   []certCountSample
+
+	cacheEvents map[string]int // "service:result" -> count
 }
 
 type certCountSample struct {
@@ -27,16 +29,29 @@ type certCountSample struct {
 
 func newFakeTracker() *fakeTracker {
 	return &fakeTracker{
-		expiry:   make(map[string]time.Time),
-		wildcard: make(map[string]bool),
-		renewals: make(map[string]int),
+		expiry:      make(map[string]time.Time),
+		wildcard:    make(map[string]bool),
+		renewals:    make(map[string]int),
+		cacheEvents: make(map[string]int),
 	}
 }
 
 func (f *fakeTracker) TrackRequest(service, method string, status int, dur time.Duration) {}
 func (f *fakeTracker) AddInflightRequest(service string)                                  {}
 func (f *fakeTracker) SubtractInflightRequest(service string)                             {}
-func (f *fakeTracker) TrackCacheEvent(service, result string)                             {}
+
+func (f *fakeTracker) TrackCacheEvent(service, result string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cacheEvents[service+":"+result]++
+}
+
+// cacheEventCount reports how many times a result was recorded for a service.
+func (f *fakeTracker) cacheEventCount(service, result string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cacheEvents[service+":"+result]
+}
 
 func (f *fakeTracker) SetCertificateExpiry(domain string, isWildcard bool, expiryTime time.Time) {
 	f.mu.Lock()
