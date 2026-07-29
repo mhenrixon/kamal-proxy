@@ -22,8 +22,8 @@ func newRolloutDeployCommand() *rolloutDeployCommand {
 		ValidArgs: []string{"service"},
 	}
 
-	rolloutDeployCommand.cmd.Flags().StringSliceVar(&rolloutDeployCommand.args.TargetURLs, "target", []string{}, "Target host(s) to deploy")
-	rolloutDeployCommand.cmd.Flags().StringSliceVar(&rolloutDeployCommand.args.ReaderURLs, "read-target", []string{}, "Read-only target host(s) to deploy")
+	rolloutDeployCommand.cmd.Flags().StringSliceVar(&rolloutDeployCommand.args.TargetURLs, "target", []string{}, "Target host(s) to deploy, as <host>[:<port>][;weight=<n>]. A weight splits traffic within the rollout group; the rollout's own share of overall traffic is set by 'rollout set --percentage'")
+	rolloutDeployCommand.cmd.Flags().StringSliceVar(&rolloutDeployCommand.args.ReaderURLs, "read-target", []string{}, "Read-only target host(s) to deploy. Takes the same ;weight=<n> suffix as --target, applied across the read pool only")
 	rolloutDeployCommand.cmd.Flags().DurationVar(&rolloutDeployCommand.args.DeploymentOptions.DeployTimeout, "deploy-timeout", server.DefaultDeployTimeout, "Maximum time to wait for the new target to become healthy")
 	rolloutDeployCommand.cmd.Flags().DurationVar(&rolloutDeployCommand.args.DeploymentOptions.DrainTimeout, "drain-timeout", server.DefaultDrainTimeout, "Maximum time to allow existing connections to drain before removing old target")
 

@@ -96,6 +96,7 @@ type LoadBalancer struct {
 
 	multiTarget            bool
 	hasReaders             bool
+	weighted               bool
 	persistentHealthChecks bool
 	waitForHealthyContext  context.Context
 	markHealthy            context.CancelFunc
@@ -116,6 +117,7 @@ func NewLoadBalancer(targets TargetList, writerAffinityTimeout time.Duration, re
 
 		multiTarget:           len(targets) > 1,
 		hasReaders:            targets.HasReaders(),
+		weighted:              targets.hasWeights(),
 		waitForHealthyContext: waitForHealthyContext,
 		markHealthy:           markHealthy,
 	}
@@ -247,13 +249,25 @@ func (lb *LoadBalancer) claimTarget(req *http.Request) (*Target, *http.Request, 
 	return target, req, readRequest, err
 }
 
+// nextTarget rotates through the healthy targets of the pool the request
+// belongs to. Weighted pools are fork-only and rotate by share instead; see
+// target_weight.go. Nothing weighted means the plain rotation, so a deployment
+// that sets no weights behaves exactly as it did before they existed.
 func (lb *LoadBalancer) nextTarget(reader bool) *Target {
 	if reader && len(lb.readers) > 0 {
+		if lb.weighted {
+			return lb.readers.nextWeighted()
+		}
+
 		lb.readerIndex = (lb.readerIndex + 1) % len(lb.readers)
 		return lb.readers[lb.readerIndex]
 	}
 
 	if len(lb.writers) > 0 {
+		if lb.weighted {
+			return lb.writers.nextWeighted()
+		}
+
 		lb.writerIndex = (lb.writerIndex + 1) % len(lb.writers)
 		return lb.writers[lb.writerIndex]
 	}

@@ -136,6 +136,12 @@ type Target struct {
 	pathProxyHandlers []pathProxyHandler
 	transports        []*http.Transport
 
+	// weight is this target's share of its pool, and currentWeight the credit it
+	// has accrued towards the next turn. Both are fork-only; see
+	// target_weight.go, which owns every read and write of currentWeight.
+	weight        int
+	currentWeight int
+
 	state        TargetState
 	inflight     inflightMap
 	inflightLock sync.Mutex
@@ -145,7 +151,12 @@ type Target struct {
 }
 
 func NewTarget(targetURL string, options TargetOptions) (*Target, error) {
-	uri, err := parseTargetURL(targetURL)
+	host, weight, err := parseTargetSpec(targetURL)
+	if err != nil {
+		return nil, err
+	}
+
+	uri, err := parseTargetURL(host)
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +167,7 @@ func NewTarget(targetURL string, options TargetOptions) (*Target, error) {
 	target := &Target{
 		targetURL: uri,
 		options:   options,
+		weight:    weight,
 
 		state:    TargetStateAdding,
 		inflight: inflightMap{},
