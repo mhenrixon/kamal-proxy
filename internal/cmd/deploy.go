@@ -108,6 +108,10 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.responseHeaderRules.Add, "add-response-header", nil, "Header to append to responses from the target, as '<name>: <value>', keeping what the target sent (may be specified multiple times)")
 	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.responseHeaderRules.Remove, "remove-response-header", nil, "Header to strip from responses from the target (may be specified multiple times)")
 
+	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ServiceOptions.Compression.Encodings, "compress", nil, "Content encoding(s) to offer clients that accept them, most preferred first, as gzip, br and/or zstd (e.g. zstd,br,gzip; default empty, no compression). Responses the target already encoded, event streams, and media types that do not shrink are passed through")
+	deployCommand.cmd.Flags().Int64Var(&deployCommand.args.ServiceOptions.Compression.MinLength, "compress-min-length", 0, fmt.Sprintf("Skip --compress for responses smaller than this many bytes (default %d; set 1 to compress everything)", server.DefaultCompressionMinLength))
+	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ServiceOptions.Compression.ContentTypes, "compress-content-type", nil, "Replace the built-in list of compressible media types for --compress, as exact types or type wildcards (e.g. text/*,application/json)")
+
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogRequestHeaders, "log-request-header", nil, "Additional request header to log (may be specified multiple times)")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogResponseHeaders, "log-response-header", nil, "Additional response header to log (may be specified multiple times)")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ServiceOptions.ExcludeMetricsPaths, "exclude-metrics-path", nil, "Request path(s) to exclude from Prometheus metrics (may be specified multiple times)")

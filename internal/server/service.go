@@ -165,6 +165,11 @@ type ServiceOptions struct {
 	// the path the target receives. See redirect_rules.go.
 	Redirects []PathRule `json:"redirects,omitempty"`
 	Rewrites  []PathRule `json:"rewrites,omitempty"`
+
+	// Compression encodes responses on their way back to the client. A zero
+	// value leaves them alone, which is what every state file written before
+	// this option existed restores to.
+	Compression CompressionOptions `json:"compression,omitzero"`
 }
 
 func (so *ServiceOptions) ShouldExcludeMetrics(r *http.Request) bool {
@@ -174,6 +179,7 @@ func (so *ServiceOptions) ShouldExcludeMetrics(r *http.Request) bool {
 func (so *ServiceOptions) Normalize() {
 	so.Hosts = NormalizeHosts(so.Hosts)
 	so.PathPrefixes = NormalizePathPrefixes(so.PathPrefixes)
+	so.Compression.Normalize()
 }
 
 func (so ServiceOptions) Validate() error {
@@ -240,6 +246,10 @@ func (so ServiceOptions) Validate() error {
 	}
 
 	if err := so.validatePathRules(); err != nil {
+		return err
+	}
+
+	if err := so.Compression.Validate(); err != nil {
 		return err
 	}
 
@@ -701,6 +711,17 @@ func (s *Service) createMiddleware(options ServiceOptions, targetOptions TargetO
 		}
 	}
 
+	// Outermost of the middleware that writes a body, so it covers the target's
+	// response, the canonical-host redirect, and this service's own error pages.
+	// The built-in error pages are rendered by the root middleware above the
+	// router (server.go:338), which no per-service option can reach, so those
+	// stay uncompressed unless the service sets its own with --error-pages.
+	if options.Compression.Enabled() {
+		handler = WithCompressionMiddleware(options.Compression, handler)
+	}
+
+	// Above compression: an ACME challenge is a handful of bytes served to a
+	// certificate authority, and encoding it buys nothing.
 	if certManager != nil {
 		slog.Debug("Using ACME handler", "service", s.name)
 		handler = certManager.HTTPHandler(handler)

@@ -408,6 +408,47 @@ Things worth knowing:
   is not a redirect fails the deploy rather than the request.
 
 
+### Compressing responses
+
+The proxy can encode responses on their way back to the client, so your app does
+not have to. Name the encodings you want to offer, most preferred first:
+
+    kamal-proxy deploy service1 --target web-1:3000 --compress zstd,br,gzip
+
+`gzip`, `br` (brotli) and `zstd` are supported. Only responses the client asked
+to have encoded are touched, and the client's `q` values win — the order you give
+is the tie-breaker between encodings it likes equally.
+
+Two flags tune what qualifies:
+
+    kamal-proxy deploy service1 --target web-1:3000 --compress gzip \
+      --compress-min-length 2048 \
+      --compress-content-type 'text/*,application/json,application/wasm'
+
+Things worth knowing:
+
+* **A response is left alone unless it will benefit.** The proxy skips anything
+  your app already encoded, media types outside the compressible list, bodies
+  under `--compress-min-length` (1024 bytes by default), `204`/`304` responses,
+  `HEAD` requests, and byte-range replies.
+* **The compressible list is an allow list.** `text/*`, JSON, XML, JavaScript,
+  WASM and SVG by default, plus any `+json`/`+xml` vendor type. Anything the
+  proxy does not recognise is assumed to be compressed already — images, video,
+  fonts and archives all pass through. `--compress-content-type` replaces the
+  list outright, and accepts exact types or a `type/*` wildcard.
+* **Event streams are never compressed**, so `text/event-stream` keeps flowing
+  a chunk at a time. Name it under `--compress-content-type` to override that.
+* **A response flushed before it reaches the minimum is sent as-is.** Once your
+  app pushes bytes to the client, the proxy stops holding any back.
+* **`Vary: Accept-Encoding` is set on every compressible response**, whether or
+  not this particular client got an encoded body, so a cache in front of the
+  proxy keeps the two representations apart. A strong `ETag` is weakened to
+  `W/"..."` when the body is encoded, for the same reason.
+* **The built-in error pages are not compressed.** They are rendered above the
+  router, outside any one service's settings. Pages you supply with
+  `--error-pages` are compressed like anything else.
+
+
 ### Automatic TLS
 
 Kamal Proxy can automatically obtain and renew TLS certificates for your
