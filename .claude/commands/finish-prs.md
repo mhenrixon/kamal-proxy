@@ -180,7 +180,7 @@ Then:
 - **Never touch `main`** — not a commit, not a merge, not a push. It is a fast-forward-only mirror of `basecamp/kamal-proxy`.
 - **Never process a PR based on `main`** — report it as a fork-model mistake instead.
 - **Never resolve conflicts here** — abort and let `/github-review-pr` Phase A0 do it with the full playbook.
-- **Never edit `Dockerfile`, `Makefile`, or `script/release`** — upstream owns them; the fork owns `script/release-dash`.
+- **Prefer leaving `Dockerfile`, `Makefile`, and `script/release` as basecamp has them** — fewer conflicts when merging their fixes forward; the fork owns `script/release-dash`.
 - **Never rename the module, binary, RPC methods, or socket path** away from `kamal-proxy`.
 - **Don't re-implement `/github-review-pr`, `/github-review-failures`, or `/github-review-comments`** — invoke them.
 - **One stuck PR must not block the rest** — mark it `needs-user`, continue the queue, return to it in the final report.

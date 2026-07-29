@@ -124,7 +124,7 @@ func (h *ErrorPageMiddleware) getTemplate(statusCode int) *template.Template {
 gofmt -l internal/ cmd/          # must be empty; CI enforces
 go vet ./...
 make test                        # go test ./...
-# make lint requires golangci-lint — not installed locally, CI-only
+# make lint requires golangci-lint — install the version ci.yml pins
 
 # Review cert/RPC/header surfaces directly
 grep -rn "GetCertificate\|ClientHelloInfo" internal/server/
@@ -148,7 +148,7 @@ grep -rn "system(\|`\|%x{" lib/kamal/ | grep -v spec
 | String-interpolating secrets/tags into SSH or `docker login` commands | SSHKit argument-array form |
 | Adding an `http.Server` without `ReadHeaderTimeout` | Set explicit timeouts (slowloris) |
 | Switching error pages to `text/template` | Keep `html/template` (auto-escaping) |
-| Deploying on `:latest` or a non-numeric tag | Four-segment `vX.Y.Z.N` only — kamal's version check requires it (see repo `CLAUDE.md`) |
+| Deploying on `:latest` or a non-numeric tag | Four-segment `vX.Y.Z.N` only — the gem's version check requires it (see repo `CLAUDE.md`) |
 
 ## Handoff
 

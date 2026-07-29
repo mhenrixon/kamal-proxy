@@ -25,7 +25,7 @@ Scope = the package or feature area, e.g. `san-cert`, `wildcard-certs`, `router`
 
 ## Branch Model
 
-This is a fork, not a normal repo — branch roles are fixed. Full sync mechanics live in `.claude/rules/upstream-sync.md`; this section covers where *your* commits go.
+Branch roles are fixed. `main` still tracks basecamp so their fixes can be merged forward, but nothing here is shaped for their benefit. Full sync mechanics live in `.claude/rules/upstream-sync.md`; this section covers where *your* commits go.
 
 | Branch | Role | Can you commit here? |
 |---|---|---|
@@ -69,18 +69,28 @@ gofmt -l internal/ cmd/     # Formatting — CI enforces, must print nothing
 make test                   # go test ./...
 ```
 
-`make lint` (golangci-lint) is CI-only — it's not installed locally. Don't skip `gofmt -l` to compensate; that's the one local check standing in for it.
+`make lint` runs golangci-lint. Install the version `.github/workflows/ci.yml` pins so a local run means what CI means:
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.3
+```
+
+`gofmt` does not catch what staticcheck does, so run `make lint` before pushing rather than finding out from CI.
 
 ## Tags & Releases
 
-Fork tags are **four-segment**, `v<upstream-base>.<counter>` (e.g. `v0.9.2.1`) — never plain `vX.Y.Z` (that namespace belongs to upstream) and never suffix forms like `v0.9.2-dash.1` (they parse as prereleases *older* than the base and fail the gem's version check).
+Release tags are **four-segment**, `vX.Y.Z.N` (e.g. `v1.0.0.0`).
+
+The shape is unchanged from when this was a fork; the meaning is not. The first three segments used to be whatever basecamp had tagged, with `N` counting fork-only releases on top. We own dash-proxy now, so all four are ours to choose and the number reflects what shipped here. `script/release-dash` also accepts plain `vX.Y.Z`, so nobody is blocked by the distinction.
+
+Never use suffix forms like `v1.0.0-rc1`: the gem compares the image tag with `Gem::Version`, which reads a hyphen suffix as a prerelease sorting *below* the release it names — a tag that sorts below itself fails the `MINIMUM_VERSION` check.
 
 ```bash
 git checkout dash
-script/release-dash v0.9.2.1     # validates tag grammar, runs make test, tags, pushes
+script/release-dash v1.0.0.0     # validates tag grammar, runs make test, tags, pushes
 ```
 
-- **NEVER** `git push --tags` — single-tag pushes only, `git push origin tag v0.9.2.1`
+- **NEVER** `git push --tags` — single-tag pushes only, `git push origin tag v1.0.0.0`
 - **NEVER** hand-craft the tag — let `script/release-dash` validate the grammar and run the tests first
 - Release the proxy image **before** the gem — the `dash` gem's `MINIMUM_VERSION` must name an already-published `ghcr.io/mhenrixon/kamal-proxy` tag. See `../kamal/CLAUDE.md` for gem-side ordering.
 

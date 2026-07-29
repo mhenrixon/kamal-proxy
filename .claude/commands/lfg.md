@@ -130,7 +130,7 @@ gofmt -l internal/ cmd/      # must print nothing — CI enforces formatting
 go vet ./...
 ```
 
-`make lint` (golangci-lint) is CI-only, not installed locally — `gofmt -l` is the local stand-in, don't skip it.
+`make lint` (golangci-lint) is a real local gate — install the version `ci.yml` pins with `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.3`. `gofmt -l` alone does not catch what staticcheck does.
 
 ### 4.5: Repeat
 
@@ -301,9 +301,9 @@ Not part of the default flow — only after a PR is merged to `dash` and a relea
 
 ```bash
 git checkout dash
-script/release-dash v0.9.2.1     # validates vX.Y.Z.N grammar, runs make test, tags, pushes the tag
-# CI publishes ghcr.io/mhenrixon/kamal-proxy:v0.9.2.1 (+ :latest)
-docker buildx imagetools inspect ghcr.io/mhenrixon/kamal-proxy:v0.9.2.1   # verify amd64+arm64
+script/release-dash v1.0.0.0     # validates vX.Y.Z.N grammar, runs make test, tags, pushes the tag
+# CI publishes ghcr.io/mhenrixon/kamal-proxy:v1.0.0.0 (+ :latest)
+docker buildx imagetools inspect ghcr.io/mhenrixon/kamal-proxy:v1.0.0.0   # verify amd64+arm64
 ```
 
 The image has no version command — the tag IS the version. Release the proxy **before** the `dash` gem; the gem's `MINIMUM_VERSION` must name an already-published tag.

@@ -13,7 +13,7 @@ You are reviewing and responding to all unresolved review comments on a GitHub p
 
 - PRs target `dash`, never `main` -- `main` is a fast-forward-only mirror of upstream and never receives commits
 - `kamal-proxy` naming (module, binary, RPC service, socket) is load-bearing -- see `CLAUDE.md` Critical Rules #1; never accept a rename suggestion
-- Tags are four-segment `vX.Y.Z.N`, never plain `vX.Y.Z` -- see `.claude/rules/git-workflow.md`
+- Tags are four-segment `vX.Y.Z.N`, never suffix forms like `v1.0.0-rc1` -- see `.claude/rules/git-workflow.md`
 - Full sync/branch rules: `.claude/rules/upstream-sync.md`, `.claude/rules/git-workflow.md`
 
 ---
@@ -133,7 +133,7 @@ For all comments you've decided to accept:
    go test ./internal/server/...   # or the specific package touched
    make test                       # go test ./... -- full suite, no Docker
    ```
-   `make lint` (golangci-lint) is CI-only, not installed locally -- `gofmt -l` is the local stand-in, don't skip it.
+   `make lint` (golangci-lint) is a real local gate — install the version `ci.yml` pins with `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.3`. `gofmt -l` alone does not catch what staticcheck does.
 4. **Commit** all fixes together with a conventional-commit message (`fix(scope): ...`, scope = package/feature area, e.g. `router`, `san-cert`, `rpc`):
    ```bash
    git commit -m "$(cat <<'EOF'

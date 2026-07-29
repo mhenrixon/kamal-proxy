@@ -1,21 +1,28 @@
 #!/bin/bash
 
-# Release a fork build of kamal-proxy as ghcr.io/mhenrixon/kamal-proxy.
+# Release dash-proxy as ghcr.io/mhenrixon/kamal-proxy.
 #
-# Tags must be four-segment: v<upstream-base>.<fork-counter>, e.g. v0.9.2.1.
-# The kamal gem reads the proxy version from the image tag and compares it
-# with Gem::Version - four-segment tags sort above their upstream base and
-# below the next upstream release. Never use suffix tags like v0.9.2-dash.1
-# (they parse as prereleases OLDER than the base and fail the version check).
+# Tags are four-segment: vX.Y.Z.N, e.g. v1.0.0.0.
 #
-# The Docker workflow (.github/workflows/docker-publish.yml) builds and
-# publishes the multi-arch image when the tag is pushed.
+# The shape is unchanged from when this was a fork, but the meaning is not: all
+# four segments are ours to choose. They used to be <upstream-base>.<counter>,
+# derived from whatever basecamp had tagged. We own dash-proxy now, so the
+# number reflects what shipped here.
+#
+# Plain semver vX.Y.Z is accepted too, so nobody is blocked by the distinction.
+# Keep this grammar and docker-publish.yml's tag filter in step -- a tag the
+# filter does not match pushes silently and never builds an image.
+#
+# Never use suffix forms like v1.0.0-rc1: the dash gem reads the proxy version
+# from the image tag and compares it with Gem::Version, which reads a hyphen
+# suffix as a PRERELEASE sorting BELOW the release it names. A tag that sorts
+# below itself fails the gem's MINIMUM_VERSION check.
 
 set -e
 
 usage() {
   echo "Usage: $0 <tag>"
-  echo "  <tag>    Four-segment fork tag (e.g. v0.9.2.1)"
+  echo "  <tag>    Release tag, vX.Y.Z.N (e.g. v1.0.0.0)"
   exit 1
 }
 
@@ -25,14 +32,19 @@ fi
 
 TAG=$1
 
-if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-  echo "Error: tag must match v<X>.<Y>.<Z>.<N> (e.g. v0.9.2.1)"
+if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+  echo "Error: tag must be vX.Y.Z.N (e.g. v1.0.0.0), or plain vX.Y.Z"
   usage
+fi
+
+if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+  echo "Error: tag ${TAG} already exists"
+  exit 1
 fi
 
 make test
 
-git tag -a "${TAG}" -m "kamal-proxy fork ${TAG}"
+git tag -a "${TAG}" -m "dash-proxy ${TAG}"
 git push origin "tag" "${TAG}"
 
 echo "Tag ${TAG} pushed. CI will publish ghcr.io/mhenrixon/kamal-proxy:${TAG}"
