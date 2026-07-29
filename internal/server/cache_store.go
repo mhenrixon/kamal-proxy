@@ -25,6 +25,14 @@ const (
 	// CacheStoreRedis names the shared store.
 	CacheStoreRedis = "redis"
 
+	// CacheStoreFile keeps entries as files under a directory, so what the cache
+	// holds outlives the process without needing Redis. Single-host: two proxies
+	// pointed at one directory each keep their own index.
+	CacheStoreFile = "file"
+
+	// fileCacheStoreScheme is the URL scheme that selects it.
+	fileCacheStoreScheme = "file://"
+
 	// DefaultCacheLeaseTTL bounds how long one proxy's claim on a key outlives
 	// the proxy itself. A holder releases the moment it knows the outcome, so
 	// this only matters when a node is killed mid-fetch or its fetch outran the
@@ -124,6 +132,10 @@ func NewCacheStore(config CacheStoreConfig) (CacheStore, error) {
 		return newRedisCacheStore(config)
 	}
 
+	if dir, ok := fileCacheStoreDir(config.URL); ok {
+		return newFileCacheStore(dir, config.memorySize())
+	}
+
 	return nil, unsupportedCacheStoreError(config.URL)
 }
 
@@ -132,6 +144,13 @@ func NewCacheStore(config CacheStoreConfig) (CacheStore, error) {
 // rather than at the first cached request.
 func ParseCacheStoreURL(url string) error {
 	if isMemoryCacheStoreURL(url) {
+		return nil
+	}
+
+	if strings.HasPrefix(url, fileCacheStoreScheme) {
+		if _, ok := fileCacheStoreDir(url); !ok {
+			return fmt.Errorf("cache-store %q names no directory; use file:///path/to/cache", url)
+		}
 		return nil
 	}
 
@@ -154,5 +173,22 @@ func isRedisCacheStoreURL(url string) bool {
 }
 
 func unsupportedCacheStoreError(url string) error {
-	return fmt.Errorf("cache-store must be %q or a redis:// or rediss:// URL, got %q", CacheStoreMemory, url)
+	return fmt.Errorf("cache-store must be %q, a redis:// or rediss:// URL, or a file:// directory, got %q", CacheStoreMemory, url)
+}
+
+// fileCacheStoreDir extracts the directory from a file:// URL, reporting false
+// when the scheme does not match or names nothing. A bare "file://" is a typo
+// rather than a request for some default location, so it is refused at startup
+// instead of quietly caching into the working directory.
+func fileCacheStoreDir(url string) (string, bool) {
+	if !strings.HasPrefix(url, fileCacheStoreScheme) {
+		return "", false
+	}
+
+	dir := strings.TrimPrefix(url, fileCacheStoreScheme)
+	if dir == "" || dir == "/" {
+		return "", false
+	}
+
+	return dir, true
 }
