@@ -21,6 +21,14 @@ const (
 	// latency optimization, not a file server.
 	DefaultCacheMaxBodySize = 8 * MB
 
+	// DefaultCacheMaxVariants bounds how many representations one resource may
+	// hold. It exists because the proxy can normalize exactly one Vary dimension
+	// -- Accept-Encoding, because it understands content codings. Every other
+	// dimension is keyed on whatever the client sent, so an app varying on a
+	// high-entropy header would otherwise fill the cache with near-duplicates
+	// and evict entries that were earning their place.
+	DefaultCacheMaxVariants = 32
+
 	// DefaultCacheRevalidateTimeout bounds a background stale-while-revalidate
 	// fetch. It runs with no client attached, so nothing else would ever stop it.
 	DefaultCacheRevalidateTimeout = 30 * time.Second
@@ -58,6 +66,11 @@ type CacheOptions struct {
 	// default: a shared cache replaying one client's cookie to the next is the
 	// worst thing this feature could do.
 	AllowSetCookie bool `json:"allow_set_cookie,omitempty"`
+	// MaxVariants bounds how many representations one resource may hold when it
+	// negotiates. Zero means DefaultCacheMaxVariants. Negative switches
+	// automatic variants off entirely, restoring the older behaviour where a
+	// response varying on anything undeclared was refused outright.
+	MaxVariants int `json:"max_variants,omitempty"`
 }
 
 func (co *CacheOptions) Normalize() {
@@ -80,6 +93,8 @@ func (co CacheOptions) Validate() error {
 			return fmt.Errorf("%w: cache-vary-cookie requires cache", ErrServiceOptionsInvalid)
 		case co.AllowSetCookie:
 			return fmt.Errorf("%w: cache-allow-set-cookie requires cache", ErrServiceOptionsInvalid)
+		case co.MaxVariants != 0:
+			return fmt.Errorf("%w: cache-max-variants requires cache", ErrServiceOptionsInvalid)
 		}
 		return nil
 	}
@@ -116,10 +131,24 @@ func (co CacheOptions) maxBodySize() int64 {
 	return co.MaxBodySize
 }
 
-// keysOnAcceptEncoding reports whether the operator asked for the encoding to be
-// part of the key, which is what makes a target-encoded response storable.
-func (co CacheOptions) keysOnAcceptEncoding() bool {
-	return slices.Contains(co.VaryHeaders, acceptEncodingHeader)
+// coversVaryField reports whether the primary key already carries a Vary field,
+// in which case keying a variant on it too would cost a second lookup for
+// nothing.
+func (co CacheOptions) coversVaryField(field string) bool {
+	return slices.Contains(co.VaryHeaders, field)
+}
+
+// automaticVary reports whether a response may be keyed on fields the operator
+// did not name. Off restores the older behaviour exactly.
+func (co CacheOptions) automaticVary() bool {
+	return co.MaxVariants >= 0
+}
+
+func (co CacheOptions) maxVariants() int {
+	if co.MaxVariants <= 0 {
+		return DefaultCacheMaxVariants
+	}
+	return co.MaxVariants
 }
 
 func normalizeLowercaseNames(names []string) []string {

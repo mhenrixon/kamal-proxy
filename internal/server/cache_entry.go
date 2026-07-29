@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -21,6 +22,28 @@ type CacheEntry struct {
 	// service that stored them and optionally by a path prefix.
 	Service string
 	Path    string
+
+	// VaryOn names the request-header fields this resource negotiates on,
+	// lowercased and sorted, beyond what the primary key already carries. It
+	// appears on two kinds of record: on a VARIANT it is the list that selects
+	// the entry (RFC 9111 section 4.1), and on a VARIANT INDEX it is the list a
+	// later lookup needs in order to compute the variant key at all.
+	//
+	// Nil on the overwhelming majority of entries, which is what keeps the
+	// common path one lookup and one comparison.
+	VaryOn []string
+
+	// VariantKey is where this entry was actually stored, empty when it does not
+	// negotiate. It is a witness rather than a cache: comparing it against a
+	// fresh derivation from the request in hand is what stops one client's
+	// variant answering another's. Because it survives a store-path bug it is
+	// stronger than trusting the key an entry was read from.
+	VariantKey string
+
+	// Variants are short digests of the variant keys admitted under this index,
+	// which is what makes --cache-max-variants enforceable without a keyspace
+	// walk. Empty on anything but an index.
+	Variants []string
 
 	StatusCode int
 	Header     http.Header
@@ -78,7 +101,14 @@ func (e *CacheEntry) ttl() time.Duration {
 }
 
 func (e *CacheEntry) size() int64 {
-	size := int64(len(e.Body) + len(e.Service) + len(e.Path) + cacheEntryOverhead)
+	size := int64(len(e.Body) + len(e.Service) + len(e.Path) + len(e.VariantKey) + cacheEntryOverhead)
+
+	for _, field := range e.VaryOn {
+		size += int64(len(field))
+	}
+	for _, digest := range e.Variants {
+		size += int64(len(digest))
+	}
 
 	for name, values := range e.Header {
 		size += int64(len(name))
@@ -103,9 +133,9 @@ func (e *CacheEntry) refreshed(options CacheOptions, now time.Time) *CacheEntry 
 	refreshed.StoredAt = now
 	refreshed.InitialAge = 0
 
-	if freshFor, staleWhileRevalidate, refusal := responseIsStorable(options, e.StatusCode, e.Header); refusal == cacheRefusalNone {
-		refreshed.FreshFor = freshFor
-		refreshed.StaleWhileRevalidate = staleWhileRevalidate
+	if policy, refusal, _ := responseIsStorable(options, e.StatusCode, e.Header); refusal == cacheRefusalNone {
+		refreshed.FreshFor = policy.freshFor
+		refreshed.StaleWhileRevalidate = policy.staleWhileRevalidate
 	}
 
 	return refreshed
@@ -117,6 +147,10 @@ func (e *CacheEntry) refreshed(options CacheOptions, now time.Time) *CacheEntry 
 func (e *CacheEntry) clone() *CacheEntry {
 	copied := *e
 	copied.Header = e.Header.Clone()
+	// A slice header is not a copy, and the memory store hands entries straight
+	// to request goroutines.
+	copied.VaryOn = slices.Clone(e.VaryOn)
+	copied.Variants = slices.Clone(e.Variants)
 
 	return &copied
 }

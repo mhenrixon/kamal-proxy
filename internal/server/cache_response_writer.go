@@ -41,13 +41,16 @@ type cachingResponseWriter struct {
 	released    bool
 	hijacked    bool
 
-	capturing            bool
-	refusal              cacheRefusal
-	body                 []byte
-	header               http.Header
-	initialAge           time.Duration
-	freshFor             time.Duration
-	staleWhileRevalidate time.Duration
+	capturing bool
+	refusal   cacheRefusal
+	// refusalDetail names the offending field or coding for the debug log. It
+	// never reaches a metric label: an application-chosen string there would be
+	// a cardinality bomb inside a fix for a cardinality bomb.
+	refusalDetail string
+	body          []byte
+	header        http.Header
+	initialAge    time.Duration
+	policy        cachePolicy
 }
 
 func (w *cachingResponseWriter) WriteHeader(statusCode int) {
@@ -114,28 +117,42 @@ func (w *cachingResponseWriter) finish() {
 
 // entry is the stored form of what just went past, or nil if it may not be
 // stored.
-func (w *cachingResponseWriter) entry(service string, r *http.Request, now time.Time) *CacheEntry {
+// entry is the stored form of what just went past, or nil if it may not be
+// stored. It is born knowing where it belongs: nothing can build an entry
+// without a variant key, so the store path is never TOLD a key it could get
+// wrong.
+func (w *cachingResponseWriter) entry(service, primaryKey string, r *http.Request, now time.Time) *CacheEntry {
 	if !w.capturing {
 		return nil
 	}
 
-	return &CacheEntry{
+	entry := &CacheEntry{
 		Service:              service,
 		Path:                 r.URL.Path,
+		VaryOn:               w.policy.varyOn,
 		StatusCode:           w.statusCode,
 		Header:               w.header,
 		Body:                 w.body,
 		StoredAt:             now,
 		InitialAge:           w.initialAge,
-		FreshFor:             w.freshFor,
-		StaleWhileRevalidate: w.staleWhileRevalidate,
+		FreshFor:             w.policy.freshFor,
+		StaleWhileRevalidate: w.policy.staleWhileRevalidate,
 	}
+
+	// Left empty when the response does not negotiate: storageKeyFor reads an
+	// empty witness as "the resource's own key", so nothing downstream has to
+	// special-case it and the bytes are not paid on every entry the cache holds.
+	if len(w.policy.varyOn) > 0 {
+		entry.VariantKey = variantKeyFor(primaryKey, w.policy.varyOn, r)
+	}
+
+	return entry
 }
 
 // Private
 
 func (w *cachingResponseWriter) decide() {
-	freshFor, stale, refusal := responseIsStorable(w.options, w.statusCode, w.Header())
+	policy, refusal, detail := responseIsStorable(w.options, w.statusCode, w.Header())
 
 	// A HEAD response is a body-less description of a GET. Storing it would
 	// answer later GETs with nothing at all. It is checked after the response
@@ -146,13 +163,13 @@ func (w *cachingResponseWriter) decide() {
 	}
 
 	if refusal != cacheRefusalNone {
+		w.refusalDetail = detail
 		w.refuse(refusal)
 		return
 	}
 
 	w.capturing = true
-	w.freshFor = freshFor
-	w.staleWhileRevalidate = stale
+	w.policy = policy
 	w.initialAge = parseAgeHeader(w.Header().Get("Age"))
 	w.header = storableHeader(w.Header())
 }

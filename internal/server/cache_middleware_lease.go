@@ -97,7 +97,10 @@ func (h *CacheMiddleware) awaitLease(w http.ResponseWriter, r *http.Request, key
 		case <-ticker.C:
 			entry, held := h.leaser.ProbeLease(r.Context(), key)
 
-			if entry != nil && entry.fresh(h.now()) {
+			// Gated like every other serve site: the lease is keyed on the
+			// resource, so the holder may have published a different variant
+			// than this waiter asked for.
+			if entry != nil && entry.fresh(h.now()) && entryAnswers(entry, key, r) {
 				h.trackLeaseWait(cacheLeaseWaitServed)
 				h.replay(w, r, entry, cacheStatusHit, cacheResultCoalesced, h.now())
 				return entry

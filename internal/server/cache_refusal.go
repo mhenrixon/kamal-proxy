@@ -34,6 +34,11 @@ const (
 	cacheRefusalContentEncoding cacheRefusal = "content_encoding"
 	cacheRefusalEventStream     cacheRefusal = "event_stream"
 	cacheRefusalVary            cacheRefusal = "vary"
+	// The response negotiates on something a shared cache cannot usefully key.
+	cacheRefusalVaryUnkeyable cacheRefusal = "vary_unkeyable"
+	cacheRefusalVaryTooMany   cacheRefusal = "vary_too_many"
+	// The resource already holds --cache-max-variants representations.
+	cacheRefusalVariantLimit cacheRefusal = "variant_limit"
 
 	// Decided by the proxy rather than the response: a HEAD has no body to
 	// store, a body past --cache-max-body is too big to keep, and a hijacked
@@ -53,9 +58,15 @@ func (r cacheRefusal) advice() string {
 	case cacheRefusalSetCookie:
 		return "pass --cache-allow-set-cookie if this response is safe to share"
 	case cacheRefusalVary:
-		return "name the varying header in --cache-vary-header, or the cookie in --cache-vary-cookie"
+		return "the target must not send Vary: *; nothing can be keyed on it"
+	case cacheRefusalVaryUnkeyable:
+		return "this response varies on a header that differs for every client; narrow the target's Vary, or accept one entry per client with --cache-vary-header <field>"
+	case cacheRefusalVaryTooMany:
+		return "this response varies on more dimensions than a shared cache can key"
+	case cacheRefusalVariantLimit:
+		return "this resource has more representations than --cache-max-variants allows; narrow the target's Vary or raise the limit"
 	case cacheRefusalContentEncoding:
-		return "the target encoded this itself; pass --cache-vary-header accept-encoding, or let --compress do the encoding"
+		return "the target encoded this with a coding the cache cannot key on; let --compress do the encoding instead"
 	case cacheRefusalTooLarge:
 		return "raise --cache-max-body if this response is worth keeping"
 	default:

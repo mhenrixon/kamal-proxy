@@ -75,19 +75,28 @@ func TestCacheRefusal_ReportsWhyAResponseWasNotStored(t *testing.T) {
 			expected: cacheRefusalSetCookie,
 		},
 		{
-			name: "varies on a header the key does not carry",
+			name: "varies on a header nobody can key",
 			respond: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Cache-Control", "public, max-age=60")
-				w.Header().Set("Vary", "X-Tenant")
+				w.Header().Set("Vary", "Cookie")
+				w.Write([]byte("hello"))
+			},
+			expected: cacheRefusalVaryUnkeyable,
+		},
+		{
+			name: "varies on everything",
+			respond: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Cache-Control", "public, max-age=60")
+				w.Header().Set("Vary", "*")
 				w.Write([]byte("hello"))
 			},
 			expected: cacheRefusalVary,
 		},
 		{
-			name: "encoded by the target",
+			name: "encoded with a coding the cache cannot key",
 			respond: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Cache-Control", "public, max-age=60")
-				w.Header().Set("Content-Encoding", "gzip")
+				w.Header().Set("Content-Encoding", "exi")
 				w.Write([]byte("hello"))
 			},
 			expected: cacheRefusalContentEncoding,
@@ -177,6 +186,9 @@ func TestCacheRefusal_ActionableReasonsCarryAdvice(t *testing.T) {
 		cacheRefusalNoLifetime,
 		cacheRefusalSetCookie,
 		cacheRefusalVary,
+		cacheRefusalVaryUnkeyable,
+		cacheRefusalVaryTooMany,
+		cacheRefusalVariantLimit,
 		cacheRefusalContentEncoding,
 		cacheRefusalTooLarge,
 	}
