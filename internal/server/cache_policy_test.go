@@ -59,7 +59,14 @@ func TestParseCacheControl(t *testing.T) {
 		{
 			name:     "no-cache and must-revalidate",
 			values:   []string{"no-cache, must-revalidate"},
-			expected: cacheDirectives{noCache: true},
+			expected: cacheDirectives{noCache: true, mustRevalidate: true},
+		},
+		{
+			// proxy-revalidate says the same thing to a shared cache, which is
+			// the only kind this is.
+			name:     "proxy-revalidate",
+			values:   []string{"public, max-age=60, proxy-revalidate"},
+			expected: cacheDirectives{public: true, maxAge: time.Minute, hasMaxAge: true, mustRevalidate: true},
 		},
 		{
 			name:     "zero max-age is recorded, not dropped",
@@ -190,6 +197,33 @@ func TestResponseIsStorable(t *testing.T) {
 			options:    enabled,
 			statusCode: http.StatusOK,
 			headers:    http.Header{"Cache-Control": {"public"}},
+		},
+		{
+			// no-cache permits storing but requires validation before every
+			// reuse. This proxy has no way to validate on the way out, so the
+			// only honest answer is not to store it at all.
+			name:       "public but no-cache",
+			options:    enabled,
+			statusCode: http.StatusOK,
+			headers:    http.Header{"Cache-Control": {"public, no-cache, max-age=60"}},
+		},
+		{
+			// must-revalidate forbids serving stale, so the entry is kept but
+			// its stale window is dropped.
+			name:             "must-revalidate drops the stale window",
+			options:          enabled,
+			statusCode:       http.StatusOK,
+			headers:          http.Header{"Cache-Control": {"public, max-age=5, stale-while-revalidate=55, must-revalidate"}},
+			expectedStorable: true,
+			expectedFreshFor: 5 * time.Second,
+		},
+		{
+			name:             "proxy-revalidate drops the stale window",
+			options:          enabled,
+			statusCode:       http.StatusOK,
+			headers:          http.Header{"Cache-Control": {"public, max-age=5, stale-while-revalidate=55, proxy-revalidate"}},
+			expectedStorable: true,
+			expectedFreshFor: 5 * time.Second,
 		},
 		{
 			name:       "public but no-store",

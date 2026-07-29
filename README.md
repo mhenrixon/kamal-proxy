@@ -567,7 +567,15 @@ caps the in-process store instead, which evicts least-recently-used first.
 
 With `stale-while-revalidate`, an expired entry keeps answering while the proxy
 fetches a fresh copy behind it — nobody waits for the refresh, and only one
-refresh runs however many clients arrive at once.
+refresh runs however many clients arrive at once. The refresh is always an
+unconditional request: it exists to replace the stored entry, so it asks for the
+whole response rather than inheriting the `If-None-Match` of whichever client
+happened to trigger it.
+
+`must-revalidate` (and `proxy-revalidate`) turn the stale window off, since they
+forbid answering from an entry that has passed its lifetime. A response marked
+`no-cache` is not stored at all: it would have to be validated before every
+reuse, and the proxy has no way to do that on the way out.
 
 #### Purging
 
@@ -611,9 +619,13 @@ Things worth knowing:
   a fresh copy — and stores it, so a reload warms the entry for everybody else.
   `no-store` skips the cache in both directions.
 * **`X-Cache` says what happened** — `HIT`, `MISS` or `STALE` — alongside an
-  `Age` header that counts any age the response already had upstream. The
-  `kamal_proxy_cache_events_total` counter breaks the same thing down by service
-  and result, including coalesced requests.
+  `Age` header that counts any age the response already had upstream.
+* **`kamal_proxy_cache_events_total{service,result}` is the counter.** Exactly
+  one of `hit`, `miss`, `stale` and `coalesced` is recorded per request the cache
+  considered, so they sum to the request count and
+  `hit / (hit + miss + stale + coalesced)` is a real hit rate. `store`, `error`
+  and `revalidated` describe what the cache did rather than what a client got,
+  and sit outside that sum — a background refresh is not a client miss.
 
 
 ### Automatic TLS

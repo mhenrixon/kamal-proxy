@@ -49,6 +49,9 @@ type cacheDirectives struct {
 	sMaxAge              time.Duration
 	hasSMaxAge           bool
 	staleWhileRevalidate time.Duration
+	// mustRevalidate covers both must-revalidate and proxy-revalidate. They say
+	// the same thing to a shared cache, which is the only kind this is.
+	mustRevalidate bool
 }
 
 // sharedLifetime is how long a shared cache may treat the response as fresh.
@@ -82,6 +85,8 @@ func parseCacheControl(values []string) cacheDirectives {
 				directives.private = true
 			case "public":
 				directives.public = true
+			case "must-revalidate", "proxy-revalidate":
+				directives.mustRevalidate = true
 			case "max-age":
 				if seconds, ok := parseDeltaSeconds(argument, hasArgument); ok {
 					directives.maxAge, directives.hasMaxAge = seconds, true
@@ -156,6 +161,15 @@ func responseIsStorable(options CacheOptions, statusCode int, header http.Header
 		return 0, 0, false
 	}
 
+	// no-cache permits storing but requires the entry to be validated before
+	// every reuse (RFC 9111 section 5.2.2.4). This proxy has no way to validate
+	// on the way out, so the only honest answer is not to store it at all --
+	// keeping it would mean serving it unvalidated, which is what the directive
+	// forbids.
+	if directives.noCache {
+		return 0, 0, false
+	}
+
 	freshFor, ok := directives.sharedLifetime()
 	if !ok || freshFor <= 0 {
 		return 0, 0, false
@@ -191,7 +205,16 @@ func responseIsStorable(options CacheOptions, statusCode int, header http.Header
 		return 0, 0, false
 	}
 
-	return freshFor, directives.staleWhileRevalidate, true
+	// must-revalidate forbids answering from an entry that has passed its
+	// lifetime (RFC 9111 section 5.2.2.2), which is precisely what a
+	// stale-while-revalidate window is for. The entry is still worth keeping;
+	// it just stops being servable the moment it goes stale.
+	staleWhileRevalidate := directives.staleWhileRevalidate
+	if directives.mustRevalidate {
+		staleWhileRevalidate = 0
+	}
+
+	return freshFor, staleWhileRevalidate, true
 }
 
 // varyCovered reports whether every dimension the response varies on is one the
