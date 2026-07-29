@@ -29,13 +29,20 @@ This is a fork, not a normal repo — branch roles are fixed. Full sync mechanic
 
 | Branch | Role | Can you commit here? |
 |---|---|---|
+| `dash` | **This fork's main branch** — every feature lands here | Only via merge from feature branches |
 | `main` | Fast-forward-only mirror of `basecamp/kamal-proxy` | **NEVER** |
-| `dash` | Long-lived integration + release branch | Only via merge from feature branches |
 | `san-certificate-batching` | SAN cert batching feature branch | Yes |
 | `wildcard-certs` | DNS-01 wildcard certs feature branch | Yes |
-| `feature/*`, `fix/*` | New work | Yes — root off `main` |
+| `feature/*`, `fix/*` | New work | Yes — root off `dash` |
 
-**Root new feature branches off `main`, not `dash`** — this keeps them upstream-PR-able (basecamp can merge them without inheriting fork-only cert code). They merge *forward* into `dash`, never the reverse, and published branches are never rebased.
+**Root new feature branches off `dash`.** `dash` is this fork's main branch, and upstream
+mergeability is not a constraint on our design — we build what is best for `dash` and diverge
+from basecamp where that is better. (Same call as the `../kamal` fork.) Rooting off `main`
+instead produces PRs that run no CI and conflict on every fork-only file, which is why we
+stopped doing it.
+
+`main` still exists so upstream fixes can be merged *forward* into `dash`. It is a source,
+never a target. Published branches are never rebased.
 
 ## Branch Naming
 

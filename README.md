@@ -77,6 +77,38 @@ To configure health checks to run on a different port than your main service
 
     kamal-proxy deploy service1 --target web-1:3000 --health-check-port 8080
 
+### Monitoring the proxy itself
+
+The health checks above tell the proxy whether your *app* is up. To let an
+external uptime monitor tell whether the *proxy* is up, there is a liveness
+endpoint answered by the proxy itself:
+
+    curl http://your-server/.kamal-proxy/ping
+    # → 200 OK
+
+Point your uptime monitor at that URL rather than at one of your apps, and a
+page tells you the proxy is gone instead of blaming whichever service you
+happened to pick as the canary.
+
+Things worth knowing:
+
+* **It answers before anything is deployed.** Liveness means this process is
+  serving, so a freshly booted proxy with zero services answers `200` on plain
+  HTTP — you do not need TLS, a host, or a deployment for it to work.
+* **It answers on every host the proxy serves**, over HTTP and HTTPS alike, and
+  is never forwarded upstream. `/.kamal-proxy/` is reserved by the proxy, so an
+  app cannot serve its own page there.
+* **It is not authenticated and not rate limited.** It reveals only that a
+  kamal-proxy is running on the port, which anyone connecting to the port can
+  already tell. If you would rather it not be reachable from the internet,
+  block the path at your edge.
+* **It is not in the access log** and carries `Cache-Control: no-store`, so
+  probing once a second costs you neither log volume nor a stale cached `200`.
+* **There is no matching readiness endpoint.** The proxy restores its routing
+  state before it opens a listener, and closes its listeners when draining, so
+  a readiness probe here could only ever say `200`. Whether the port accepts a
+  connection at all is the real signal.
+
 ### Host-based routing
 
 Host-based routing allows you to run multiple applications on the same server,
