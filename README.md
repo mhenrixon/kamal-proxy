@@ -607,9 +607,16 @@ Things worth knowing:
   client's copy answering another's request.
 * **`Accept-Encoding` needs no entry.** The cache stores what your app produced
   and sits inside `--compress`, so one entry serves every encoding. A response
-  your app encoded *itself* is not stored, since the key does not record which
-  encoding it is — add `--cache-vary-header accept-encoding` if you want those
-  cached, at one entry per distinct `Accept-Encoding` string.
+  your app encoded *itself* is not stored by default, since the key does not
+  record which encoding it is.
+* **If your app does its own compression**, add `--cache-vary-header accept-encoding`
+  and those responses become cacheable. The key then carries the *set of codings
+  the client accepts*, not the raw header — `gzip, deflate, br`,
+  `br;q=0.9, gzip, deflate` and `  GZIP,DEFLATE,BR ` are one client capability
+  written three ways and share one entry. Codings the proxy does not know
+  (`exi`, `sdch`) are ignored rather than fragmenting the cache, and a response
+  encoded with one of those is not stored at all. Whatever the key says, a
+  stored body is never handed to a client that did not accept its encoding.
 * **A rollout gets its own entries.** Canary targets are running different code,
   so their responses never answer requests routed to the stable ones.
 * **Statuses beyond `200`.** `203`, `204`, `300`, `301`, `308`, `404`, `405`,

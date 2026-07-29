@@ -113,7 +113,7 @@ func (h *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// cache for everyone behind it, which is what makes a reload useful.
 	allowsStored := requestAllowsStoredResponse(r)
 	if allowsStored {
-		if entry, found := h.config.Store.Get(r.Context(), key); found {
+		if entry, found := h.config.Store.Get(r.Context(), key); found && entryReadableBy(entry, r) {
 			now := h.now()
 
 			if entry.needsRevalidation(now) {

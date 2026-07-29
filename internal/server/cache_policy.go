@@ -204,10 +204,20 @@ func responseIsStorable(options CacheOptions, statusCode int, header http.Header
 	// A body the target encoded itself is one particular representation, and by
 	// default the key does not record which -- handing it to a client that asked
 	// for a different encoding, or none, would be bytes it cannot read. Naming
-	// accept-encoding in --cache-vary-header puts it in the key and makes these
-	// storable, at the cost of an entry per distinct Accept-Encoding string.
-	if header.Get("Content-Encoding") != "" && !options.keysOnAcceptEncoding() {
-		return 0, 0, cacheRefusalContentEncoding
+	// accept-encoding in --cache-vary-header puts it in the key, and the key
+	// carries the normalized set of codings the client accepts rather than the
+	// raw header, so that costs a handful of entries rather than one per browser.
+	if contentEncoding := header.Get("Content-Encoding"); contentEncoding != "" {
+		if !options.keysOnAcceptEncoding() {
+			return 0, 0, cacheRefusalContentEncoding
+		}
+
+		// A coding the key does not distinguish clients by cannot be stored
+		// safely: two clients differing only in whether they accept it would
+		// land on the same entry.
+		if !encodingIsKeyable(contentEncoding) {
+			return 0, 0, cacheRefusalContentEncoding
+		}
 	}
 
 	// Holding an event stream back to store it is exactly what the client asked
@@ -287,7 +297,10 @@ func cacheKey(service, variant string, r *http.Request, options CacheOptions) st
 
 	for _, name := range options.VaryHeaders {
 		writeKeyField(hasher, name)
-		writeKeyField(hasher, r.Header.Get(name))
+		// Not r.Header.Get: Accept-Encoding is normalized first, or the same
+		// client capability written two ways would key two entries. See
+		// cache_encoding.go.
+		writeKeyField(hasher, keyValueFor(r, name))
 	}
 
 	for _, name := range options.VaryCookies {
