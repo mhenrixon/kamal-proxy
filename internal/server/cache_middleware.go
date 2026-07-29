@@ -148,7 +148,11 @@ func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key stri
 		if lease.taken() {
 			// Another proxy is already fetching. Wait briefly for what it
 			// publishes rather than making the same request.
-			if h.awaitLease(w, r, key) {
+			if served := h.awaitLease(w, r, key); served != nil {
+				// Hand it to this node's own followers too. Settling with
+				// nothing would send every one of them to the origin, which is
+				// the amplification the lease exists to remove.
+				stored = served
 				return
 			}
 		}
