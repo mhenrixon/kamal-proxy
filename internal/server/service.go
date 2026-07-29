@@ -391,17 +391,20 @@ type marshalledService struct {
 }
 
 func (s *Service) MarshalJSON() ([]byte, error) {
+	// Specs rather than Names, so that a target's weight survives a restart. It
+	// renders as a bare address unless a weight was actually set, so unweighted
+	// state files stay exactly what they have always been.
 	var rolloutTargets []string
 	var rolloutReaders []string
 	if s.rollout != nil {
-		rolloutTargets = s.rollout.WriteTargets().Names()
-		rolloutReaders = s.rollout.ReadTargets().Names()
+		rolloutTargets = s.rollout.WriteTargets().Specs()
+		rolloutReaders = s.rollout.ReadTargets().Specs()
 	}
 
 	return json.Marshal(marshalledService{
 		Name:              s.name,
-		ActiveTargets:     s.active.WriteTargets().Names(),
-		ActiveReaders:     s.active.ReadTargets().Names(),
+		ActiveTargets:     s.active.WriteTargets().Specs(),
+		ActiveReaders:     s.active.ReadTargets().Specs(),
 		RolloutTargets:    rolloutTargets,
 		RolloutReaders:    rolloutReaders,
 		Options:           s.options,

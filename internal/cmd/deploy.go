@@ -33,8 +33,8 @@ func newDeployCommand() *deployCommand {
 		ValidArgs: []string{"service"},
 	}
 
-	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetURLs, "target", []string{}, "Target host(s) to deploy")
-	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ReaderURLs, "read-target", []string{}, "Read-only target host(s) to deploy")
+	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetURLs, "target", []string{}, "Target host(s) to deploy, as <host>[:<port>][;weight=<n>]. A weight is that target's share of requests relative to its healthy peers (default 1, max 1000), so --target=a --target='b;weight=5' sends b five times the traffic of a. Quote the value: the shell eats an unquoted semicolon")
+	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ReaderURLs, "read-target", []string{}, "Read-only target host(s) to deploy. Takes the same ;weight=<n> suffix as --target, applied across the read pool only")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ServiceOptions.Hosts, "host", []string{}, "Host(s) to serve this target on (empty for wildcard)")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ServiceOptions.PathPrefixes, "path-prefix", []string{}, "Deploy the service below the specified path(s)")
 	deployCommand.cmd.Flags().BoolVar(&deployCommand.args.ServiceOptions.StripPrefix, "strip-path-prefix", true, "With --path-prefix, strip prefix from request before forwarding")
