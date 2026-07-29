@@ -46,6 +46,10 @@ type Config struct {
 	MetricsPort  int
 	HTTP3Enabled bool
 
+	// MetricsAllowIPs restricts the metrics endpoint to these addresses and CIDR
+	// ranges. Empty (the default) serves everyone that can reach the port.
+	MetricsAllowIPs []string
+
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration

@@ -190,6 +190,56 @@ If you use `--error-pages`, add a `401.html` to that directory; otherwise the
 challenge falls back to the proxy's built-in plain response.
 
 
+### Restricting a service by client address
+
+To serve a service only to certain networks, deploy it with `--allow-ip`:
+
+    kamal-proxy deploy service1 --target web-1:3000 --allow-ip 10.0.0.0/8,203.0.113.7
+
+Requests from anywhere else get a `403`. The flag takes addresses or CIDR
+ranges, and may be repeated or comma-separated. Metrics have their own list:
+
+    kamal-proxy run --metrics-port 9090 --metrics-allow-ip 10.0.0.0/8
+
+Things worth knowing:
+
+* **It matches the address that connected**, not any header. `X-Forwarded-For`
+  and friends are written by the client, so honouring them by default would
+  make the list decorative — anyone could send `X-Forwarded-For: 10.0.0.1`.
+* **Behind a load balancer or CDN, say so with `--trusted-proxy`.** Only when
+  the connecting address is inside one of those ranges is the forwarded chain
+  consulted, and then the client is the nearest address in the chain that none
+  of your proxies wrote. **List every hop, not just the one that connects to
+  kamal-proxy** — behind a CDN in front of a load balancer, list both, or the
+  CDN's edge address becomes the one matched against `--allow-ip`.
+* **If the chain cannot be resolved, the request is denied.** A trusted edge
+  that stops sending the header denies everything rather than silently falling
+  back to the edge's own address, which would be a bypass whenever your allow
+  list contains the proxy's own range. Denials are logged with the address the
+  decision used and why, rate-limited per service.
+* **List your IPv6 ranges too.** A client reaching the proxy over IPv6 is
+  matched on its IPv6 address; an IPv4-only list denies it. The proxy warns at
+  deploy when a list has no IPv6 ranges. (`::ffff:` forms of IPv4 addresses are
+  matched against IPv4 ranges, so those do not need listing separately.)
+* **The health check path stays open**, so downstream load balancers can still
+  see the service drain during a deploy. Deploying with both `--allow-ip` and a
+  health check path of `/` is rejected.
+* **`--client-ip-header` requires `--trusted-proxy`.** Without it the deploy is
+  rejected, because the header would be ignored while appearing to be honoured.
+  With it, be sure the header names one your edge *overwrites or strips* on
+  every request — a header the edge merely passes through can be set by anyone.
+* **Redeploying without the flag removes the restriction**, and rolling the
+  proxy image back to a version without this feature removes it silently.
+* **Check what the proxy actually sees.** The access log's `client_addr` is the
+  connecting address; `remote_addr` is the client's own claim and is not what
+  the filter uses. Under some Docker port drivers every request appears to come
+  from the bridge gateway, in which case a list cannot distinguish anyone.
+* **A `--path-prefix` service is routing, not a security boundary** — the same
+  caveat as basic auth above.
+
+If you use `--error-pages`, add a `403.html` to that directory.
+
+
 ### Automatic TLS
 
 Kamal Proxy can automatically obtain and renew TLS certificates for your
