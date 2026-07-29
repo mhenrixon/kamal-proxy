@@ -151,16 +151,24 @@ func TestRouter_GetCertificate_RegistryStillServesHostScopedServices(t *testing.
 
 	_, target := testBackend(t, "first", http.StatusOK)
 
+	// A static certificate, so that the fall-through past the registry lands on
+	// StaticCertManager. Left to autocert, this test asked Let's Encrypt
+	// PRODUCTION for a certificate for app.example.com and blocked for its full
+	// five-minute internal timeout -- on its own, 300 of the suite's 320 seconds.
+	certPath, keyPath := prepareTestCertificateFiles(t)
+
 	serviceOptions := defaultServiceOptions
 	serviceOptions.TLSEnabled = true
 	serviceOptions.ACMECachePath = t.TempDir()
 	serviceOptions.Hosts = []string{"app.example.com"}
+	serviceOptions.TLSCertificatePath = certPath
+	serviceOptions.TLSPrivateKeyPath = keyPath
 
 	require.NoError(t, router.DeployService("hostscoped", []string{target}, defaultEmptyReaders,
 		serviceOptions, defaultTargetOptions, defaultDeploymentOptions))
 
 	_, err := router.GetCertificate(&tls.ClientHelloInfo{ServerName: "app.example.com"})
-	assert.Error(t, err, "no provisioning method is wired up in this test")
+	assert.NoError(t, err, "the service's own certificate serves the request")
 
 	assert.NotContains(t, registry.pendingDomains, "sibling.example.com",
 		"registry should have batched the pending sibling while provisioning")

@@ -53,10 +53,16 @@ Layer 0: unix socket + state files (~/.config/kamal-proxy, kamal-proxy.sock)
 
 ## Branch map
 
-| Branch | Contents | Conflict surface vs main |
+**`dash` is this fork's main branch.** New work branches off `dash` and PRs back into `dash`.
+Upstream mergeability is **not** a design constraint — we take what is best for `dash` and
+diverge where that is better. `main` still exists as an upstream mirror so we can keep pulling
+basecamp's fixes forward, but nothing is shaped for their benefit. (Decided alongside the same
+call in the `../kamal` fork.)
+
+| Branch | Contents | Conflict surface vs dash |
 |---|---|---|
-| `main` | basecamp mirror, ff-only | — |
-| `dash` | integration + release: publish workflow + cert features merged | — |
+| `dash` | **the main branch** — all fork work lands here; publish workflow + cert features merged | — |
+| `main` | basecamp mirror, ff-only — a source to merge *from*, never a target | — |
 | `san-certificate-batching` | SAN cert batching (`internal/server/san_cert_manager.go`), `--acme-email`/`--acme-directory` | run.go, config.go, router.go, go.mod |
 | `wildcard-certs` | DNS-01 wildcard certs (`internal/server/acme/`, cert registry), `--acme-dns-provider` etc. | run.go, config.go, router.go, go.mod |
 | `feat/loadbalancing` | SUPERSEDED — upstream absorbed multi-target LB natively (`load_balancer.go`, reader/writer split); the branch only retains a standalone `TargetPool` module. Not merged into `dash`; candidate for deletion. | — |
@@ -77,7 +83,7 @@ Tag push (`vX.Y.Z.N`) → `.github/workflows/docker-publish.yml` → multi-arch 
 
 | Command | Purpose |
 |---------|---------|
-| `/lfg` | Full autonomous workflow: branch off `main` → understand → plan → TDD → verify → PR into `dash` |
+| `/lfg` | Full autonomous workflow: branch off `dash` → understand → plan → TDD → verify → PR into `dash` |
 | `/plan` | Read-only planning → GitHub issue or `docs/plans/` markdown (execute with `/lfg`) |
 | `/architect` | Coordinate work across the cmd → RPC → server layers |
 | `/tdd` | Enforce RED → GREEN → REFACTOR with Go table-driven tests |

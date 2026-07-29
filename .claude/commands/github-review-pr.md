@@ -77,10 +77,10 @@ gh pr view <PR_NUMBER> --repo mhenrixon/kamal-proxy --json mergeable,mergeStateS
 
 ### Which branch do you merge? (fork-specific — decide BEFORE merging)
 
-The branch model (`.claude/rules/git-workflow.md`) forbids merging `dash` into an upstream-PR-able feature branch — fork-only cert code would contaminate it. So:
+`dash` is this fork's main branch and feature branches root off it, so the answer is normally simple:
 
-1. **First try `git merge origin/main`** — the sanctioned forward merge. Most conflicts against `dash` come from upstream code that reached `dash` via `main`; merging `main` forward resolves them without contaminating the branch. Re-check mergeability against `dash` afterwards.
-2. **Still conflicting?** The overlap is fork-only code on `dash` (typically the cert overlap zone: `internal/cmd/run.go`, `internal/server/config.go`, `internal/server/router.go`, `internal/server/service.go`). If the branch is fork-internal (never intended for a basecamp PR), merging `origin/dash` is acceptable. If the branch is meant to stay upstream-PR-able, **stop and ask the user** — merging `dash` would be irreversible contamination.
+1. **Merge `origin/dash`** — this is the sanctioned forward merge. Branches are no longer kept upstream-PR-able, so there is nothing to contaminate.
+2. **Only reach for `git merge origin/main`** on an old branch that still roots off `main`, or when you specifically want upstream fixes that have not yet reached `dash`. Re-check mergeability against `dash` afterwards.
 
 Note `git rerere` is enabled: previously-seen conflicts auto-replay their resolutions — review what rerere staged before trusting it.
 
@@ -106,7 +106,7 @@ Note `git rerere` is enabled: previously-seen conflicts auto-replay their resolu
 
 - The PR reports `MERGEABLE` (or the local `git merge-tree` check is clean), AND the merge commit (if one was needed) is pushed.
 - If the merge produced changes, CI is now re-running — that's expected; Phase A reads the fresh run.
-- If a conflict cannot be resolved with confidence (both sides rewrote the same logic and the correct combination isn't decidable from the code, or resolving requires merging `dash` into an upstream-PR-able branch), **stop and ask the user** — a guessed resolution that compiles is worse than a question.
+- If a conflict cannot be resolved with confidence (both sides rewrote the same logic and the correct combination isn't decidable from the code, or the correct combination is genuinely ambiguous), **stop and ask the user** — a guessed resolution that compiles is worse than a question.
 
 ---
 

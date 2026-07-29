@@ -282,9 +282,11 @@ WAIT_FOR_REQUESTS_TO_COMPLETE:
 }
 
 func (t *Target) BeginHealthChecks(stateConsumer TargetStateConsumer) {
-	t.stateConsumer = stateConsumer
-
 	t.withInflightLock(func() {
+		// Inside the lock: RecheckHealth reaches here while the previous prober's
+		// goroutine can still be in HealthCheckCompleted reading this field.
+		t.stateConsumer = stateConsumer
+
 		if t.healthcheck != nil {
 			t.healthcheck.Close()
 		}
@@ -313,6 +315,7 @@ func (t *Target) StopHealthChecks() {
 
 func (t *Target) HealthCheckCompleted(success bool) {
 	var previousState, newState TargetState
+	var stateConsumer TargetStateConsumer
 
 	t.withInflightLock(func() {
 		previousState = t.state
@@ -333,13 +336,17 @@ func (t *Target) HealthCheckCompleted(success bool) {
 		}
 
 		newState = t.state
+
+		// Read under the lock and used outside it: BeginHealthChecks writes this
+		// field, and RecheckHealth calls it while this goroutine may be running.
+		stateConsumer = t.stateConsumer
 	})
 
 	if newState != previousState {
 		slog.Info("Target health updated", "target", t.Address(), "state", newState.String(), "was", previousState.String())
 
-		if t.stateConsumer != nil {
-			t.stateConsumer.TargetStateChanged(t)
+		if stateConsumer != nil {
+			stateConsumer.TargetStateChanged(t)
 		}
 	}
 }
