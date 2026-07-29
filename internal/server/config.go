@@ -101,6 +101,11 @@ type Config struct {
 	// CacheMemorySize caps the in-process store. Zero means
 	// DefaultCacheMemorySize.
 	CacheMemorySize int64
+	// CacheLeaseTTL and CacheLeaseWait configure the cross-node single flight.
+	// They have an effect only with a shared --cache-store. Zero means the
+	// default; negative switches the piece off.
+	CacheLeaseTTL  time.Duration
+	CacheLeaseWait time.Duration
 
 	AlternateConfigDir string
 
@@ -158,6 +163,10 @@ func (c Config) CertificateRegistryConfig() CertificateRegistryConfig {
 		CachePath:      c.CertificatePath(),
 		StatePath:      c.CertificateStatePath(),
 	}
+}
+
+func (c Config) ResponseCacheLeaseOptions() CacheLeaseOptions {
+	return CacheLeaseOptions{TTL: c.CacheLeaseTTL, Wait: c.CacheLeaseWait}
 }
 
 func (c Config) ResponseCacheStoreConfig() CacheStoreConfig {

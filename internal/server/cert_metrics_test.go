@@ -2,6 +2,7 @@ package server
 
 import (
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,8 +21,10 @@ type fakeTracker struct {
 	renewals map[string]int       // "domain:success"/"domain:failure" -> count
 	counts   []certCountSample
 
-	cacheEvents   map[string]int // "service:result" -> count
-	cacheRefusals map[string]int // "service:reason" -> count
+	cacheEvents     map[string]int // "service:result" -> count
+	cacheRefusals   map[string]int // "service:reason" -> count
+	cacheLeases     map[string]int // "service:outcome" -> count
+	cacheLeaseWaits map[string]int // "service:outcome" -> count
 }
 
 type certCountSample struct {
@@ -30,11 +33,13 @@ type certCountSample struct {
 
 func newFakeTracker() *fakeTracker {
 	return &fakeTracker{
-		expiry:        make(map[string]time.Time),
-		wildcard:      make(map[string]bool),
-		renewals:      make(map[string]int),
-		cacheEvents:   make(map[string]int),
-		cacheRefusals: make(map[string]int),
+		expiry:          make(map[string]time.Time),
+		wildcard:        make(map[string]bool),
+		renewals:        make(map[string]int),
+		cacheEvents:     make(map[string]int),
+		cacheRefusals:   make(map[string]int),
+		cacheLeases:     make(map[string]int),
+		cacheLeaseWaits: make(map[string]int),
 	}
 }
 
@@ -54,11 +59,48 @@ func (f *fakeTracker) TrackCacheRefusal(service, reason string) {
 	f.cacheRefusals[service+":"+reason]++
 }
 
+func (f *fakeTracker) TrackCacheLease(service, outcome string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cacheLeases[service+":"+outcome]++
+}
+
+func (f *fakeTracker) TrackCacheLeaseWait(service, outcome string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cacheLeaseWaits[service+":"+outcome]++
+}
+
+func (f *fakeTracker) cacheLeaseCount(service, outcome string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cacheLeases[service+":"+outcome]
+}
+
+func (f *fakeTracker) cacheLeaseWaitCount(service, outcome string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cacheLeaseWaits[service+":"+outcome]
+}
+
 // cacheRefusalCount reports how many times a refusal reason was recorded.
 func (f *fakeTracker) cacheRefusalCount(service, reason string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.cacheRefusals[service+":"+reason]
+}
+
+// cacheRefusalsFor is every refusal recorded for a service, for diagnostics.
+func (f *fakeTracker) cacheRefusalsFor(service string) map[string]int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	found := map[string]int{}
+	for key, count := range f.cacheRefusals {
+		if name, reason, ok := strings.Cut(key, ":"); ok && name == service {
+			found[reason] = count
+		}
+	}
+	return found
 }
 
 // cacheEventCount reports how many times a result was recorded for a service.

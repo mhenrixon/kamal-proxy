@@ -61,6 +61,7 @@ type Router struct {
 	dynamicDomainManager *DynamicDomainManager
 	certRegistry         *CertificateRegistry
 	cacheStore           CacheStore
+	cacheLeases          CacheLeaseOptions
 	lifecycle            ContainerLifecycle
 }
 
@@ -136,12 +137,13 @@ func (r *Router) DynamicDomainManager() *DynamicDomainManager {
 
 // SetCacheStore installs the response cache store and hands it to the services
 // already restored, which were built before it existed.
-func (r *Router) SetCacheStore(store CacheStore) {
+func (r *Router) SetCacheStore(store CacheStore, leases CacheLeaseOptions) {
 	r.withWriteLock(func() error {
 		r.cacheStore = store
+		r.cacheLeases = leases
 
 		for _, service := range r.services.All() {
-			service.SetCacheStore(store)
+			service.SetCacheStore(store, leases)
 		}
 		return nil
 	})
@@ -580,7 +582,7 @@ func (r *Router) createOrUpdateService(name string, options ServiceOptions, targ
 			return nil, err
 		}
 
-		service.SetCacheStore(r.cacheStore)
+		service.SetCacheStore(r.cacheStore, r.cacheLeases)
 		service.statePersister = r.persistState
 		service.SetContainerLifecycle(r.lifecycle)
 		return service, nil
