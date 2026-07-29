@@ -14,6 +14,7 @@ func newCacheCommand() *cacheCommand {
 	}
 
 	cacheCommand.cmd.AddCommand(newCachePurgeCommand().cmd)
+	cacheCommand.cmd.AddCommand(newCacheStatsCommand().cmd)
 
 	return cacheCommand
 }

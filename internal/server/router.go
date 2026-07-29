@@ -156,17 +156,44 @@ func (r *Router) PurgeCache(name, pathPrefix string) (int, error) {
 		return 0, ErrorServiceNotFound
 	}
 
-	if r.cacheStore == nil {
+	store := r.currentCacheStore()
+	if store == nil {
 		return 0, ErrorCacheNotAvailable
 	}
 
-	purged, err := r.cacheStore.Purge(context.Background(), name, pathPrefix)
+	purged, err := store.Purge(context.Background(), name, pathPrefix)
 	if err != nil {
 		return purged, fmt.Errorf("failed to purge cache for service %q: %w", name, err)
 	}
 
 	slog.Info("Purged cache", "service", name, "path_prefix", pathPrefix, "entries", purged)
 	return purged, nil
+}
+
+// CacheStats describes the response cache: what it is holding, what it has
+// dropped, and -- for a shared store -- what the server says about itself.
+func (r *Router) CacheStats(options CacheStatsOptions) (CacheStats, error) {
+	store := r.currentCacheStore()
+	if store == nil {
+		return CacheStats{}, ErrorCacheNotAvailable
+	}
+
+	reporter, ok := store.(CacheReporter)
+	if !ok {
+		return CacheStats{}, ErrorCacheNotAvailable
+	}
+
+	return reporter.Stats(context.Background(), options)
+}
+
+// currentCacheStore reads the store under the lock. SetCacheStore writes it
+// while services are already serving, so an unsynchronized read here is a real
+// race, not a theoretical one.
+func (r *Router) currentCacheStore() CacheStore {
+	r.serviceLock.RLock()
+	defer r.serviceLock.RUnlock()
+
+	return r.cacheStore
 }
 
 // SetCertificateRegistry sets the central certificate registry for the router

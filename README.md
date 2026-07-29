@@ -578,6 +578,44 @@ forbid answering from an entry that has passed its lifetime. A response marked
 `no-cache` is not stored at all: it would have to be validated before every
 reuse, and the proxy has no way to do that on the way out.
 
+#### Seeing what it is holding
+
+    kamal-proxy cache stats
+    kamal-proxy cache stats --count       # measure entries and bytes
+    kamal-proxy cache stats --json
+
+```
+Store        memory (per node)
+Entries      12,481
+Size         192.0 MB of 256.0 MB (75%)
+Evicted      1,918 fresh, 3,204 stale
+```
+
+**`Evicted ... fresh` is the number that sizes the cache.** An entry pushed out
+with lifetime still on it was fetched and never used up, so a climbing fresh
+count with `Size` near the budget means raise `--cache-memory-size`. Stale
+evictions alone are a cache doing its job. Zero fresh evictions with `Size` well
+under the budget means you can lower it.
+
+`--count` adds a per-service breakdown, which names what is filling the cache.
+On a shared `--cache-store` it is not the default because it walks the keyspace
+— and it is the only truthful answer a shared store has to "how big is *my*
+cache", since the server itself only knows its own totals:
+
+```
+Store        redis (shared)
+Entries      not counted -- pass --count to measure this proxy's keys
+Evicted      0 fresh, 0 stale
+
+Cache server -- shared with anything else using it
+Keys         48,201 (every key in the database, not only this proxy's)
+Used memory  unknown of unknown, policy unknown
+             (used_bytes, max_bytes, eviction_policy withheld by the server)
+```
+
+A managed Redis often restricts `INFO`. What it withholds prints as `unknown`
+rather than `0`, so nothing is ever sized against a number the server never gave.
+
 #### Purging
 
     kamal-proxy cache purge service1
@@ -628,6 +666,10 @@ Things worth knowing:
   `no-store` skips the cache in both directions.
 * **`X-Cache` says what happened** — `HIT`, `MISS` or `STALE` — alongside an
   `Age` header that counts any age the response already had upstream.
+* **`kamal_proxy_cache_evictions_total{service,state}` sizes the cache.**
+  `state="fresh"` counts entries dropped with lifetime still on them — that is
+  the alertable signal that `--cache-memory-size` is too small. `state="stale"`
+  climbing on its own is healthy.
 * **`kamal_proxy_cache_refusals_total{service,reason}` explains a cold cache.**
   Every response the cache declines to store is counted with the reason —
   `not_public`, `no_lifetime`, `set_cookie`, `vary`, `content_encoding`,

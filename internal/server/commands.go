@@ -72,6 +72,12 @@ type CachePurgeArgs struct {
 	PathPrefix string
 }
 
+type CacheStatsArgs struct {
+	// Count asks the store to measure what it holds, which on a shared store
+	// means walking the keyspace.
+	Count bool
+}
+
 type ListResponse struct {
 	Targets ServiceDescriptionMap `json:"services"`
 }
@@ -203,6 +209,18 @@ func (h *CommandHandler) CachePurge(args CachePurgeArgs, reply *int) error {
 	*reply = purged
 
 	return err
+}
+
+// CacheStats reports what the response cache is holding, which is what turns
+// --cache-memory-size from a guess into a measurement.
+func (h *CommandHandler) CacheStats(args CacheStatsArgs, reply *CacheStats) error {
+	stats, err := h.router.CacheStats(CacheStatsOptions(args))
+	if err != nil {
+		return err
+	}
+
+	*reply = stats
+	return nil
 }
 
 func (h *CommandHandler) DomainsStatus(args bool, reply *DomainsStatusResponse) error {
