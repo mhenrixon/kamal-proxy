@@ -18,6 +18,8 @@ type tracker interface {
 	SetCertificateCount(total, wildcard, http01 int)
 	TrackCacheEvent(service, result string)
 	TrackCacheRefusal(service, reason string)
+	TrackCacheLease(service, outcome string)
+	TrackCacheLeaseWait(service, outcome string)
 }
 
 var Tracker tracker = &nullTracker{}
@@ -37,6 +39,8 @@ func (nullTracker) IncCertificateRenewals(domain string, success bool)          
 func (nullTracker) SetCertificateCount(total, wildcard, http01 int)                           {}
 func (nullTracker) TrackCacheEvent(service, result string)                                    {}
 func (nullTracker) TrackCacheRefusal(service, reason string)                                  {}
+func (nullTracker) TrackCacheLease(service, outcome string)                                   {}
+func (nullTracker) TrackCacheLeaseWait(service, outcome string)                               {}
 
 type prometheusTracker struct {
 	httpRequests     *prometheus.CounterVec
@@ -49,8 +53,10 @@ type prometheusTracker struct {
 	certCount    *prometheus.GaugeVec
 
 	// Response cache metrics
-	cacheEvents   *prometheus.CounterVec
-	cacheRefusals *prometheus.CounterVec
+	cacheEvents     *prometheus.CounterVec
+	cacheRefusals   *prometheus.CounterVec
+	cacheLeases     *prometheus.CounterVec
+	cacheLeaseWaits *prometheus.CounterVec
 }
 
 func NewPrometheusTracker() *prometheusTracker {
@@ -126,6 +132,26 @@ func NewPrometheusTracker() *prometheusTracker {
 			[]string{"service", "reason"},
 		),
 
+		cacheLeases: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:      "cache_leases_total",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "Cross-node cache fetch arbitration, labeled by service and outcome (acquired, taken, unavailable, deferred). 'taken' counts origin fetches the fleet did not make.",
+			},
+			[]string{"service", "outcome"},
+		),
+
+		cacheLeaseWaits: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:      "cache_lease_waits_total",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "How waits on another proxy's fetch ended, labeled by service and outcome (served, released, expired, abandoned). Rising 'expired' means --cache-lease-wait is short for this origin.",
+			},
+			[]string{"service", "outcome"},
+		),
+
 		certCount: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name:      "certificates_total",
@@ -146,6 +172,8 @@ func NewPrometheusTracker() *prometheusTracker {
 		tracker.certCount,
 		tracker.cacheEvents,
 		tracker.cacheRefusals,
+		tracker.cacheLeases,
+		tracker.cacheLeaseWaits,
 	)
 
 	return tracker
@@ -195,6 +223,14 @@ func (p *prometheusTracker) TrackCacheEvent(service, result string) {
 
 func (p *prometheusTracker) TrackCacheRefusal(service, reason string) {
 	p.cacheRefusals.WithLabelValues(service, reason).Inc()
+}
+
+func (p *prometheusTracker) TrackCacheLease(service, outcome string) {
+	p.cacheLeases.WithLabelValues(service, outcome).Inc()
+}
+
+func (p *prometheusTracker) TrackCacheLeaseWait(service, outcome string) {
+	p.cacheLeaseWaits.WithLabelValues(service, outcome).Inc()
 }
 
 // Private

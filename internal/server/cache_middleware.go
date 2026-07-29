@@ -55,6 +55,9 @@ type CacheConfig struct {
 	// at the same URL -- a rollout group above all, whose targets are running a
 	// different version of the application.
 	Variant func(*http.Request) string
+	// Leases configures the cross-node single flight. It has an effect only
+	// when Store can arbitrate -- see CacheLeaser.
+	Leases CacheLeaseOptions
 }
 
 // CacheMiddleware answers requests from stored responses. It sits below this
@@ -66,17 +69,36 @@ type CacheMiddleware struct {
 	next     http.Handler
 	inflight *inflightGroup
 
+	// leaser is nil unless the store is shared and leasing is on, which is what
+	// keeps a single-node deployment paying nothing for it.
+	leaser    CacheLeaser
+	leaseTTL  time.Duration
+	leaseWait time.Duration
+	leasePoll time.Duration
+
 	// now is a seam for tests; nothing else replaces it.
 	now func() time.Time
 }
 
 func WithCacheMiddleware(config CacheConfig, next http.Handler) *CacheMiddleware {
-	return &CacheMiddleware{
-		config:   config,
-		next:     next,
-		inflight: newInflightGroup(),
-		now:      time.Now,
+	middleware := &CacheMiddleware{
+		config:    config,
+		next:      next,
+		inflight:  newInflightGroup(),
+		leaseTTL:  config.Leases.ttl(),
+		leaseWait: config.Leases.wait(),
+		leasePoll: cacheLeasePollInterval,
+		now:       time.Now,
 	}
+
+	// Asserted once here rather than per request. A store nobody else can see
+	// does not implement CacheLeaser, so this stays nil on a single node and
+	// every lease code path is a nil check.
+	if config.Leases.Enabled() {
+		middleware.leaser, _ = config.Store.(CacheLeaser)
+	}
+
+	return middleware
 }
 
 func (h *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +111,8 @@ func (h *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// A request may refuse the stored copy for itself and still populate the
 	// cache for everyone behind it, which is what makes a reload useful.
-	if requestAllowsStoredResponse(r) {
+	allowsStored := requestAllowsStoredResponse(r)
+	if allowsStored {
 		if entry, found := h.config.Store.Get(r.Context(), key); found {
 			now := h.now()
 
@@ -107,20 +130,39 @@ func (h *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.fetch(w, r, key)
+	h.fetch(w, r, key, allowsStored)
 }
 
 // Private
 
-func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key string) {
+func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key string, allowsStored bool) {
 	call, leader := h.inflight.join(key)
 
 	if leader {
 		var stored *CacheEntry
 		defer func() { h.inflight.settle(key, call, stored) }()
 
+		// Only the node's leader touches the lease, so fleet-wide lease traffic
+		// is one operation per node per key rather than one per request.
+		lease := h.acquireLease(r.Context(), key, allowsStored)
+		if lease.taken() {
+			// Another proxy is already fetching. Wait briefly for what it
+			// publishes rather than making the same request.
+			if h.awaitLease(w, r, key) {
+				return
+			}
+		}
+
+		release := h.releaser(lease)
+		defer release()
+
 		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultMiss)
-		stored = h.forward(w, r, key, func() { h.inflight.settle(key, call, nil) })
+		stored = h.forward(w, r, key, func() {
+			h.inflight.settle(key, call, nil)
+			// Hand the key back the instant it is known nothing storable is
+			// coming, rather than holding the fleet off for the whole TTL.
+			release()
+		})
 		return
 	}
 
@@ -235,6 +277,16 @@ func (h *CacheMiddleware) revalidate(r *http.Request, key string, stored *CacheE
 
 		var refreshed *CacheEntry
 		defer func() { h.inflight.settle(key, call, refreshed) }()
+
+		// The free half of the cross-node single flight: nobody is waiting on a
+		// background refresh, so losing costs this client nothing -- it was
+		// answered from the stale copy before this goroutine started -- and
+		// removes a whole origin fetch from the fleet.
+		lease := h.acquireLease(ctx, key, true)
+		if lease.taken() {
+			return
+		}
+		defer h.releaser(lease)()
 
 		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultRevalidated)
 

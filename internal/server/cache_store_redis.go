@@ -31,6 +31,10 @@ const (
 type redisCacheStore struct {
 	client  redis.UniversalClient
 	timeout time.Duration
+
+	// leaseBreaker stops a Redis that has gone quiet from costing a lease
+	// timeout on every miss. See cache_store_redis_lease.go.
+	leaseBreaker *leaseBreaker
 }
 
 func newRedisCacheStore(config CacheStoreConfig) (*redisCacheStore, error) {
@@ -50,8 +54,9 @@ func newRedisCacheStore(config CacheStoreConfig) (*redisCacheStore, error) {
 	options.WriteTimeout = timeout
 
 	return &redisCacheStore{
-		client:  redis.NewClient(options),
-		timeout: timeout,
+		client:       redis.NewClient(options),
+		timeout:      timeout,
+		leaseBreaker: &leaseBreaker{},
 	}, nil
 }
 

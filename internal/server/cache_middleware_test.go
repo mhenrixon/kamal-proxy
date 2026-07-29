@@ -30,7 +30,7 @@ func testCacheHandler(t *testing.T, options CacheOptions, handler http.HandlerFu
 
 	store := testMemoryStore(t)
 	middleware := WithCacheMiddleware(CacheConfig{
-		Service: "shop",
+		Service: t.Name(),
 		Options: options,
 		Store:   store,
 	}, http.HandlerFunc(counted))
@@ -468,7 +468,7 @@ func TestCacheMiddleware_VariantSeparatesEntries(t *testing.T) {
 	store := testMemoryStore(t)
 
 	middleware := WithCacheMiddleware(CacheConfig{
-		Service: "shop",
+		Service: t.Name(),
 		Options: CacheOptions{Enabled: true},
 		Store:   store,
 		Variant: func(r *http.Request) string { return r.Header.Get("X-Variant") },
@@ -492,7 +492,7 @@ func TestCacheMiddleware_VariantSeparatesEntries(t *testing.T) {
 func TestCacheMiddleware_PassesThroughWithoutAStore(t *testing.T) {
 	var reached atomic.Int64
 	middleware := WithCacheMiddleware(CacheConfig{
-		Service: "shop",
+		Service: t.Name(),
 		Options: CacheOptions{Enabled: true},
 	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached.Add(1)

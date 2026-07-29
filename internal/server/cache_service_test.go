@@ -21,7 +21,7 @@ func testCachedRouter(t *testing.T, options ServiceOptions, handler http.Handler
 	_, target := testBackendWithHandler(t, countingHandler(&reached, handler))
 
 	router := testRouter(t)
-	router.SetCacheStore(testMemoryStore(t))
+	router.SetCacheStore(testMemoryStore(t), CacheLeaseOptions{})
 
 	require.NoError(t, router.DeployService("service1", []string{target}, defaultEmptyReaders,
 		options, defaultTargetOptions, defaultDeploymentOptions))
@@ -210,7 +210,7 @@ func TestCacheService_SeparatesRolloutTraffic(t *testing.T) {
 	_, rolloutTarget := testBackendWithHandler(t, countingHandler(&rollout, publicHandler("rollout")))
 
 	router := testRouter(t)
-	router.SetCacheStore(testMemoryStore(t))
+	router.SetCacheStore(testMemoryStore(t), CacheLeaseOptions{})
 
 	require.NoError(t, router.DeployService("service1", []string{stableTarget}, defaultEmptyReaders,
 		cachedServiceOptions(), defaultTargetOptions, defaultDeploymentOptions))
@@ -295,7 +295,7 @@ func TestRouter_InstallsTheCacheStoreOnRestoredServices(t *testing.T) {
 	sendGETRequest(router, "http://example.com/products")
 	require.Equal(t, int64(2), reached.Load(), "no store means no caching")
 
-	router.SetCacheStore(testMemoryStore(t))
+	router.SetCacheStore(testMemoryStore(t), CacheLeaseOptions{})
 
 	sendGETRequest(router, "http://example.com/products")
 	sendGETRequest(router, "http://example.com/products")
