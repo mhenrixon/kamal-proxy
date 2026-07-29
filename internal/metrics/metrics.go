@@ -20,6 +20,7 @@ type tracker interface {
 	TrackCacheRefusal(service, reason string)
 	TrackCacheLease(service, outcome string)
 	TrackCacheLeaseWait(service, outcome string)
+	TrackCacheEviction(service, state string)
 }
 
 var Tracker tracker = &nullTracker{}
@@ -41,6 +42,7 @@ func (nullTracker) TrackCacheEvent(service, result string)                      
 func (nullTracker) TrackCacheRefusal(service, reason string)                                  {}
 func (nullTracker) TrackCacheLease(service, outcome string)                                   {}
 func (nullTracker) TrackCacheLeaseWait(service, outcome string)                               {}
+func (nullTracker) TrackCacheEviction(service, state string)                                  {}
 
 type prometheusTracker struct {
 	httpRequests     *prometheus.CounterVec
@@ -57,6 +59,7 @@ type prometheusTracker struct {
 	cacheRefusals   *prometheus.CounterVec
 	cacheLeases     *prometheus.CounterVec
 	cacheLeaseWaits *prometheus.CounterVec
+	cacheEvictions  *prometheus.CounterVec
 }
 
 func NewPrometheusTracker() *prometheusTracker {
@@ -152,6 +155,16 @@ func NewPrometheusTracker() *prometheusTracker {
 			[]string{"service", "outcome"},
 		),
 
+		cacheEvictions: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:      "cache_evictions_total",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "Cache entries dropped to stay inside --cache-memory-size, labeled by service and state (fresh, stale). Rising 'fresh' is what says the budget is too small; 'stale' alone is a cache doing its job.",
+			},
+			[]string{"service", "state"},
+		),
+
 		certCount: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name:      "certificates_total",
@@ -174,6 +187,7 @@ func NewPrometheusTracker() *prometheusTracker {
 		tracker.cacheRefusals,
 		tracker.cacheLeases,
 		tracker.cacheLeaseWaits,
+		tracker.cacheEvictions,
 	)
 
 	return tracker
@@ -231,6 +245,10 @@ func (p *prometheusTracker) TrackCacheLease(service, outcome string) {
 
 func (p *prometheusTracker) TrackCacheLeaseWait(service, outcome string) {
 	p.cacheLeaseWaits.WithLabelValues(service, outcome).Inc()
+}
+
+func (p *prometheusTracker) TrackCacheEviction(service, state string) {
+	p.cacheEvictions.WithLabelValues(service, state).Inc()
 }
 
 // Private

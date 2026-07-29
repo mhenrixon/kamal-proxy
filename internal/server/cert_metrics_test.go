@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ type fakeTracker struct {
 	cacheRefusals   map[string]int // "service:reason" -> count
 	cacheLeases     map[string]int // "service:outcome" -> count
 	cacheLeaseWaits map[string]int // "service:outcome" -> count
+	cacheEvictions  map[string]int // "service:state" -> count
 }
 
 type certCountSample struct {
@@ -40,6 +42,7 @@ func newFakeTracker() *fakeTracker {
 		cacheRefusals:   make(map[string]int),
 		cacheLeases:     make(map[string]int),
 		cacheLeaseWaits: make(map[string]int),
+		cacheEvictions:  make(map[string]int),
 	}
 }
 
@@ -69,6 +72,18 @@ func (f *fakeTracker) TrackCacheLeaseWait(service, outcome string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cacheLeaseWaits[service+":"+outcome]++
+}
+
+func (f *fakeTracker) TrackCacheEviction(service, state string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cacheEvictions[service+":"+state]++
+}
+
+func (f *fakeTracker) cacheEvictionCount(service, state string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cacheEvictions[service+":"+state]
 }
 
 func (f *fakeTracker) cacheLeaseCount(service, outcome string) int {
@@ -152,14 +167,89 @@ func (f *fakeTracker) renewalCount(domain string, success bool) int {
 	return f.renewals[key]
 }
 
-// installFakeTracker swaps in a capturing tracker and restores the previous one
-// when the test ends.
+// switchableTracker is installed into metrics.Tracker exactly once, before any
+// test runs, and thereafter only its delegate changes.
+//
+// Swapping metrics.Tracker itself is a data race: it is a package-level variable
+// that every request path reads, and background work outlives the test that
+// started it -- a stale revalidation goroutine reading the tracker while the
+// next test installs its own is a genuine concurrent write. Swapping an atomic
+// delegate instead removes the write entirely.
+type switchableTracker struct {
+	delegate atomic.Pointer[fakeTracker]
+}
+
+var activeTracker = &switchableTracker{}
+
+func init() {
+	// In init rather than in installFakeTracker: at this point no goroutine
+	// exists that could be reading the variable.
+	metrics.Tracker = activeTracker
+}
+
+func (s *switchableTracker) current() *fakeTracker { return s.delegate.Load() }
+
+func (s *switchableTracker) TrackRequest(service, method string, status int, dur time.Duration) {}
+func (s *switchableTracker) AddInflightRequest(service string)                                  {}
+func (s *switchableTracker) SubtractInflightRequest(service string)                             {}
+
+func (s *switchableTracker) SetCertificateExpiry(domain string, isWildcard bool, expiry time.Time) {
+	if fake := s.current(); fake != nil {
+		fake.SetCertificateExpiry(domain, isWildcard, expiry)
+	}
+}
+
+func (s *switchableTracker) IncCertificateRenewals(domain string, success bool) {
+	if fake := s.current(); fake != nil {
+		fake.IncCertificateRenewals(domain, success)
+	}
+}
+
+func (s *switchableTracker) SetCertificateCount(total, wildcard, http01 int) {
+	if fake := s.current(); fake != nil {
+		fake.SetCertificateCount(total, wildcard, http01)
+	}
+}
+
+func (s *switchableTracker) TrackCacheEvent(service, result string) {
+	if fake := s.current(); fake != nil {
+		fake.TrackCacheEvent(service, result)
+	}
+}
+
+func (s *switchableTracker) TrackCacheRefusal(service, reason string) {
+	if fake := s.current(); fake != nil {
+		fake.TrackCacheRefusal(service, reason)
+	}
+}
+
+func (s *switchableTracker) TrackCacheLease(service, outcome string) {
+	if fake := s.current(); fake != nil {
+		fake.TrackCacheLease(service, outcome)
+	}
+}
+
+func (s *switchableTracker) TrackCacheLeaseWait(service, outcome string) {
+	if fake := s.current(); fake != nil {
+		fake.TrackCacheLeaseWait(service, outcome)
+	}
+}
+
+func (s *switchableTracker) TrackCacheEviction(service, state string) {
+	if fake := s.current(); fake != nil {
+		fake.TrackCacheEviction(service, state)
+	}
+}
+
+// installFakeTracker points the tracker at a fresh capturing tracker for the
+// duration of one test.
 func installFakeTracker(t *testing.T) *fakeTracker {
 	t.Helper()
-	prev := metrics.Tracker
+
 	fake := newFakeTracker()
-	metrics.Tracker = fake
-	t.Cleanup(func() { metrics.Tracker = prev })
+	previous := activeTracker.delegate.Swap(fake)
+	t.Cleanup(func() { activeTracker.delegate.Store(previous) })
+
 	return fake
 }
 
