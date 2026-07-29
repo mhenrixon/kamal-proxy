@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -199,6 +200,11 @@ func TestRunCommand_MinTLSPreRun(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// preRun validates the log format and trace mode too, so an ambient
+			// LOG_FORMAT or TRACE_CONTEXT would fail this test for a reason that
+			// has nothing to do with min-tls.
+			testClearEnv(t, "LOG_FORMAT", "TRACE_CONTEXT")
+
 			globalConfig = server.Config{}
 
 			runCommand := newRunCommand()
@@ -216,6 +222,89 @@ func TestRunCommand_MinTLSPreRun(t *testing.T) {
 			// The server parses this same string again at bind time, so what
 			// preRun accepted has to be what reaches the listener.
 			assert.Equal(t, tt.value, globalConfig.MinTLS)
+		})
+	}
+}
+
+// testClearEnv unsets a variable for the duration of the test. Pinning it to
+// the expected default instead would make a default assertion tautological:
+// findEnv prefers whatever is set, so the fallback registered in run.go would
+// never be the value under test. t.Setenv is called only to register the
+// restore - findEnv reports an empty value as present, so the unset is what
+// actually clears it.
+func testClearEnv(t *testing.T, keys ...string) {
+	t.Helper()
+
+	for _, key := range keys {
+		t.Setenv(key, "")
+		require.NoError(t, os.Unsetenv(key))
+
+		t.Setenv(ENV_PREFIX+key, "")
+		require.NoError(t, os.Unsetenv(ENV_PREFIX+key))
+	}
+}
+
+func TestRunCommand_LogFormatFlag(t *testing.T) {
+	testClearEnv(t, "LOG_FORMAT")
+
+	globalConfig = server.Config{}
+
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("log-format")
+	require.NotNil(t, flag)
+	assert.Equal(t, server.DefaultLogFormat, flag.DefValue)
+
+	require.NoError(t, cmd.Flags().Parse([]string{"--log-format=text"}))
+	assert.Equal(t, "text", globalConfig.LogFormat)
+}
+
+func TestRunCommand_TraceContextFlag(t *testing.T) {
+	testClearEnv(t, "TRACE_CONTEXT")
+
+	globalConfig = server.Config{}
+
+	cmd := newRunCommand().cmd
+
+	flag := cmd.Flags().Lookup("trace-context")
+	require.NotNil(t, flag)
+	assert.Equal(t, server.DefaultTraceContextMode, flag.DefValue)
+
+	require.NoError(t, cmd.Flags().Parse([]string{"--trace-context=generate"}))
+	assert.Equal(t, "generate", globalConfig.TraceContext)
+}
+
+func TestRunCommand_ObservabilityPreRun(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		expectedError string
+	}{
+		{name: "defaults", args: nil},
+		{name: "text logs", args: []string{"--log-format=text"}},
+		{name: "generate traces", args: []string{"--trace-context=generate"}},
+
+		{name: "bad log format", args: []string{"--log-format=xml"}, expectedError: "log-format"},
+		{name: "bad trace mode", args: []string{"--trace-context=yes"}, expectedError: "trace-context"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testClearEnv(t, "LOG_FORMAT", "TRACE_CONTEXT", "MIN_TLS")
+
+			globalConfig = server.Config{}
+
+			runCommand := newRunCommand()
+			require.NoError(t, runCommand.cmd.Flags().Parse(tt.args))
+
+			err := runCommand.preRun(runCommand.cmd, nil)
+
+			if tt.expectedError != "" {
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
 		})
 	}
 }

@@ -56,6 +56,15 @@ type Config struct {
 	// ranges. Empty (the default) serves everyone that can reach the port.
 	MetricsAllowIPs []string
 
+	// LogFormat selects the handler every log line - the access log included -
+	// is written through, either "json" or "text". Empty means json, which is
+	// what kamal-proxy has always written.
+	LogFormat string
+
+	// TraceContext decides what the proxy does with the W3C traceparent header:
+	// "off", "propagate" or "generate". Empty means propagate.
+	TraceContext string
+
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration

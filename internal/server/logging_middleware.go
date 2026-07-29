@@ -23,6 +23,13 @@ type loggingRequestContext struct {
 	RequestHeaders  []string
 	ResponseHeaders []string
 	ExcludeMetrics  bool
+
+	// TraceID, SpanID and TraceFlags come from the request's W3C traceparent,
+	// set by TraceContextMiddleware. SpanID is the caller's span - the one the
+	// app will parent its own to - because the proxy exports no spans itself.
+	TraceID    string
+	SpanID     string
+	TraceFlags string
 }
 
 type LoggingMiddleware struct {
@@ -100,6 +107,16 @@ func (h *LoggingMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.String("proto", r.Proto),
 			slog.String("scheme", scheme),
 			slog.String("query", r.URL.RawQuery),
+		}
+
+		// Appended only when the request carries a trace, so a deployment that
+		// does not trace keeps exactly the log line it has today.
+		if loggingRequestContext.TraceID != "" {
+			attrs = append(attrs,
+				slog.String("trace_id", loggingRequestContext.TraceID),
+				slog.String("span_id", loggingRequestContext.SpanID),
+				slog.String("trace_flags", loggingRequestContext.TraceFlags),
+			)
 		}
 
 		attrs = append(attrs, h.retrieveCustomHeaders(loggingRequestContext.RequestHeaders, r.Header, "req")...)

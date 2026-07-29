@@ -243,10 +243,17 @@ func (s *Server) startHTTPServers() error {
 		return err
 	}
 
+	// Parsed before the handler is built for the same reason: a Config built
+	// directly must not start a listener that silently ignores the setting.
+	traceContextMode, err := ParseTraceContextMode(s.config.TraceContext)
+	if err != nil {
+		return err
+	}
+
 	httpAddr := fmt.Sprintf("%s:%d", s.config.Bind, s.config.HttpPort)
 	httpsAddr := fmt.Sprintf("%s:%d", s.config.Bind, s.config.HttpsPort)
 
-	handler := s.buildHandler()
+	handler := s.buildHandler(traceContextMode)
 
 	httpListener, err := s.listen("tcp", httpAddr)
 	if err != nil {
@@ -380,12 +387,15 @@ func (s *Server) startCommandHandler() error {
 	return s.commandHandler.Start(s.config.SocketPath())
 }
 
-func (s *Server) buildHandler() http.Handler {
+func (s *Server) buildHandler(traceContextMode TraceContextMode) http.Handler {
 	var handler http.Handler
 
 	// Note: handlers are executed in the inverse order.
 	handler = s.router
 	handler, _ = WithErrorPageMiddleware(pages.DefaultErrorPages, true, handler)
+	// Inside the logging middleware, which is what creates the request context
+	// the trace is recorded on.
+	handler = WithTraceContextMiddleware(traceContextMode, handler)
 	handler = WithLoggingMiddleware(slog.Default(), s.config.HttpPort, s.config.HttpsPort, handler)
 	handler = WithRequestIDMiddleware(handler)
 	handler = WithRequestStartMiddleware(handler)

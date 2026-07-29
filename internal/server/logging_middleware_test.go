@@ -121,3 +121,41 @@ func TestMiddleware_LoggingMiddlewareLogsClientIPHeaderAsRemoteAddr(t *testing.T
 
 	assert.Equal(t, "203.0.113.7", logline.RemoteAddr)
 }
+
+func TestMiddleware_LoggingMiddlewareLogsTraceContextWhenPresent(t *testing.T) {
+	out := &strings.Builder{}
+	logger := slog.New(slog.NewJSONHandler(out, nil))
+
+	handler := WithTraceContextMiddleware(TraceContextPropagate, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	middleware := WithLoggingMiddleware(logger, 80, 443, handler)
+
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.Header.Set("Traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+
+	middleware.ServeHTTP(httptest.NewRecorder(), req)
+
+	logline := struct {
+		TraceID    string `json:"trace_id"`
+		SpanID     string `json:"span_id"`
+		TraceFlags string `json:"trace_flags"`
+	}{}
+
+	require.NoError(t, json.NewDecoder(strings.NewReader(out.String())).Decode(&logline))
+
+	assert.Equal(t, "4bf92f3577b34da6a3ce929d0e0e4736", logline.TraceID)
+	assert.Equal(t, "00f067aa0ba902b7", logline.SpanID)
+	assert.Equal(t, "01", logline.TraceFlags)
+}
+
+// Every deployment that does not trace keeps the log line it has today: the
+// trace attributes are appended only when a trace actually exists.
+func TestMiddleware_LoggingMiddlewareOmitsTraceContextWhenAbsent(t *testing.T) {
+	out := &strings.Builder{}
+	logger := slog.New(slog.NewJSONHandler(out, nil))
+
+	middleware := WithLoggingMiddleware(logger, 80, 443, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	middleware.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "http://app.example.com/", nil))
+
+	assert.NotContains(t, out.String(), "trace_id")
+	assert.NotContains(t, out.String(), "span_id")
+}

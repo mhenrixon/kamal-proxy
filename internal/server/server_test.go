@@ -398,3 +398,62 @@ func testRequestUsingTransport(server *Server, transport http.RoundTripper) (*ht
 	uri := fmt.Sprintf("https://localhost:%d/", server.HttpsPort())
 	return client.Get(uri)
 }
+
+// The trace middleware is installed by Server.buildHandler, which no other test
+// reaches. Without this, the feature could be unwired from the server entirely
+// and every unit test would stay green.
+func TestServer_TraceContextWiring(t *testing.T) {
+	tests := []struct {
+		name         string
+		mode         string
+		expectMinted bool
+	}{
+		{name: "generate mints one", mode: "generate", expectMinted: true},
+		{name: "propagate leaves it absent", mode: "propagate"},
+		{name: "off leaves it absent", mode: "off"},
+		{name: "an unset mode behaves as propagate", mode: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			received := make(chan string, 1)
+			target := testTarget(t, func(w http.ResponseWriter, r *http.Request) {
+				// Only the traced path: the deployment's health checks reach this
+				// handler too.
+				if r.URL.Path == "/traced" {
+					received <- r.Header.Get("Traceparent")
+				}
+			})
+
+			config := testConfig(t)
+			config.TraceContext = tt.mode
+			server := testServerWithConfig(t, config)
+
+			testDeployTarget(t, target, server, defaultServiceOptions)
+
+			resp, err := http.Get(fmt.Sprintf("http://localhost:%d/traced", server.HttpPort()))
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			forwarded := <-received
+
+			if !tt.expectMinted {
+				assert.Empty(t, forwarded)
+				return
+			}
+
+			_, ok := parseTraceparent([]string{forwarded})
+			assert.True(t, ok, "target received %q, which is not a valid traceparent", forwarded)
+		})
+	}
+}
+
+// A Config naming a mode the server cannot parse has to fail the bind rather
+// than serve with the setting silently ignored.
+func TestServer_RejectsInvalidTraceContext(t *testing.T) {
+	config := testConfig(t)
+	config.TraceContext = "sample"
+
+	server := NewServer(config, NewRouter(config.StatePath()))
+	require.ErrorContains(t, server.Start(), "trace-context")
+}
