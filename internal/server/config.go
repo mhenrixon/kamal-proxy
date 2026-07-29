@@ -46,6 +46,12 @@ type Config struct {
 	MetricsPort  int
 	HTTP3Enabled bool
 
+	// MinTLS is the lowest TLS version the HTTPS listener will negotiate,
+	// written as "1.2" or "1.3". Empty means 1.2, which is also Go's own
+	// minimum, so this setting can only ever narrow what the listener accepts -
+	// ParseMinTLSVersion refuses TLS 1.0 and 1.1 outright.
+	MinTLS string
+
 	// MetricsAllowIPs restricts the metrics endpoint to these addresses and CIDR
 	// ranges. Empty (the default) serves everyone that can reach the port.
 	MetricsAllowIPs []string
