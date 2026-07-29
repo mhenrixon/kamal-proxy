@@ -325,6 +325,48 @@ Things worth knowing:
   which covers DigitalOcean and AWS balancers without further configuration.
 
 
+### Rewriting request and response headers
+
+Security headers, CORS, and anything else your app would otherwise have to ship
+itself can be set at the proxy. Each direction has three verbs, and every flag
+may be given more than once:
+
+    kamal-proxy deploy service1 --target web-1:3000 \
+      --set-response-header 'Strict-Transport-Security: max-age=63072000; includeSubDomains' \
+      --set-response-header "Content-Security-Policy: default-src 'self'" \
+      --remove-response-header Server \
+      --set-request-header 'X-Env: production'
+
+| Verb | Effect |
+|---|---|
+| `--set-{request,response}-header '<name>: <value>'` | Replaces any existing values |
+| `--add-{request,response}-header '<name>: <value>'` | Appends, keeping existing values |
+| `--remove-{request,response}-header <name>` | Drops every value |
+
+Things worth knowing:
+
+* **Rules run remove → set → add**, not in the order the flags appear. Naming a
+  header under both `--remove-response-header` and `--set-response-header`
+  therefore leaves the value you set, whichever flag you typed first.
+* **Response rules cover what your app returned.** Responses the proxy produces
+  itself — error pages, the `--tls`/`--canonical-host` redirect, a `401` from
+  `--basic-auth`, a `429` from `--rate-limit` — never reach your app and keep
+  the proxy's own headers. This matches nginx's `add_header` default.
+* **Request rules have the last word over `X-Forwarded-*`.** They are applied
+  after the proxy sets those, so `--set-request-header 'X-Forwarded-Proto:
+  https'` wins. They do not apply to health checks, which the proxy issues
+  itself; use `--health-check-host` if a probe needs a particular `Host`.
+* **Quote the value.** A value containing spaces or a comma needs shell quoting,
+  but is otherwise taken verbatim — commas are not treated as separators, so
+  `--add-response-header 'Access-Control-Allow-Methods: GET, POST'` is one rule.
+* **`Host` cannot be rewritten on the request.** Go carries the request host
+  outside the header map, so such a rule would silently do nothing; deploying
+  one is rejected instead.
+* **Names and values are validated at deploy time.** A malformed name, or a
+  value containing a newline (which would smuggle in a second header), fails the
+  deploy rather than reaching the wire.
+
+
 ### Automatic TLS
 
 Kamal Proxy can automatically obtain and renew TLS certificates for your

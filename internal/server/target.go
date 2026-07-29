@@ -84,6 +84,15 @@ type TargetOptions struct {
 	// prefix.
 	PathRequestTimeouts []PathTimeout `json:"path_request_timeouts,omitempty"`
 
+	// RequestHeaderRules changes the headers the target receives, after the
+	// X-Forwarded headers are set, so a rule has the last word over them.
+	RequestHeaderRules HeaderRules `json:"request_header_rules,omitzero"`
+	// ResponseHeaderRules changes the headers the client receives. It covers
+	// responses the target produced; ones the proxy produced itself -- an error
+	// page, a redirect, a 401 or a 429 -- never reach the target and so keep the
+	// headers the proxy gave them.
+	ResponseHeaderRules HeaderRules `json:"response_header_rules,omitzero"`
+
 	// MaxConnsPerHost caps the connections -- dialing, active, and idle -- one of
 	// this target's pools will open. Zero (the default) leaves it unlimited.
 	// Requests over the cap queue rather than failing. Streaming responses hold a
@@ -348,10 +357,11 @@ func (t *Target) createProxyHandler(responseTimeout time.Duration) http.Handler 
 	t.transports = append(t.transports, transport)
 
 	var handler http.Handler = &httputil.ReverseProxy{
-		BufferPool:   bufferPool,
-		Rewrite:      t.rewrite,
-		ErrorHandler: t.handleProxyError,
-		Transport:    transport,
+		BufferPool:     bufferPool,
+		Rewrite:        t.rewrite,
+		ModifyResponse: t.applyResponseHeaderRules,
+		ErrorHandler:   t.handleProxyError,
+		Transport:      transport,
 	}
 
 	if t.options.BufferResponses {
@@ -408,6 +418,19 @@ func (t *Target) rewrite(req *httputil.ProxyRequest) {
 	// In our case, we don't make any decisions based on the query params, so it's
 	// safe for us to pass them through verbatim.
 	req.Out.URL.RawQuery = req.In.URL.RawQuery
+
+	// Last, so a rule can override a header the proxy itself decided on, such as
+	// the X-Forwarded set above.
+	t.options.RequestHeaderRules.apply(req.Out.Header)
+}
+
+// applyResponseHeaderRules runs as the proxy's ModifyResponse hook, which fires
+// after ReverseProxy has stripped the hop-by-hop headers, so a rule's headers
+// reach the client intact. It never fails: a rule that could not be applied
+// would have been rejected when the service was deployed.
+func (t *Target) applyResponseHeaderRules(res *http.Response) error {
+	t.options.ResponseHeaderRules.apply(res.Header)
+	return nil
 }
 
 func (t *Target) forwardHeaders(req *httputil.ProxyRequest) {

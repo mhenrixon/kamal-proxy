@@ -42,7 +42,7 @@ Proxy-side roadmap for the dash fork. The cross-repo release sequencing, strateg
 
 | Item | Evidence | Anchor |
 |---|---|---|
-| Header rules (req/resp add/remove/set; CORS/HSTS/CSP presets) | rejected #62/#25 | request: `Target.rewrite/forwardHeaders` (`target.go:307/344`); response: `ReverseProxy.ModifyResponse` in `createProxyHandler` (`target.go:296`) |
+| Header rules (req/resp add/remove/set) | rejected #62/#25 | DONE — `--{set,add,remove}-{request,response}-header` on deploy (`internal/server/header_rules.go`), applied remove → set → add. Request rules run last in `Target.rewrite`, so a rule outranks the X-Forwarded headers the proxy set; they do **not** reach health checks, which use their own client (`health_check.go:82`). Response rules run in `ReverseProxy.ModifyResponse`, which only sees what the target produced — error pages, the TLS/canonical-host 301, and 401/429 rejections come from the proxy and keep its headers. `Host` is rejected on the request side: Go carries it in `Request.Host`, so a rule naming it would silently do nothing. CORS/HSTS/CSP presets not shipped; generic set rules express all three |
 | Weighted canary (`--target=b;weight=5`) | kamal#941, #8 | `LoadBalancer.nextTarget` (`load_balancer.go:216`) — currently pure round-robin |
 | Redirect/rewrite rules | #35; kamal discussions #1214/#97 | extend canonical-host redirect mechanics (merged #153) |
 | Compression (gzip/zstd/brotli) | rejected #19 | response middleware in `createMiddleware`; must coordinate with the streaming bypass (`response_buffer_middleware.go:86`) |

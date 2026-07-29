@@ -631,3 +631,88 @@ func TestDeployCommand_RateLimitFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployCommand_HeaderRuleFlags(t *testing.T) {
+	tests := []struct {
+		name             string
+		args             []string
+		expectedError    string
+		expectedRequest  server.HeaderRules
+		expectedResponse server.HeaderRules
+	}{
+		{
+			name: "unset leaves both directions empty",
+			args: []string{"--target=web:3000"},
+		},
+		{
+			name: "each verb binds to its own direction",
+			args: []string{
+				"--target=web:3000",
+				"--set-request-header=X-Env: production",
+				"--add-request-header=X-Trace: proxy",
+				"--remove-request-header=X-Secret",
+				"--set-response-header=Strict-Transport-Security: max-age=63072000",
+				"--add-response-header=Vary: Origin",
+				"--remove-response-header=Server",
+			},
+			expectedRequest: server.HeaderRules{
+				Remove: []string{"X-Secret"},
+				Set:    []server.HeaderRule{{Name: "X-Env", Value: "production"}},
+				Add:    []server.HeaderRule{{Name: "X-Trace", Value: "proxy"}},
+			},
+			expectedResponse: server.HeaderRules{
+				Remove: []string{"Server"},
+				Set:    []server.HeaderRule{{Name: "Strict-Transport-Security", Value: "max-age=63072000"}},
+				Add:    []server.HeaderRule{{Name: "Vary", Value: "Origin"}},
+			},
+		},
+		{
+			name: "repeating a flag accumulates rather than replacing",
+			args: []string{
+				"--target=web:3000",
+				"--remove-response-header=Server",
+				"--remove-response-header=X-Powered-By",
+			},
+			expectedResponse: server.HeaderRules{Remove: []string{"Server", "X-Powered-By"}},
+		},
+		{
+			name: "a comma in a value stays part of the value",
+			args: []string{
+				"--target=web:3000",
+				"--set-response-header=Access-Control-Allow-Methods: GET, POST",
+			},
+			expectedResponse: server.HeaderRules{
+				Set: []server.HeaderRule{{Name: "Access-Control-Allow-Methods", Value: "GET, POST"}},
+			},
+		},
+		{
+			name:          "a rule without a colon is rejected",
+			args:          []string{"--target=web:3000", "--set-response-header=X-Env production"},
+			expectedError: `set-response-header must be given as "<name>: <value>"`,
+		},
+		{
+			name:          "rewriting the request Host is rejected rather than silently ignored",
+			args:          []string{"--target=web:3000", "--set-request-header=Host: elsewhere.example.com"},
+			expectedError: "set-request-header cannot rewrite the Host header",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newDeployCommand()
+			require.NoError(t, cmd.cmd.Flags().Parse(tt.args))
+
+			err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+			if tt.expectedError != "" {
+				require.ErrorIs(t, err, server.ErrTargetOptionsInvalid)
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedRequest, cmd.args.TargetOptions.RequestHeaderRules)
+			assert.Equal(t, tt.expectedResponse, cmd.args.TargetOptions.ResponseHeaderRules)
+		})
+	}
+}

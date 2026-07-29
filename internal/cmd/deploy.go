@@ -18,6 +18,8 @@ type deployCommand struct {
 	pathTimeouts        map[string]string
 	pathRequestTimeouts map[string]string
 	basicAuth           string
+	requestHeaderRules  server.HeaderRuleFlags
+	responseHeaderRules server.HeaderRuleFlags
 }
 
 func newDeployCommand() *deployCommand {
@@ -88,6 +90,16 @@ func newDeployCommand() *deployCommand {
 	deployCommand.cmd.Flags().IntVar(&deployCommand.args.ServiceOptions.RateLimitBurst, "rate-limit-burst", 0, "How many requests a client may make back to back before --rate-limit applies (default 0, meaning the rate rounded up)")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ServiceOptions.RateLimitExempt, "rate-limit-exempt", nil, "Addresses or CIDR ranges that --rate-limit does not apply to (e.g. 10.0.0.0/8 for monitoring; default empty)")
 
+	// StringArray rather than StringSlice: a header value may contain commas, as
+	// "Access-Control-Allow-Methods: GET, POST" and "Cache-Control: no-store,
+	// max-age=0" do, and StringSlice would split those into separate rules.
+	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.requestHeaderRules.Set, "set-request-header", nil, "Header to set on requests before forwarding them, as '<name>: <value>', replacing what the client sent (may be specified multiple times)")
+	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.requestHeaderRules.Add, "add-request-header", nil, "Header to append to requests before forwarding them, as '<name>: <value>', keeping what the client sent (may be specified multiple times)")
+	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.requestHeaderRules.Remove, "remove-request-header", nil, "Header to strip from requests before forwarding them (may be specified multiple times)")
+	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.responseHeaderRules.Set, "set-response-header", nil, "Header to set on responses from the target, as '<name>: <value>', replacing what the target sent. Applies to responses the target produced; error pages, redirects and auth or rate limit rejections come from the proxy and are unaffected (may be specified multiple times)")
+	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.responseHeaderRules.Add, "add-response-header", nil, "Header to append to responses from the target, as '<name>: <value>', keeping what the target sent (may be specified multiple times)")
+	deployCommand.cmd.Flags().StringArrayVar(&deployCommand.responseHeaderRules.Remove, "remove-response-header", nil, "Header to strip from responses from the target (may be specified multiple times)")
+
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogRequestHeaders, "log-request-header", nil, "Additional request header to log (may be specified multiple times)")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.TargetOptions.LogResponseHeaders, "log-response-header", nil, "Additional response header to log (may be specified multiple times)")
 	deployCommand.cmd.Flags().StringSliceVar(&deployCommand.args.ServiceOptions.ExcludeMetricsPaths, "exclude-metrics-path", nil, "Request path(s) to exclude from Prometheus metrics (may be specified multiple times)")
@@ -150,6 +162,16 @@ func (c *deployCommand) preRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	c.args.TargetOptions.RequestHeaderRules, err = server.NewRequestHeaderRules(c.requestHeaderRules)
+	if err != nil {
+		return err
+	}
+
+	c.args.TargetOptions.ResponseHeaderRules, err = server.NewResponseHeaderRules(c.responseHeaderRules)
+	if err != nil {
+		return err
 	}
 
 	if err := c.args.TargetOptions.Validate(); err != nil {
