@@ -208,15 +208,18 @@ func (s *Server) startHTTP3Server(handler http.Handler, httpsAddr string) error 
 		return err
 	}
 
+	http3Config := &tls.Config{
+		MinVersion:     tls.VersionTLS13,
+		NextProtos:     []string{"h3"},
+		GetCertificate: s.router.GetCertificate,
+	}
+	http3Config.GetConfigForClient = s.clientCertificateConfig(http3Config)
+
 	s.http3Listener = http3Listener
 	s.http3Server = &http3.Server{
 		Handler:     handler,
 		IdleTimeout: s.config.IdleTimeout,
-		TLSConfig: &tls.Config{
-			MinVersion:     tls.VersionTLS13,
-			NextProtos:     []string{"h3"},
-			GetCertificate: s.router.GetCertificate,
-		},
+		TLSConfig:   http3Config,
 	}
 
 	go s.http3Server.Serve(s.http3Listener)
@@ -261,10 +264,12 @@ func (s *Server) startHTTPServers() error {
 
 		handler.ServeHTTP(w, r)
 	}))
-	s.httpsServer.TLSConfig = &tls.Config{
+	httpsConfig := &tls.Config{
 		NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
 		GetCertificate: s.router.GetCertificate,
 	}
+	httpsConfig.GetConfigForClient = s.clientCertificateConfig(httpsConfig)
+	s.httpsServer.TLSConfig = httpsConfig
 
 	if s.config.ProxyProtocol {
 		slog.Info("PROXY protocol enabled", "allow", s.config.ProxyProtocolAllowIPs)
@@ -289,6 +294,34 @@ func (s *Server) startHTTPServers() error {
 	}
 
 	return nil
+}
+
+// clientCertificateConfig requires and verifies a client certificate for hosts
+// whose service was deployed with --tls-client-ca-path, leaving every other host
+// on the listener's own config.
+//
+// The returned config REPLACES the listener's for the connection, so it has to
+// be a clone: building a fresh one carrying only the client-auth fields would
+// drop ALPN and the minimum version, downgrading mTLS hosts to HTTP/1.1 and
+// breaking tls-alpn-01 challenges. The clone is per-handshake, but only for
+// hosts that actually require client certificates.
+func (s *Server) clientCertificateConfig(base *tls.Config) func(*tls.ClientHelloInfo) (*tls.Config, error) {
+	return func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		clientCAs := s.router.clientCAsForHost(hello.ServerName)
+		if clientCAs == nil {
+			return nil, nil
+		}
+
+		config := base.Clone()
+		config.ClientAuth = tls.RequireAndVerifyClientCert
+		config.ClientCAs = clientCAs
+		// Already resolved for this connection; Go does not consult it again on
+		// the replacement config, and leaving it set invites a self-referential
+		// clone if that ever changes.
+		config.GetConfigForClient = nil
+
+		return config, nil
+	}
 }
 
 func (s *Server) startMetricsServer() error {
