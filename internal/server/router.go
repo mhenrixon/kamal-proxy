@@ -471,6 +471,21 @@ func (r *Router) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 		}
 	}
 
+	service := r.serviceForHost(hello.ServerName)
+
+	// A service deployed with --tls-on-demand-url owns the issuance decision for
+	// every host it catches. The registry provisions on lookup rather than
+	// consulting a host policy, so asking it first would issue certificates for
+	// hosts the endpoint denies -- defeating the gate, and letting
+	// attacker-chosen SNI drive orders against the ACME account.
+	if service != nil && service.options.TLSOnDemandURL != "" {
+		if service.certManager == nil {
+			slog.Debug("ACME: Unable to get certificate (service does not support TLS)")
+			return nil, ErrorUnknownServerName
+		}
+		return service.certManager.GetCertificate(hello)
+	}
+
 	// Try the central certificate registry first
 	if r.certRegistry != nil {
 		cert, err := r.certRegistry.GetCertificate(hello)
@@ -484,7 +499,6 @@ func (r *Router) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 		// Fall through to per-service cert manager
 	}
 
-	service := r.serviceForHost(hello.ServerName)
 	if service == nil {
 		slog.Debug("ACME: Unable to get certificate (unknown server name)")
 		return nil, ErrorUnknownServerName
