@@ -716,3 +716,75 @@ func TestDeployCommand_HeaderRuleFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployCommand_CompressionFlags(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		expected      server.CompressionOptions
+		expectedError string
+	}{
+		{
+			name:     "no flags leaves compression off",
+			args:     []string{"--target=web:3000"},
+			expected: server.CompressionOptions{},
+		},
+		{
+			name: "encodings keep the order they were given",
+			args: []string{"--target=web:3000", "--compress=zstd,br,gzip"},
+			expected: server.CompressionOptions{
+				Encodings: []string{"zstd", "br", "gzip"},
+			},
+		},
+		{
+			name: "repeating the flag accumulates",
+			args: []string{"--target=web:3000", "--compress=gzip", "--compress=br"},
+			expected: server.CompressionOptions{
+				Encodings: []string{"gzip", "br"},
+			},
+		},
+		{
+			name: "minimum length and content types",
+			args: []string{"--target=web:3000", "--compress=gzip", "--compress-min-length=2048",
+				"--compress-content-type=text/*,application/json"},
+			expected: server.CompressionOptions{
+				Encodings:    []string{"gzip"},
+				MinLength:    2048,
+				ContentTypes: []string{"text/*", "application/json"},
+			},
+		},
+		{
+			name:          "unsupported encoding",
+			args:          []string{"--target=web:3000", "--compress=deflate"},
+			expectedError: `compress must be one of gzip, br, zstd, got "deflate"`,
+		},
+		{
+			name:          "minimum length without compression",
+			args:          []string{"--target=web:3000", "--compress-min-length=2048"},
+			expectedError: "compress-min-length requires compress",
+		},
+		{
+			name:          "content types without compression",
+			args:          []string{"--target=web:3000", "--compress-content-type=text/html"},
+			expectedError: "compress-content-type requires compress",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newDeployCommand()
+			require.NoError(t, cmd.cmd.Flags().Parse(tt.args))
+
+			err := cmd.preRun(cmd.cmd, []string{"test-service"})
+
+			if tt.expectedError != "" {
+				require.ErrorIs(t, err, server.ErrServiceOptionsInvalid)
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, cmd.args.ServiceOptions.Compression)
+		})
+	}
+}
