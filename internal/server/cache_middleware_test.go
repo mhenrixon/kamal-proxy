@@ -184,7 +184,7 @@ func TestCacheMiddleware_RequestNoCacheRefetchesAndRestores(t *testing.T) {
 	var served atomic.Int64
 	middleware, reached := testCacheHandler(t, CacheOptions{Enabled: true}, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=60")
-		w.Write([]byte(fmt.Sprintf("body-%d", served.Add(1))))
+		fmt.Fprintf(w, "body-%d", served.Add(1))
 	})
 
 	assert.Equal(t, "body-1", getCached(middleware, "http://example.com/products").Body.String())
@@ -242,7 +242,7 @@ func TestCacheMiddleware_ServesStaleWhileRevalidating(t *testing.T) {
 	middleware, reached := testCacheHandler(t, CacheOptions{Enabled: true}, func(w http.ResponseWriter, r *http.Request) {
 		count := served.Add(1)
 		w.Header().Set("Cache-Control", "public, max-age=1, stale-while-revalidate=60")
-		w.Write([]byte(fmt.Sprintf("body-%d", count)))
+		fmt.Fprintf(w, "body-%d", count)
 
 		if count > 1 {
 			revalidated <- struct{}{}
