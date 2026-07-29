@@ -81,6 +81,18 @@ type Config struct {
 	// default) trusts every peer that can reach the port.
 	ProxyProtocolAllowIPs []string
 
+	// CacheStore is where responses cached by services deployed with --cache
+	// live: "memory" (the default) for a per-node cache, or a redis:// or
+	// rediss:// URL every proxy in a fleet can share. A service without --cache
+	// never touches it.
+	CacheStore string
+	// CacheStoreTimeout bounds each shared-store operation. Zero means
+	// DefaultCacheStoreTimeout.
+	CacheStoreTimeout time.Duration
+	// CacheMemorySize caps the in-process store. Zero means
+	// DefaultCacheMemorySize.
+	CacheMemorySize int64
+
 	AlternateConfigDir string
 
 	// ACME configuration for automatic certificate management
@@ -136,6 +148,14 @@ func (c Config) CertificateRegistryConfig() CertificateRegistryConfig {
 		HTTPFallback:   c.ACMEHTTPFallback,
 		CachePath:      c.CertificatePath(),
 		StatePath:      c.CertificateStatePath(),
+	}
+}
+
+func (c Config) ResponseCacheStoreConfig() CacheStoreConfig {
+	return CacheStoreConfig{
+		URL:        c.CacheStore,
+		MemorySize: c.CacheMemorySize,
+		Timeout:    c.CacheStoreTimeout,
 	}
 }
 

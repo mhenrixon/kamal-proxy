@@ -170,6 +170,11 @@ type ServiceOptions struct {
 	// value leaves them alone, which is what every state file written before
 	// this option existed restores to.
 	Compression CompressionOptions `json:"compression,omitzero"`
+
+	// Cache stores responses the target marks `public` and answers later
+	// requests from them. A zero value keeps the cache off. See
+	// cache_options.go.
+	Cache CacheOptions `json:"cache,omitzero"`
 }
 
 func (so *ServiceOptions) ShouldExcludeMetrics(r *http.Request) bool {
@@ -180,6 +185,7 @@ func (so *ServiceOptions) Normalize() {
 	so.Hosts = NormalizeHosts(so.Hosts)
 	so.PathPrefixes = NormalizePathPrefixes(so.PathPrefixes)
 	so.Compression.Normalize()
+	so.Cache.Normalize()
 }
 
 func (so ServiceOptions) Validate() error {
@@ -253,6 +259,10 @@ func (so ServiceOptions) Validate() error {
 		return err
 	}
 
+	if err := so.Cache.Validate(); err != nil {
+		return err
+	}
+
 	return so.validateDynamicDomains()
 }
 
@@ -306,6 +316,12 @@ type Service struct {
 	rateLimiter    *rateLimiter
 	redirects      *pathRuleSet
 	rewrites       *pathRuleSet
+
+	// cacheStore is shared with every other service on this proxy, and possibly
+	// with every other proxy in the fleet. cacheHandler is this service's own
+	// entry into it, sitting between the checks above and the load balancer.
+	cacheStore   CacheStore
+	cacheHandler http.Handler
 }
 
 func NewService(name string, options ServiceOptions, targetOptions TargetOptions, sanCertManager *SANCertManager) (*Service, error) {
@@ -568,6 +584,7 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 
 	s.redirects = redirects
 	s.rewrites = rewrites
+	s.cacheHandler = s.createCacheHandler(options)
 	s.options = options
 	s.targetOptions = targetOptions
 	s.certManager = certManager
@@ -780,10 +797,11 @@ func (s *Service) serviceRequestWithTarget(w http.ResponseWriter, r *http.Reques
 	// redirects, the allow list -- still sees the path the client asked for.
 	r = s.rewriteRequest(r)
 
-	sendRequest := s.startLoadBalancerRequest(w, r)
-	if sendRequest != nil {
-		sendRequest()
-	}
+	// Below every check above, which is what makes a stored response safe: a
+	// cache hit is only ever handed to a client the target itself would have
+	// been asked on behalf of. Without a cache configured this is the load
+	// balancer directly.
+	s.cacheHandler.ServeHTTP(w, r)
 }
 
 func (s *Service) startLoadBalancerRequest(w http.ResponseWriter, r *http.Request) func() {

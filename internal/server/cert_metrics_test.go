@@ -36,6 +36,7 @@ func newFakeTracker() *fakeTracker {
 func (f *fakeTracker) TrackRequest(service, method string, status int, dur time.Duration) {}
 func (f *fakeTracker) AddInflightRequest(service string)                                  {}
 func (f *fakeTracker) SubtractInflightRequest(service string)                             {}
+func (f *fakeTracker) TrackCacheEvent(service, result string)                             {}
 
 func (f *fakeTracker) SetCertificateExpiry(domain string, isWildcard bool, expiryTime time.Time) {
 	f.mu.Lock()

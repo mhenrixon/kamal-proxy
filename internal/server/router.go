@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ var (
 	ErrorHostInUse                   = errors.New("host settings conflict with another service")
 	ErrorNoServerName                = errors.New("no server name provided")
 	ErrorUnknownServerName           = errors.New("unknown server name")
+	ErrorCacheNotAvailable           = errors.New("response cache is not available")
 
 	contextKeyRoutingContext = contextKey("routing-context")
 )
@@ -58,6 +60,7 @@ type Router struct {
 	sanCertManager       *SANCertManager
 	dynamicDomainManager *DynamicDomainManager
 	certRegistry         *CertificateRegistry
+	cacheStore           CacheStore
 }
 
 type ServiceDescription struct {
@@ -128,6 +131,39 @@ func (r *Router) SetDynamicDomainManager(manager *DynamicDomainManager) {
 
 func (r *Router) DynamicDomainManager() *DynamicDomainManager {
 	return r.dynamicDomainManager
+}
+
+// SetCacheStore installs the response cache store and hands it to the services
+// already restored, which were built before it existed.
+func (r *Router) SetCacheStore(store CacheStore) {
+	r.withWriteLock(func() error {
+		r.cacheStore = store
+
+		for _, service := range r.services.All() {
+			service.SetCacheStore(store)
+		}
+		return nil
+	})
+}
+
+// PurgeCache drops a service's stored responses, optionally only those below a
+// path prefix, and reports how many it removed.
+func (r *Router) PurgeCache(name, pathPrefix string) (int, error) {
+	if r.serviceForName(name) == nil {
+		return 0, ErrorServiceNotFound
+	}
+
+	if r.cacheStore == nil {
+		return 0, ErrorCacheNotAvailable
+	}
+
+	purged, err := r.cacheStore.Purge(context.Background(), name, pathPrefix)
+	if err != nil {
+		return purged, fmt.Errorf("failed to purge cache for service %q: %w", name, err)
+	}
+
+	slog.Info("Purged cache", "service", name, "path_prefix", pathPrefix, "entries", purged)
+	return purged, nil
 }
 
 // SetCertificateRegistry sets the central certificate registry for the router
@@ -530,7 +566,13 @@ func (r *Router) clientCAsForHost(host string) *x509.CertPool {
 func (r *Router) createOrUpdateService(name string, options ServiceOptions, targetOptions TargetOptions) (*Service, error) {
 	service := r.services.Get(name)
 	if service == nil {
-		return NewService(name, options, targetOptions, r.sanCertManager)
+		service, err := NewService(name, options, targetOptions, r.sanCertManager)
+		if err != nil {
+			return nil, err
+		}
+
+		service.SetCacheStore(r.cacheStore)
+		return service, nil
 	}
 
 	err := service.UpdateOptions(options, targetOptions)

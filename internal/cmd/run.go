@@ -46,6 +46,12 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ProxyProtocol, "proxy-protocol", getEnvBool("PROXY_PROTOCOL", false), "Accept PROXY protocol v1/v2 headers on the HTTP and HTTPS listeners, preserving client addresses behind an L4 load balancer")
 	runCommand.cmd.Flags().StringSliceVar(&globalConfig.ProxyProtocolAllowIPs, "proxy-protocol-allow-ip", nil, "Honor PROXY protocol headers only from these addresses or CIDR ranges (default empty, trust every peer that can reach the port)")
 
+	// Response cache storage. Per-service opt-in lives on `deploy --cache`; this
+	// only decides where the entries live.
+	runCommand.cmd.Flags().StringVar(&globalConfig.CacheStore, "cache-store", getEnvString("CACHE_STORE", server.CacheStoreMemory), "Where responses cached by services deployed with --cache are kept: memory for a per-node cache, or a redis://host:port/db (or rediss://) URL every proxy pointed at it shares, so one fetch warms the whole fleet")
+	runCommand.cmd.Flags().DurationVar(&globalConfig.CacheStoreTimeout, "cache-store-timeout", getEnvDuration("CACHE_STORE_TIMEOUT", 0), fmt.Sprintf("Maximum time a shared --cache-store may take to answer before the request goes to the target instead (default %s). A store that is slow or down costs a cache, never a failed request", server.DefaultCacheStoreTimeout))
+	runCommand.cmd.Flags().Int64Var(&globalConfig.CacheMemorySize, "cache-memory-size", int64(getEnvInt("CACHE_MEMORY_SIZE", 0)), fmt.Sprintf("Bytes the in-process --cache-store may hold before evicting least recently used entries (default %d)", server.DefaultCacheMemorySize))
+
 	// Listener connection timeouts
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadHeaderTimeout, "read-header-timeout", getEnvDuration("READ_HEADER_TIMEOUT", server.DefaultReadHeaderTimeout), "Maximum time a client may take to send request headers (zero to disable)")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ReadTimeout, "read-timeout", getEnvDuration("READ_TIMEOUT", server.DefaultReadTimeout), "Maximum time to read an entire request, including the body (zero to disable; non-zero truncates slow uploads)")
@@ -81,7 +87,7 @@ func (c *runCommand) preRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return nil
+	return server.ParseCacheStoreURL(globalConfig.CacheStore)
 }
 
 func (c *runCommand) run(cmd *cobra.Command, args []string) error {
@@ -117,6 +123,16 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		}
 		slog.Error("Continuing with empty routing state", "error", err)
 	}
+
+	// Opened whether or not a service uses it today, so that deploying with
+	// --cache later needs no restart. Nothing is stored until a service opts in.
+	cacheStore, err := server.NewCacheStore(globalConfig.ResponseCacheStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer cacheStore.Close()
+
+	router.SetCacheStore(cacheStore)
 
 	var dynamicDomains *server.DynamicDomainManager
 
@@ -159,8 +175,7 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	}
 
 	s := server.NewServer(&globalConfig, router)
-	err := s.Start()
-	if err != nil {
+	if err := s.Start(); err != nil {
 		return err
 	}
 	defer s.Stop()

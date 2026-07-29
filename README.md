@@ -533,6 +533,88 @@ Things worth knowing:
   router, outside any one service's settings. Pages you supply with
   `--error-pages` are compressed like anything else.
 
+### Caching responses
+
+The proxy can hold on to the responses your app marks as shareable and answer
+later requests from them, so a hot URL costs the app one request per lifetime
+instead of one per client. It is opt-in per service:
+
+    kamal-proxy deploy service1 --target web-1:3000 --cache
+
+Nothing is stored until your app says so, twice over: the response must carry an
+explicit `public` directive **and** a lifetime.
+
+    Cache-Control: public, s-maxage=60
+    Cache-Control: public, max-age=60, stale-while-revalidate=600
+
+`s-maxage` wins over `max-age` when both are present — that is exactly what it is
+for, telling a shared cache something different from the browser.
+
+#### Sharing one cache across the fleet
+
+By default each proxy keeps its own cache in memory. Point them all at one Redis
+and a single fetch warms every node:
+
+    kamal-proxy run --cache-store redis://cache-1:6379/0
+
+`--cache-store-timeout` (100ms by default) bounds every read and write. A store
+that is slow or down costs you a cache, never a failed request: the lookup reads
+as a miss and the request goes to the target as usual. Redis owns expiry, so a
+proxy that restarts comes back to a warm cache. `--cache-memory-size` (256MB)
+caps the in-process store instead, which evicts least-recently-used first.
+
+#### Stale while revalidating
+
+With `stale-while-revalidate`, an expired entry keeps answering while the proxy
+fetches a fresh copy behind it — nobody waits for the refresh, and only one
+refresh runs however many clients arrive at once.
+
+#### Purging
+
+    kamal-proxy cache purge service1
+    kamal-proxy cache purge service1 --path-prefix /assets
+
+Things worth knowing:
+
+* **The cache sits below everything that can refuse a request.** Basic auth, the
+  allow list, the rate limit, redirects and rewrites all run first, so a stored
+  response is only ever handed to a client the target would have been asked for.
+  A request carrying an `Authorization` header the proxy is only forwarding never
+  touches the cache at all.
+* **`Set-Cookie` responses are refused** unless you pass `--cache-allow-set-cookie`.
+  Replaying one client's cookie to the next is the worst thing a shared cache
+  could do, so it takes a deliberate flag.
+* **`GET` and `HEAD` only.** A `HEAD` is answered from the stored `GET` with the
+  body dropped, and never populates the cache itself. Range requests, upgrades
+  and every other method pass straight through.
+* **Concurrent misses collapse into one fetch.** Twenty clients arriving at a
+  cold URL together cost the app one request; the rest are answered from what it
+  returned. If the response turns out not to be storable they are released
+  immediately rather than held behind it.
+* **`Vary` is honoured by refusing to guess.** Name the dimensions in
+  `--cache-vary-header` (or `--cache-vary-cookie` for apps that vary on a cookie
+  without saying so) and they become part of the key. A response that varies on
+  anything you did not name is passed through uncached rather than risking one
+  client's copy answering another's request.
+* **`Accept-Encoding` needs no entry.** The cache stores what your app produced
+  and sits inside `--compress`, so one entry serves every encoding. A response
+  your app encoded *itself* is not stored, since the key does not record which
+  encoding it is — add `--cache-vary-header accept-encoding` if you want those
+  cached, at one entry per distinct `Accept-Encoding` string.
+* **A rollout gets its own entries.** Canary targets are running different code,
+  so their responses never answer requests routed to the stable ones.
+* **Statuses beyond `200`.** `203`, `204`, `300`, `301`, `308`, `404`, `405`,
+  `410`, `414` and `501` are storable too, given the same `public` marking.
+  `206` never is. Bodies over `--cache-max-body` (8MB) still reach the client,
+  they are just not kept, and `--cache-max-ttl` caps a lifetime your app asks for.
+* **Clients can still bypass it.** `Cache-Control: no-cache` on a request fetches
+  a fresh copy — and stores it, so a reload warms the entry for everybody else.
+  `no-store` skips the cache in both directions.
+* **`X-Cache` says what happened** — `HIT`, `MISS` or `STALE` — alongside an
+  `Age` header that counts any age the response already had upstream. The
+  `kamal_proxy_cache_events_total` counter breaks the same thing down by service
+  and result, including coalesced requests.
+
 
 ### Automatic TLS
 
