@@ -67,6 +67,11 @@ type RolloutStopArgs struct {
 	Service string
 }
 
+type CachePurgeArgs struct {
+	Service    string
+	PathPrefix string
+}
+
 type ListResponse struct {
 	Targets ServiceDescriptionMap `json:"services"`
 }
@@ -189,6 +194,15 @@ func (h *CommandHandler) RolloutSet(args RolloutSetArgs, reply *bool) error {
 
 func (h *CommandHandler) RolloutStop(args RolloutStopArgs, reply *bool) error {
 	return h.router.StopRollout(args.Service)
+}
+
+// CachePurge drops a service's stored responses and replies with how many it
+// removed, so an operator can tell a purge that did nothing from one that did.
+func (h *CommandHandler) CachePurge(args CachePurgeArgs, reply *int) error {
+	purged, err := h.router.PurgeCache(args.Service, args.PathPrefix)
+	*reply = purged
+
+	return err
 }
 
 func (h *CommandHandler) DomainsStatus(args bool, reply *DomainsStatusResponse) error {

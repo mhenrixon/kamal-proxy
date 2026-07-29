@@ -1,0 +1,237 @@
+package server
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/basecamp/kamal-proxy/internal/metrics"
+)
+
+// X-Cache tells a client, and anyone reading an access log, which of the three
+// paths answered it.
+const (
+	cacheStatusHit   = "HIT"
+	cacheStatusMiss  = "MISS"
+	cacheStatusStale = "STALE"
+)
+
+// Metric outcomes. They are finer than the header: a coalesced response is a
+// hit to the client but a very different thing to whoever is sizing the cache.
+const (
+	cacheResultHit       = "hit"
+	cacheResultMiss      = "miss"
+	cacheResultStale     = "stale"
+	cacheResultCoalesced = "coalesced"
+	cacheResultStore     = "store"
+	cacheResultError     = "error"
+)
+
+type CacheConfig struct {
+	Service string
+	Options CacheOptions
+	// Store may be nil, which passes every request straight through. Services
+	// restored from the state file are built before the store is installed.
+	Store CacheStore
+	// Variant separates entries that must not answer each other's requests even
+	// at the same URL -- a rollout group above all, whose targets are running a
+	// different version of the application.
+	Variant func(*http.Request) string
+}
+
+// CacheMiddleware answers requests from stored responses. It sits below this
+// service's authentication, rate limit and redirects, so nothing is ever served
+// from the cache that would not have been served from the target, and above the
+// load balancer, so a hit costs no target selection at all.
+type CacheMiddleware struct {
+	config   CacheConfig
+	next     http.Handler
+	inflight *inflightGroup
+
+	// now is a seam for tests; nothing else replaces it.
+	now func() time.Time
+}
+
+func WithCacheMiddleware(config CacheConfig, next http.Handler) *CacheMiddleware {
+	return &CacheMiddleware{
+		config:   config,
+		next:     next,
+		inflight: newInflightGroup(),
+		now:      time.Now,
+	}
+}
+
+func (h *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.config.Store == nil || !h.config.Options.Enabled || !requestMayUseCache(r) {
+		h.next.ServeHTTP(w, r)
+		return
+	}
+
+	key := cacheKey(h.config.Service, h.variantFor(r), r, h.config.Options)
+
+	// A request may refuse the stored copy for itself and still populate the
+	// cache for everyone behind it, which is what makes a reload useful.
+	if requestAllowsStoredResponse(r) {
+		if entry, found := h.config.Store.Get(r.Context(), key); found {
+			now := h.now()
+
+			if entry.needsRevalidation(now) {
+				// RFC 5861: answer from the stale copy now, refresh behind it.
+				h.revalidate(r, key)
+				h.replay(w, r, entry, cacheStatusStale, cacheResultStale, now)
+				return
+			}
+
+			if entry.servable(now) {
+				h.replay(w, r, entry, cacheStatusHit, cacheResultHit, now)
+				return
+			}
+		}
+	}
+
+	h.fetch(w, r, key)
+}
+
+// Private
+
+func (h *CacheMiddleware) fetch(w http.ResponseWriter, r *http.Request, key string) {
+	call, leader := h.inflight.join(key)
+
+	if leader {
+		var stored *CacheEntry
+		defer func() { h.inflight.settle(key, call, stored) }()
+
+		stored = h.forward(w, r, key, func() { h.inflight.settle(key, call, nil) })
+		return
+	}
+
+	select {
+	case <-call.done:
+		if call.entry != nil {
+			h.replay(w, r, call.entry, cacheStatusHit, cacheResultCoalesced, h.now())
+			return
+		}
+	case <-r.Context().Done():
+		// The client gave up while queued behind the fetch.
+		return
+	}
+
+	// The leader's response turned out not to be shareable, so this request has
+	// to ask for its own. It does not register as a new leader: whatever made
+	// the response unshareable will do so again.
+	h.forward(w, r, key, nil)
+}
+
+// forward sends the request upstream, keeping a copy of the response if it may
+// be stored. It returns the entry it stored, which is also what any request
+// coalesced behind this one is answered from.
+func (h *CacheMiddleware) forward(w http.ResponseWriter, r *http.Request, key string, onUnstorable func()) *CacheEntry {
+	recorder := &cachingResponseWriter{
+		ResponseWriter: w,
+		options:        h.config.Options,
+		cacheStatus:    cacheStatusMiss,
+		bodyExpected:   r.Method != http.MethodHead,
+		onUnstorable:   onUnstorable,
+	}
+
+	h.next.ServeHTTP(recorder, r)
+	recorder.finish()
+
+	metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultMiss)
+
+	entry := recorder.entry(h.config.Service, r, h.now())
+	if entry == nil {
+		return nil
+	}
+
+	// Detached from the request: the client may already have disconnected, and
+	// the response it paid for should still reach the cache.
+	if err := h.config.Store.Set(context.WithoutCancel(r.Context()), key, entry); err != nil {
+		slog.Warn("Failed to store cached response", "service", h.config.Service, "path", r.URL.Path, "error", err)
+		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultError)
+	} else {
+		metrics.Tracker.TrackCacheEvent(h.config.Service, cacheResultStore)
+	}
+
+	// Returned whether or not the store took it: requests waiting behind this
+	// one can still be answered from it, which is the point of coalescing.
+	return entry
+}
+
+// revalidate refreshes a stale entry behind the request that was just answered
+// from it. Joining the same group as a foreground fetch is what keeps a burst of
+// stale hits to a single upstream request.
+func (h *CacheMiddleware) revalidate(r *http.Request, key string) {
+	call, leader := h.inflight.join(key)
+	if !leader {
+		return
+	}
+
+	// Nobody is waiting on this fetch, so it must not inherit the client's
+	// cancellation -- nor its logging context, which belongs to the response
+	// already on its way out.
+	ctx := context.WithValue(context.WithoutCancel(r.Context()), contextKeyRequestContext, &loggingRequestContext{})
+	ctx, cancel := context.WithTimeout(ctx, DefaultCacheRevalidateTimeout)
+
+	background := r.Clone(ctx)
+	background.Body = http.NoBody
+	background.ContentLength = 0
+
+	go func() {
+		defer cancel()
+
+		var stored *CacheEntry
+		defer func() { h.inflight.settle(key, call, stored) }()
+
+		stored = h.forward(backgroundResponseWriter{header: http.Header{}}, background, key, nil)
+	}()
+}
+
+// replay writes a stored response to a client.
+func (h *CacheMiddleware) replay(w http.ResponseWriter, r *http.Request, entry *CacheEntry, status, result string, now time.Time) {
+	header := w.Header()
+	for name, values := range entry.Header {
+		header[name] = slices.Clone(values)
+	}
+
+	header.Set("X-Cache", status)
+	header.Set("Age", strconv.FormatInt(int64(entry.age(now).Seconds()), 10))
+
+	if statusAllowsBody(entry.StatusCode) {
+		header.Set("Content-Length", strconv.Itoa(len(entry.Body)))
+	}
+
+	w.WriteHeader(entry.StatusCode)
+
+	// A HEAD is answered from the stored GET, headers and all, minus the body
+	// it is defined not to carry.
+	if r.Method != http.MethodHead && len(entry.Body) > 0 {
+		if _, err := w.Write(entry.Body); err != nil {
+			slog.Debug("Failed to write cached response", "service", h.config.Service, "path", r.URL.Path, "error", err)
+		}
+	}
+
+	metrics.Tracker.TrackCacheEvent(h.config.Service, result)
+}
+
+func (h *CacheMiddleware) variantFor(r *http.Request) string {
+	if h.config.Variant == nil {
+		return ""
+	}
+
+	return h.config.Variant(r)
+}
+
+// backgroundResponseWriter receives a background revalidation's response, which
+// exists only to be stored.
+type backgroundResponseWriter struct {
+	header http.Header
+}
+
+func (w backgroundResponseWriter) Header() http.Header            { return w.header }
+func (w backgroundResponseWriter) Write(data []byte) (int, error) { return len(data), nil }
+func (w backgroundResponseWriter) WriteHeader(statusCode int)     {}
+func (w backgroundResponseWriter) Flush()                         {}

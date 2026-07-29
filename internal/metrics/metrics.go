@@ -16,6 +16,7 @@ type tracker interface {
 	SetCertificateExpiry(domain string, isWildcard bool, expiryTime time.Time)
 	IncCertificateRenewals(domain string, success bool)
 	SetCertificateCount(total, wildcard, http01 int)
+	TrackCacheEvent(service, result string)
 }
 
 var Tracker tracker = &nullTracker{}
@@ -33,6 +34,7 @@ func (nullTracker) SubtractInflightRequest(service string)                      
 func (nullTracker) SetCertificateExpiry(domain string, isWildcard bool, expiryTime time.Time) {}
 func (nullTracker) IncCertificateRenewals(domain string, success bool)                        {}
 func (nullTracker) SetCertificateCount(total, wildcard, http01 int)                           {}
+func (nullTracker) TrackCacheEvent(service, result string)                                    {}
 
 type prometheusTracker struct {
 	httpRequests     *prometheus.CounterVec
@@ -43,6 +45,9 @@ type prometheusTracker struct {
 	certExpiry   *prometheus.GaugeVec
 	certRenewals *prometheus.CounterVec
 	certCount    *prometheus.GaugeVec
+
+	// Response cache metrics
+	cacheEvents *prometheus.CounterVec
 }
 
 func NewPrometheusTracker() *prometheusTracker {
@@ -98,6 +103,16 @@ func NewPrometheusTracker() *prometheusTracker {
 			[]string{"domain", "result"},
 		),
 
+		cacheEvents: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:      "cache_events_total",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "Response cache outcomes, labeled by service and result (hit, miss, stale, coalesced, store, error).",
+			},
+			[]string{"service", "result"},
+		),
+
 		certCount: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name:      "certificates_total",
@@ -116,6 +131,7 @@ func NewPrometheusTracker() *prometheusTracker {
 		tracker.certExpiry,
 		tracker.certRenewals,
 		tracker.certCount,
+		tracker.cacheEvents,
 	)
 
 	return tracker
@@ -157,6 +173,10 @@ func (p *prometheusTracker) SetCertificateCount(total, wildcard, http01 int) {
 	p.certCount.WithLabelValues("total").Set(float64(total))
 	p.certCount.WithLabelValues("wildcard").Set(float64(wildcard))
 	p.certCount.WithLabelValues("http01").Set(float64(http01))
+}
+
+func (p *prometheusTracker) TrackCacheEvent(service, result string) {
+	p.cacheEvents.WithLabelValues(service, result).Inc()
 }
 
 // Private
