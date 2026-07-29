@@ -174,6 +174,17 @@ type ServiceOptions struct {
 	Redirects []PathRule `json:"redirects,omitempty"`
 	Rewrites  []PathRule `json:"rewrites,omitempty"`
 
+	// SleepAfter stops this service's containers after this long with no traffic,
+	// starting them again on the next request. Zero (the default) never sleeps.
+	SleepAfter time.Duration `json:"sleep_after,omitempty"`
+	// WakeTimeout bounds how long a request is held while those containers start
+	// and pass a health check. Zero means DefaultWakeTimeout.
+	WakeTimeout time.Duration `json:"wake_timeout,omitempty"`
+	// SleepContainers names the containers to stop and start, replacing what the
+	// proxy infers from the target addresses. Needed when a target names a network
+	// alias rather than a container.
+	SleepContainers []string `json:"sleep_containers,omitempty"`
+
 	// Compression encodes responses on their way back to the client. A zero
 	// value leaves them alone, which is what every state file written before
 	// this option existed restores to.
@@ -188,6 +199,14 @@ func (so *ServiceOptions) Normalize() {
 	so.Hosts = NormalizeHosts(so.Hosts)
 	so.PathPrefixes = NormalizePathPrefixes(so.PathPrefixes)
 	so.Compression.Normalize()
+
+	// The cobra default makes --help honest; this is what gives restored state
+	// files and direct RPC callers the same value.
+	// Only zero defaults. A negative is a typo, and silently turning it into 30s
+	// would hide it -- validateSleep rejects it instead.
+	if so.SleepAfter > 0 && so.WakeTimeout == 0 {
+		so.WakeTimeout = DefaultWakeTimeout
+	}
 }
 
 func (so ServiceOptions) Validate() error {
@@ -265,6 +284,10 @@ func (so ServiceOptions) Validate() error {
 		return err
 	}
 
+	if err := so.validateSleep(); err != nil {
+		return err
+	}
+
 	return so.validateDynamicDomains()
 }
 
@@ -318,6 +341,11 @@ type Service struct {
 	rateLimiter    *rateLimiter
 	redirects      *pathRuleSet
 	rewrites       *pathRuleSet
+
+	lifecycle         ContainerLifecycle
+	idleController    *IdleController
+	restoredIdleState IdleState
+	statePersister    func()
 }
 
 func NewService(name string, options ServiceOptions, targetOptions TargetOptions, sanCertManager *SANCertManager) (*Service, error) {
@@ -353,7 +381,13 @@ func (s *Service) SetSANCertManager(manager *SANCertManager) {
 }
 
 func (s *Service) Dispose() {
-	s.active.Dispose()
+	if s.idleController != nil {
+		s.idleController.Close()
+	}
+
+	if s.active != nil {
+		s.active.Dispose()
+	}
 	if s.rollout != nil {
 		s.rollout.Dispose()
 	}
@@ -380,6 +414,12 @@ func (s *Service) UpdateLoadBalancer(lb *LoadBalancer, slot TargetSlot) *LoadBal
 		replaced = s.active
 		s.active = lb
 	}
+
+	// Refs are derived from the targets, so they are only knowable once a load
+	// balancer is installed -- initialize runs before that on a first deploy. A
+	// redeploy pointing at new containers reaches here too, which is exactly when
+	// the controller needs to be told.
+	s.configureIdleController(s.options)
 
 	return replaced
 }
@@ -418,7 +458,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type marshalledService struct {
-	Name              string             `json:"name"`
+	Name string `json:"name"`
+	// IdleState is written as a name rather than an enum's number: the state file
+	// outlives proxy versions and operators read it. Absent -- every state file
+	// written before scale-to-zero existed -- parses to active, which is also what
+	// SleepAfter == 0 produces, so the feature restores off.
+	IdleState         string             `json:"idle_state,omitempty"`
 	Options           ServiceOptions     `json:"options"`
 	TargetOptions     TargetOptions      `json:"target_options"`
 	ActiveTargets     []string           `json:"active_targets"`
@@ -453,8 +498,14 @@ func (s *Service) MarshalJSON() ([]byte, error) {
 		rolloutReaders = s.rollout.ReadTargets().Specs()
 	}
 
+	idleState := IdleStateActive
+	if s.idleController != nil {
+		idleState = s.idleController.State()
+	}
+
 	return json.Marshal(marshalledService{
 		Name:              s.name,
+		IdleState:         idleState.String(),
 		ActiveTargets:     s.active.WriteTargets().Specs(),
 		ActiveReaders:     s.active.ReadTargets().Specs(),
 		RolloutTargets:    rolloutTargets,
@@ -511,6 +562,11 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 			WithSessionAffinity(ms.Options.SessionAffinityPolicy())
 		s.rollout.MarkAllHealthy()
 	}
+
+	// Recorded, not acted on: the lifecycle is still nil here, so a controller
+	// built now could reach StopContainer on a nil interface. SetContainerLifecycle
+	// is what creates it, after the router has decoded the whole state file.
+	s.restoredIdleState = ParseIdleState(ms.IdleState)
 
 	return s.initialize(ms.Options, ms.TargetOptions)
 }
@@ -584,6 +640,7 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 	s.rewrites = rewrites
 	s.options = options
 	s.targetOptions = targetOptions
+	s.configureIdleController(options)
 	s.certManager = certManager
 	s.clientCAs = clientCAs
 	s.middleware = middleware
@@ -787,6 +844,17 @@ func (s *Service) serviceRequestWithTarget(w http.ResponseWriter, r *http.Reques
 	}
 
 	if s.handlePausedAndStoppedRequests(w, r) {
+		return
+	}
+
+	// After every gate above, so that no blocked, throttled, unauthenticated or
+	// redirected request can spend a container start. Before target selection, so
+	// the request body is still unread when the hold begins.
+	handled, endIdleRequest := s.handleIdleRequest(w, r)
+	if endIdleRequest != nil {
+		defer endIdleRequest()
+	}
+	if handled {
 		return
 	}
 

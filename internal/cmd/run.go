@@ -54,6 +54,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().DurationVar(&globalConfig.ShutdownTimeout, "shutdown-timeout", getEnvDuration("SHUTDOWN_TIMEOUT", server.DefaultShutdownTimeout), "Maximum time to wait for in-flight requests to drain on shutdown")
 
 	// ACME/TLS configuration
+	runCommand.cmd.Flags().StringVar(&globalConfig.DockerSocketPath, "docker-socket", getEnvString("DOCKER_SOCKET", ""), "Path to the container runtime socket, enabling --sleep-after on deploy (default empty, disabled). Reaching this socket is root-equivalent on the host, so it is opt-in")
 	runCommand.cmd.Flags().StringVar(&globalConfig.MinTLS, "min-tls", getEnvString("MIN_TLS", server.DefaultMinTLSVersion), "Lowest TLS version the HTTPS listener will negotiate: 1.2 or 1.3 (TLS 1.0 and 1.1 cannot be enabled; HTTP/3 is always 1.3)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEEmail, "acme-email", getEnvString("ACME_EMAIL", ""), "Email address for ACME account registration (required for automatic TLS)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEDirectory, "acme-directory", getEnvString("ACME_DIRECTORY", server.LetsEncryptProduction), "ACME directory URL")
