@@ -130,8 +130,8 @@ func TestCacheRefusal_ReportsWhyAResponseWasNotStored(t *testing.T) {
 
 			getCached(middleware, "http://example.com/p")
 
-			assert.Equal(t, 1, tracker.cacheRefusalCount("shop", string(tt.expected)),
-				"expected refusal %q", tt.expected)
+			assert.Equal(t, 1, tracker.cacheRefusalCount(t.Name(), string(tt.expected)),
+				"expected refusal %q; recorded: %v", tt.expected, tracker.cacheRefusalsFor(t.Name()))
 		})
 	}
 }
@@ -143,7 +143,7 @@ func TestCacheRefusal_HeadRequest(t *testing.T) {
 	middleware, _ := testCacheHandler(t, CacheOptions{Enabled: true}, cacheableHandler("hello"))
 
 	sendCacheRequest(middleware, httptest.NewRequest(http.MethodHead, "http://example.com/p", nil))
-	assert.Equal(t, 1, tracker.cacheRefusalCount("shop", string(cacheRefusalHeadRequest)))
+	assert.Equal(t, 1, tracker.cacheRefusalCount(t.Name(), string(cacheRefusalHeadRequest)))
 
 	tracker = installFakeTracker(t)
 	middleware, _ = testCacheHandler(t, CacheOptions{Enabled: true}, func(w http.ResponseWriter, r *http.Request) {
@@ -151,8 +151,8 @@ func TestCacheRefusal_HeadRequest(t *testing.T) {
 	})
 
 	sendCacheRequest(middleware, httptest.NewRequest(http.MethodHead, "http://example.com/p", nil))
-	assert.Equal(t, 1, tracker.cacheRefusalCount("shop", string(cacheRefusalNotPublic)))
-	assert.Equal(t, 0, tracker.cacheRefusalCount("shop", string(cacheRefusalHeadRequest)))
+	assert.Equal(t, 1, tracker.cacheRefusalCount(t.Name(), string(cacheRefusalNotPublic)))
+	assert.Equal(t, 0, tracker.cacheRefusalCount(t.Name(), string(cacheRefusalHeadRequest)))
 }
 
 // A response that stores cleanly refuses nothing.
@@ -166,7 +166,7 @@ func TestCacheRefusal_NothingRecordedForAStorableResponse(t *testing.T) {
 		cacheRefusalNotPublic, cacheRefusalNoLifetime, cacheRefusalStatus,
 		cacheRefusalVary, cacheRefusalTooLarge, cacheRefusalHeadRequest,
 	} {
-		assert.Equal(t, 0, tracker.cacheRefusalCount("shop", string(reason)), "reason %q", reason)
+		assert.Equal(t, 0, tracker.cacheRefusalCount(t.Name(), string(reason)), "reason %q", reason)
 	}
 }
 

@@ -9,8 +9,9 @@ import "net/http"
 // SetCacheStore installs the shared response cache. It arrives after the service
 // does -- services restored from the state file are built before the store is
 // opened -- so the cache entry point is rebuilt rather than assumed.
-func (s *Service) SetCacheStore(store CacheStore) {
+func (s *Service) SetCacheStore(store CacheStore, leases CacheLeaseOptions) {
 	s.cacheStore = store
+	s.cacheLeases = leases
 	s.cacheHandler = s.createCacheHandler(s.options)
 }
 
@@ -52,6 +53,7 @@ func (s *Service) createCacheHandler(options ServiceOptions) http.Handler {
 		Options: options.Cache,
 		Store:   s.cacheStore,
 		Variant: s.cacheVariant,
+		Leases:  s.cacheLeases,
 	}, toTarget)
 }
 

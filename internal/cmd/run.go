@@ -50,6 +50,8 @@ func newRunCommand() *runCommand {
 	// only decides where the entries live.
 	runCommand.cmd.Flags().StringVar(&globalConfig.CacheStore, "cache-store", getEnvString("CACHE_STORE", server.CacheStoreMemory), "Where responses cached by services deployed with --cache are kept: memory for a per-node cache, or a redis://host:port/db (or rediss://) URL every proxy pointed at it shares, so one fetch warms the whole fleet")
 	runCommand.cmd.Flags().DurationVar(&globalConfig.CacheStoreTimeout, "cache-store-timeout", getEnvDuration("CACHE_STORE_TIMEOUT", 0), fmt.Sprintf("Maximum time a shared --cache-store may take to answer before the request goes to the target instead (default %s). A store that is slow or down costs a cache, never a failed request", server.DefaultCacheStoreTimeout))
+	runCommand.cmd.Flags().DurationVar(&globalConfig.CacheLeaseTTL, "cache-lease-ttl", getEnvDuration("CACHE_LEASE_TTL", 0), fmt.Sprintf("With a shared --cache-store, how long one proxy's claim on a key outlives the proxy itself (default %s; negative to disable cross-node coalescing). It only matters when a node dies mid-fetch, and then the cost is one duplicate fetch", server.DefaultCacheLeaseTTL))
+	runCommand.cmd.Flags().DurationVar(&globalConfig.CacheLeaseWait, "cache-lease-wait", getEnvDuration("CACHE_LEASE_WAIT", 0), fmt.Sprintf("How long a request waits for another proxy's in-flight fetch before going to the target itself (default %s; negative to never wait, which still coalesces background refreshes). Set it below your origin's usual response time", server.DefaultCacheLeaseWait))
 	runCommand.cmd.Flags().Int64Var(&globalConfig.CacheMemorySize, "cache-memory-size", int64(getEnvInt("CACHE_MEMORY_SIZE", 0)), fmt.Sprintf("Bytes the in-process --cache-store may hold before evicting least recently used entries (default %d)", server.DefaultCacheMemorySize))
 
 	// Listener connection timeouts
@@ -133,7 +135,7 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	}
 	defer cacheStore.Close()
 
-	router.SetCacheStore(cacheStore)
+	router.SetCacheStore(cacheStore, globalConfig.ResponseCacheLeaseOptions())
 
 	// Only when the operator asked for it: reaching this socket is
 	// root-equivalent on the host, so an unconfigured proxy holds no such handle

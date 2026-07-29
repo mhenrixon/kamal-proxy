@@ -56,7 +56,7 @@ func TestCacheMetrics_OneClientResultPerRequest(t *testing.T) {
 			tt.exercise(t, middleware)
 
 			for _, result := range []string{cacheResultHit, cacheResultMiss, cacheResultStale, cacheResultCoalesced, cacheResultStore, cacheResultError, cacheResultRevalidated} {
-				assert.Equal(t, tt.expected[result], tracker.cacheEventCount("shop", result), "result %q", result)
+				assert.Equal(t, tt.expected[result], tracker.cacheEventCount(t.Name(), result), "result %q", result)
 			}
 		})
 	}
@@ -88,26 +88,26 @@ func TestCacheMetrics_RevalidationIsNotCountedAsAMiss(t *testing.T) {
 	// recorded when the fetch starts, the store when the entry has actually
 	// been replaced.
 	require.Eventually(t, func() bool {
-		return tracker.cacheEventCount("shop", cacheResultStore) == 2
+		return tracker.cacheEventCount(t.Name(), cacheResultStore) == 2
 	}, 2*time.Second, 10*time.Millisecond)
-	assert.Equal(t, 1, tracker.cacheEventCount("shop", cacheResultRevalidated))
+	assert.Equal(t, 1, tracker.cacheEventCount(t.Name(), cacheResultRevalidated))
 
 	// Once it lands the entry is fresh again, so the rest are plain hits.
 	for range 2 {
 		require.Equal(t, cacheStatusHit, getCached(middleware, "http://example.com/p").Header().Get("X-Cache"))
 	}
 
-	assert.Equal(t, 1, tracker.cacheEventCount("shop", cacheResultMiss), "only the cold request counts as a client miss")
-	assert.Equal(t, 1, tracker.cacheEventCount("shop", cacheResultStale))
-	assert.Equal(t, 2, tracker.cacheEventCount("shop", cacheResultHit))
+	assert.Equal(t, 1, tracker.cacheEventCount(t.Name(), cacheResultMiss), "only the cold request counts as a client miss")
+	assert.Equal(t, 1, tracker.cacheEventCount(t.Name(), cacheResultStale))
+	assert.Equal(t, 2, tracker.cacheEventCount(t.Name(), cacheResultHit))
 	assert.Equal(t, int64(2), origin.Load())
 
 	// Four client requests in, four client-facing results out -- which is what
 	// makes hit/(hit+miss+stale+coalesced) a hit rate.
-	clientResults := tracker.cacheEventCount("shop", cacheResultHit) +
-		tracker.cacheEventCount("shop", cacheResultMiss) +
-		tracker.cacheEventCount("shop", cacheResultStale) +
-		tracker.cacheEventCount("shop", cacheResultCoalesced)
+	clientResults := tracker.cacheEventCount(t.Name(), cacheResultHit) +
+		tracker.cacheEventCount(t.Name(), cacheResultMiss) +
+		tracker.cacheEventCount(t.Name(), cacheResultStale) +
+		tracker.cacheEventCount(t.Name(), cacheResultCoalesced)
 	assert.Equal(t, 4, clientResults)
 }
 
@@ -135,9 +135,9 @@ func TestCacheMetrics_CoalescedRequestsAreCountedApartFromHits(t *testing.T) {
 	close(release)
 	wg.Wait()
 
-	assert.Equal(t, 1, tracker.cacheEventCount("shop", cacheResultMiss))
-	assert.Equal(t, 9, tracker.cacheEventCount("shop", cacheResultCoalesced))
-	assert.Equal(t, 0, tracker.cacheEventCount("shop", cacheResultHit))
+	assert.Equal(t, 1, tracker.cacheEventCount(t.Name(), cacheResultMiss))
+	assert.Equal(t, 9, tracker.cacheEventCount(t.Name(), cacheResultCoalesced))
+	assert.Equal(t, 0, tracker.cacheEventCount(t.Name(), cacheResultHit))
 }
 
 // A store that refuses the write still serves the client, and says so.
@@ -145,7 +145,7 @@ func TestCacheMetrics_StoreFailureIsCountedAsAnError(t *testing.T) {
 	tracker := installFakeTracker(t)
 
 	middleware := WithCacheMiddleware(CacheConfig{
-		Service: "shop",
+		Service: t.Name(),
 		Options: CacheOptions{Enabled: true},
 		Store:   failingCacheStore{},
 	}, cacheableHandler("hello"))
@@ -153,9 +153,9 @@ func TestCacheMetrics_StoreFailureIsCountedAsAnError(t *testing.T) {
 	response := getCached(middleware, "http://example.com/p")
 	assert.Equal(t, "hello", response.Body.String())
 
-	assert.Equal(t, 1, tracker.cacheEventCount("shop", cacheResultMiss))
-	assert.Equal(t, 1, tracker.cacheEventCount("shop", cacheResultError))
-	assert.Equal(t, 0, tracker.cacheEventCount("shop", cacheResultStore))
+	assert.Equal(t, 1, tracker.cacheEventCount(t.Name(), cacheResultMiss))
+	assert.Equal(t, 1, tracker.cacheEventCount(t.Name(), cacheResultError))
+	assert.Equal(t, 0, tracker.cacheEventCount(t.Name(), cacheResultStore))
 }
 
 // failingCacheStore accepts lookups and refuses writes, which is how an

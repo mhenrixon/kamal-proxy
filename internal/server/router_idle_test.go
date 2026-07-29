@@ -206,7 +206,7 @@ func TestService_CacheHitDoesNotWakeASleepingService(t *testing.T) {
 	_, target := testBackendWithHandler(t, countingHandler(&reached, publicHandler("cached")))
 
 	router := testIdleRouter(t, lifecycle)
-	router.SetCacheStore(testMemoryStore(t))
+	router.SetCacheStore(testMemoryStore(t), CacheLeaseOptions{})
 	require.NoError(t, router.DeployService("sleepy", []string{target}, defaultEmptyReaders,
 		options, defaultTargetOptions, defaultDeploymentOptions))
 
@@ -240,7 +240,7 @@ func TestService_CacheMissWakesASleepingService(t *testing.T) {
 	_, target := testBackendWithHandler(t, countingHandler(&reached, publicHandler("fresh")))
 
 	router := testIdleRouter(t, lifecycle)
-	router.SetCacheStore(testMemoryStore(t))
+	router.SetCacheStore(testMemoryStore(t), CacheLeaseOptions{})
 	require.NoError(t, router.DeployService("sleepy", []string{target}, defaultEmptyReaders,
 		options, defaultTargetOptions, defaultDeploymentOptions))
 

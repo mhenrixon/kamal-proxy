@@ -356,6 +356,7 @@ type Service struct {
 	// with every other proxy in the fleet. cacheHandler is this service's own
 	// entry into it, sitting between the checks above and the load balancer.
 	cacheStore   CacheStore
+	cacheLeases  CacheLeaseOptions
 	cacheHandler http.Handler
 
 	lifecycle         ContainerLifecycle
