@@ -143,25 +143,23 @@ func (c Config) DynamicDomainsStatePath() string {
 	return path.Join(c.dataDirectory(), "dynamic-domains.state")
 }
 
-func (c Config) CertificateStatePath() string {
-	return path.Join(c.dataDirectory(), "certificates.state")
-}
-
-// CertificateRegistryConfig returns the configuration for the certificate registry
-func (c Config) CertificateRegistryConfig() CertificateRegistryConfig {
+// SANCertManagerConfig returns the configuration for the certificate manager,
+// which is the proxy's only ACME system: one account, one cache, one allowlist,
+// both challenge types.
+func (c Config) SANCertManagerConfig() SANCertManagerConfig {
 	directory := c.ACMEDirectory
 	if directory == "" {
 		directory = acme.DefaultProductionDirectory
 	}
 
-	return CertificateRegistryConfig{
+	return SANCertManagerConfig{
 		Email:          c.ACMEEmail,
 		Directory:      directory,
 		DNSProvider:    c.ACMEDNSProvider,
 		PreferWildcard: c.ACMEPreferWildcard,
 		HTTPFallback:   c.ACMEHTTPFallback,
 		CachePath:      c.CertificatePath(),
-		StatePath:      c.CertificateStatePath(),
+		StatePath:      c.ACMEStatePath(),
 	}
 }
 
@@ -175,11 +173,6 @@ func (c Config) ResponseCacheStoreConfig() CacheStoreConfig {
 		MemorySize: c.CacheMemorySize,
 		Timeout:    c.CacheStoreTimeout,
 	}
-}
-
-// HasACMEConfig returns true if ACME is configured
-func (c Config) HasACMEConfig() bool {
-	return c.ACMEEmail != "" && (c.ACMEDNSProvider != "" || c.ACMEHTTPFallback)
 }
 
 // Private

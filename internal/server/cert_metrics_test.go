@@ -1,16 +1,17 @@
 package server
 
 import (
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/basecamp/kamal-proxy/internal/metrics"
+	"github.com/go-acme/lego/v4/certificate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/basecamp/kamal-proxy/internal/metrics"
 )
 
 // fakeTracker captures certificate metric emissions so tests can assert that
@@ -253,39 +254,20 @@ func installFakeTracker(t *testing.T) *fakeTracker {
 	return fake
 }
 
-func metricsTestRegistry(t *testing.T) *CertificateRegistry {
-	t.Helper()
-	tmpDir := t.TempDir()
-	registry, err := NewCertificateRegistry(CertificateRegistryConfig{
-		CachePath: filepath.Join(tmpDir, "certs"),
-		StatePath: filepath.Join(tmpDir, "certificates.state"),
-	})
-	require.NoError(t, err)
-	registry.ready = true
-	return registry
-}
-
-func TestCertificateRegistry_ReportCertificateMetrics(t *testing.T) {
+// The certificate gauges used to be published by the deleted registry, which
+// tracked its own wildcard/HTTP-01 split. The surviving renewer is now the only
+// reporter, so these pin that the same gauges still move.
+func TestCertRenewer_ReportsCertificateGauges(t *testing.T) {
 	fake := installFakeTracker(t)
-	registry := metricsTestRegistry(t)
+	manager := testSANCertManager(t)
 
-	expiry := time.Now().Add(60 * 24 * time.Hour)
-	registry.certificates["wildcard:example.com"] = &ManagedCertificate{
-		Identifier: "wildcard:example.com",
-		Domains:    []string{"*.example.com"},
-		IsWildcard: true,
-		NotAfter:   expiry,
-		Services:   map[string]bool{},
-	}
-	registry.certificates["http01:app.other.com"] = &ManagedCertificate{
-		Identifier: "http01:app.other.com",
-		Domains:    []string{"app.other.com"},
-		IsWildcard: false,
-		NotAfter:   expiry,
-		Services:   map[string]bool{},
-	}
+	notBefore, notAfter := time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour)
+	manager.SetDynamicDomains("service1", []string{"app.example.com", "b.example.com", "app.other.com"})
+	adoptTestCert(t, manager, []string{"*.example.com"}, notBefore, notAfter)
+	adoptTestCert(t, manager, []string{"app.other.com"}, notBefore, notAfter)
 
-	registry.reportCertificateMetrics()
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: successfulObtainer(t)})
+	renewer.reconcile()
 
 	count, ok := fake.lastCount()
 	require.True(t, ok, "expected a certificate count sample")
@@ -293,76 +275,61 @@ func TestCertificateRegistry_ReportCertificateMetrics(t *testing.T) {
 	assert.Equal(t, 1, count.wildcard)
 	assert.Equal(t, 1, count.http01)
 
-	assert.Equal(t, expiry.Unix(), fake.expiry["*.example.com"].Unix())
+	assert.Equal(t, notAfter.Unix(), fake.expiry["*.example.com"].Unix())
 	assert.True(t, fake.wildcard["*.example.com"])
-	assert.Equal(t, expiry.Unix(), fake.expiry["app.other.com"].Unix())
+	assert.Equal(t, notAfter.Unix(), fake.expiry["app.other.com"].Unix())
 	assert.False(t, fake.wildcard["app.other.com"])
 }
 
-func TestCertificateRenewalManager_EmitsRenewalSuccess(t *testing.T) {
+func TestCertRenewer_EmitsRenewalSuccess(t *testing.T) {
 	fake := installFakeTracker(t)
-	registry := metricsTestRegistry(t)
+	manager := testSANCertManager(t)
 
-	// A cert inside the renewal threshold with a renewFn that succeeds.
-	registry.certificates["dns:example.com"] = &ManagedCertificate{
-		Identifier: "dns:example.com",
-		Domains:    []string{"a.example.com", "b.example.com"},
-		NotAfter:   time.Now().Add(time.Hour),
-		Services:   map[string]bool{},
-	}
+	manager.SetDynamicDomains("service1", []string{"a.example.com", "b.example.com"})
+	adoptTestCert(t, manager, []string{"a.example.com", "b.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
 
-	manager := NewCertificateRenewalManager(registry)
-	manager.renewFn = func(c *ManagedCertificate) error { return nil }
-
-	manager.checkAndRenew()
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: successfulObtainer(t)})
+	renewer.reconcile()
 
 	assert.Equal(t, 1, fake.renewalCount("a.example.com", true))
 	assert.Equal(t, 1, fake.renewalCount("b.example.com", true))
 	assert.Equal(t, 0, fake.renewalCount("a.example.com", false))
 
-	// The count gauge is refreshed on every check pass.
 	count, ok := fake.lastCount()
-	require.True(t, ok, "checkAndRenew should refresh the certificate count")
+	require.True(t, ok, "a reconcile pass should refresh the certificate count")
 	assert.Equal(t, 1, count.total)
 }
 
-func TestCertificateRenewalManager_EmitsRenewalFailure(t *testing.T) {
+func TestCertRenewer_EmitsRenewalFailure(t *testing.T) {
 	fake := installFakeTracker(t)
-	registry := metricsTestRegistry(t)
+	manager := testSANCertManager(t)
 
-	registry.certificates["dns:example.com"] = &ManagedCertificate{
-		Identifier: "dns:example.com",
-		Domains:    []string{"a.example.com", "b.example.com"},
-		NotAfter:   time.Now().Add(time.Hour),
-		Services:   map[string]bool{},
-	}
+	manager.SetDynamicDomains("service1", []string{"a.example.com", "b.example.com"})
+	adoptTestCert(t, manager, []string{"a.example.com", "b.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
 
-	manager := NewCertificateRenewalManager(registry)
-	manager.renewFn = func(c *ManagedCertificate) error { return assert.AnError }
-
-	manager.checkAndRenew()
+	failing := &fakeObtainer{respond: func(certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, assert.AnError
+	}}
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: failing})
+	renewer.reconcile()
 
 	assert.Equal(t, 1, fake.renewalCount("a.example.com", false))
 	assert.Equal(t, 1, fake.renewalCount("b.example.com", false))
 	assert.Equal(t, 0, fake.renewalCount("a.example.com", true))
 }
 
-func TestCertificateRenewalManager_SkipsRenewalMetricsForFreshCerts(t *testing.T) {
+func TestCertRenewer_SkipsRenewalMetricsForFreshCerts(t *testing.T) {
 	fake := installFakeTracker(t)
-	registry := metricsTestRegistry(t)
+	manager := testSANCertManager(t)
 
-	// A cert well outside the threshold: no renewal, so no renewal metric.
-	registry.certificates["dns:example.com"] = &ManagedCertificate{
-		Identifier: "dns:example.com",
-		Domains:    []string{"a.example.com"},
-		NotAfter:   time.Now().Add(60 * 24 * time.Hour),
-		Services:   map[string]bool{},
-	}
+	manager.SetDynamicDomains("service1", []string{"a.example.com"})
+	adoptTestCert(t, manager, []string{"a.example.com"},
+		time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour))
 
-	manager := NewCertificateRenewalManager(registry)
-	manager.renewFn = func(c *ManagedCertificate) error { return nil }
-
-	manager.checkAndRenew()
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: successfulObtainer(t)})
+	renewer.reconcile()
 
 	assert.Equal(t, 0, fake.renewalCount("a.example.com", true))
 	assert.Equal(t, 0, fake.renewalCount("a.example.com", false))

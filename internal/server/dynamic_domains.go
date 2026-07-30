@@ -470,12 +470,11 @@ type managerObtainer struct {
 	manager *SANCertManager
 }
 
+// Obtain routes through the manager's issuance strategy, so dynamic domains get
+// DNS-01 when a provider is configured -- and the same allowlist and rate limit
+// either way.
 func (o managerObtainer) Obtain(request certificate.ObtainRequest) (*certificate.Resource, error) {
-	obtainer := o.manager.acmeCertifier()
-	if obtainer == nil {
-		return nil, ErrManagerNotReady
-	}
-	return obtainer.Obtain(request)
+	return o.manager.obtainCertificate(request)
 }
 
 func (o managerObtainer) GetRenewalInfo(request certificate.RenewalInfoRequest) (*certificate.RenewalInfoResponse, error) {

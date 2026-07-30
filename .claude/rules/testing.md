@@ -15,7 +15,7 @@ Follow RED -> GREEN -> REFACTOR:
   - Router (`internal/server/router.go`) — service dispatch, host matching
   - LoadBalancer (`internal/server/load_balancer.go`) — target selection, reader/writer affinity
   - SANCertManager (`internal/server/san_cert_manager.go`) — fork-only, no upstream safety net
-  - Wildcard cert registry (`internal/server/cert_registry.go`, `internal/server/acme/`) — fork-only, DNS-01 provider dispatch
+  - Certificate issuance strategy (`internal/server/san_cert_issuance.go`, `internal/server/acme/`) — fork-only; the allowlist and rate limit here are what stop unbounded SNI-driven issuance
   - RPC commands (`internal/server/commands.go`) — the `kamal-proxy` RPC name is load-bearing; a broken command breaks every client call site
 
 ## Test Type Preference

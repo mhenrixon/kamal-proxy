@@ -250,3 +250,64 @@ func TestValidateTLSOnDemandURL(t *testing.T) {
 	assert.ErrorContains(t, validateTLSOnDemandURL("http://"), "missing host")
 	assert.ErrorContains(t, validateTLSOnDemandURL("//example.com/check"), "must be a path or an absolute http(s) URL")
 }
+
+// The gem documents the endpoint contract as "answer 2xx to approve". The code
+// used to accept exactly 200, so a backend answering 204 -- a natural way to
+// approve with no body -- silently lost TLS for every host it governs.
+func TestTLSOnDemandChecker_ExternalHostPolicy_ApprovesAnySuccessStatus(t *testing.T) {
+	tests := []struct {
+		status  int
+		approve bool
+	}{
+		{http.StatusOK, true},
+		{http.StatusCreated, true},
+		{http.StatusAccepted, true},
+		{http.StatusNoContent, true},
+		{299, true},
+		{http.StatusMultipleChoices, false},
+		{http.StatusFound, false},
+		{http.StatusForbidden, false},
+		{http.StatusInternalServerError, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(http.StatusText(tt.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+			}))
+			defer server.Close()
+
+			policy := testHostPolicy(t, &Service{}, server.URL)
+
+			err := policy(context.Background(), "host.example.com")
+			if tt.approve {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+}
+
+func TestTLSOnDemandChecker_LocalHostPolicy_ApprovesAnySuccessStatus(t *testing.T) {
+	for _, status := range []int{http.StatusAccepted, http.StatusNoContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			service := testCreateServiceWithHandler(
+				t,
+				ServiceOptions{TLSOnDemandURL: "/allow-host"},
+				defaultTargetOptions,
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/up" {
+						w.WriteHeader(http.StatusOK)
+						return
+					}
+					w.WriteHeader(status)
+				}),
+			)
+
+			policy := testHostPolicy(t, service, service.options.TLSOnDemandURL)
+
+			assert.NoError(t, policy(context.Background(), "host.example.com"))
+		})
+	}
+}

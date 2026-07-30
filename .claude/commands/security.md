@@ -12,7 +12,7 @@ You are the **security review and vulnerability audit specialist** for the dash 
 ## Trigger Contexts
 
 Use this command when:
-- Auditing TLS/cert handling in `san_cert_manager.go`, `cert_registry.go`, `acme/`, `registry_cert_manager.go`
+- Auditing TLS/cert handling in `san_cert_manager.go`, `san_cert_issuance.go`, `san_cert_dynamic.go`, `acme/`
 - Reviewing request parsing, buffering limits, or header forwarding in `internal/server/*_middleware.go`, `target.go`
 - Checking the unix-socket RPC surface (`commands.go`) for unauthenticated/unvalidated command paths
 - Reviewing `error_page_middleware.go` for template/path handling
@@ -24,22 +24,21 @@ Use this command when:
 ### TLS / Certificate Handling
 
 ```go
-// san_cert_manager.go and cert_registry.go both implement CertManager —
-// GetCertificate is called on every TLS handshake (tls.Config.GetCertificate)
-func (m *RegistryCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	return m.registry.GetCertificate(hello)
-}
+// SANCertManager is the proxy's only cert system. GetCertificate runs on every
+// TLS handshake, and the allowlist check inside it is what stops attacker-chosen
+// SNI from driving ACME orders (issue #84).
+func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error)
 ```
 
 - `hello.ServerName` (SNI) is attacker-controlled — never use it to build filesystem paths without sanitizing; cert cache lookups must be by validated/registered domain, not raw SNI
 - `MaxSANsPerCertificate = 100` (san_cert_manager.go) mirrors Let's Encrypt's limit — don't let batching logic exceed it or provisioning silently fails
-- ACME account keys and cert private keys live under `CertificatePath()`/`ACMEStatePath()`/`CertificateStatePath()` (`config.go`, under `~/.config/kamal-proxy` by default) — verify file perms are not world-readable when touched
+- ACME account keys and cert private keys live under `CertificatePath()`/`ACMEStatePath()` (`config.go`, under `~/.config/kamal-proxy` by default) — verify file perms are not world-readable when touched
 - `acme/providers/` (DNS-01) takes provider credentials via env/flags — never log them; check `slog.*` calls near provider init for accidental credential echoing
-- Two cert managers overlap by design (`dash` branch) — a domain registered in both must not desync trust (one revoked/expired while the other still serves it)
+- There is exactly ONE cert system and ONE ACME account (`acme_user.json`). A second one is a regression, not a feature: the two that used to coexist shared a cache directory and only one of them had an allowlist. Any new issuance path must go through `SANCertManager.obtainCertificate`, behind `DomainAllowed` and the shared token bucket
 
 ### ACME / HTTP-01 / DNS-01 Flow
 
-- `HTTPHandler` (registry_cert_manager.go) answers unauthenticated HTTP-01 challenge requests on port 80 — confirm it only responds to `/.well-known/acme-challenge/*` and does not become an open redirect or reflect attacker input
+- `HTTPHandler` (san_cert_manager.go) answers unauthenticated HTTP-01 challenge requests on port 80 — confirm it only responds to `/.well-known/acme-challenge/*`, only for the domain the challenge was presented for, and does not become an open redirect or reflect attacker input
 - DNS-01 (`acme/solver.go`) mutates DNS records via provider APIs — validate the target domain is one this proxy actually owns/registered before requesting a challenge, to avoid confused-deputy issuance
 - Directory URL (`ACMEDirectory`) is operator-supplied — a malicious/typo'd directory could leak the account email or attempt registration against an untrusted ACME server; no code change needed but flag if it becomes user input from an untrusted source
 

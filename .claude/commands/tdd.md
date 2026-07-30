@@ -1,7 +1,7 @@
 ---
 description: "Use when implementing any feature or fixing any bug -- enforces RED-GREEN-REFACTOR: write failing test first, implement minimum code to pass, then refactor."
 model: sonnet
-argument-hint: "[package or file, e.g. internal/server/cert_registry]"
+argument-hint: "[package or file, e.g. internal/server/san_cert_manager]"
 allowed-tools: Read, Edit, Write, Bash(go test:*), Bash(make test:*), Bash(make build:*), Bash(gofmt:*)
 ---
 
@@ -35,7 +35,7 @@ REPEAT:   Next scenario
 Go — table-driven test with `testify`, colocated as `<file>_test.go` in the same package:
 
 ```go
-// internal/server/cert_registry_test.go
+// internal/server/san_cert_manager_test.go
 package server
 
 import (
@@ -46,19 +46,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCertificateRegistry_RegisterDomain_NotReady(t *testing.T) {
+func TestSANCertManager_RegisterDomain_NotReady(t *testing.T) {
 	tmpDir := t.TempDir()
-	config := CertificateRegistryConfig{
+	config := SANCertManagerConfig{
 		Email:     "test@example.com",
 		CachePath: filepath.Join(tmpDir, "certs"),
-		StatePath: filepath.Join(tmpDir, "certificates.state"),
+		StatePath: filepath.Join(tmpDir, "acme.state"),
 	}
 
-	registry, err := NewCertificateRegistry(config)
+	manager, err := NewSANCertManager(config)
 	require.NoError(t, err)
 
-	err = registry.RegisterDomain("app.example.com", "service1")
-	assert.ErrorIs(t, err, ErrRegistryNotReady)
+	err = manager.RegisterDomain("app.example.com", "service1")
+	assert.ErrorIs(t, err, ErrManagerNotReady)
 }
 ```
 
@@ -79,14 +79,14 @@ end
 
 ```bash
 # Go — this repo
-go test ./internal/server/... -run TestCertificateRegistry_RegisterDomain_NotReady -v
+go test ./internal/server/... -run TestSANCertManager_RegisterDomain_NotReady -v
 
 # Ruby — ../kamal
 cd ../kamal && bin/test test/commands/dash_test.rb
 ```
 
 ```text
-FAIL - undefined: ErrRegistryNotReady / NoMethodError
+FAIL - undefined: ErrManagerNotReady / NoMethodError
 ```
 
 **Tests MUST fail before implementing.** This confirms:
@@ -101,7 +101,7 @@ Write the minimum code to make the test pass. No speculative branches, no unrequ
 ### Step 4: Run Tests — Verify PASS
 
 ```bash
-go test ./internal/server/... -run TestCertificateRegistry_RegisterDomain_NotReady -v
+go test ./internal/server/... -run TestSANCertManager_RegisterDomain_NotReady -v
 # PASS
 ```
 
@@ -111,7 +111,7 @@ Keep tests green while you:
 - Extract functions to cut complexity
 - Improve naming
 - Remove duplication
-- Check concurrency safety — `internal/server` is accessed from RPC handlers and health-check goroutines concurrently; guard shared state (see `sync.Mutex` usage in `load_balancer.go`, `cert_registry.go`)
+- Check concurrency safety — `internal/server` is accessed from RPC handlers and health-check goroutines concurrently; guard shared state (see `sync.Mutex` usage in `load_balancer.go`, `san_cert_manager.go`)
 
 ### Step 6: Run Full Suite + Format Gate
 
@@ -129,7 +129,7 @@ No coverage tool is wired into CI (`ci.yml` runs build + test + golangci-lint + 
 | Code Type | Minimum Coverage |
 |-----------|------------------|
 | All code | 80% |
-| `internal/server/cert_registry.go`, `san_cert_manager.go` (cert issuance) | 100% |
+| `internal/server/san_cert_manager.go`, `san_cert_issuance.go` (cert issuance) | 100% |
 | `internal/server/router.go`, `load_balancer.go` | 100% |
 | `internal/cmd/*` (RPC client commands) | 100% |
 | Gem `lib/kamal/commands/dash.rb` (proxy image gating) | 100% |
@@ -156,7 +156,7 @@ No coverage tool is wired into CI (`ci.yml` runs build + test + golangci-lint + 
 - Run tests and verify they FAIL before implementing
 - Write MINIMAL code to make tests pass
 - Refactor only after tests are green
-- Use `httptest.NewServer` / `t.TempDir()` to avoid real network and filesystem state (see `health_check_test.go`, `cert_registry_test.go`)
+- Use `httptest.NewServer` / `t.TempDir()` to avoid real network and filesystem state (see `health_check_test.go`, `san_cert_manager_test.go`)
 - Test against `acme.DefaultStagingDirectory`, never real Let's Encrypt, in cert tests
 - Table-drive scenarios with `t.Run(name, func(t *testing.T) {...})` subtests
 

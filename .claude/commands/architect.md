@@ -68,7 +68,7 @@ Reference: `CLAUDE.md` "Architecture" section for the one-line version; `ROADMAP
 | New CLI flag | RPC arg struct in `commands.go` + gem-side flag mapping in `../kamal` |
 | `LoadBalancer` changes | `health_check.go`, `rollout_controller.go` (both read target state) |
 | New middleware | Ordering in `service.go:458 createMiddleware`, and the SSE/WebSocket bypass in `response_buffer_middleware.go:86` |
-| TLS/cert work | Both `san_cert_manager.go` (SAN batching) and `cert_registry.go` (wildcard DNS-01) — dash merged both, check which owns the surface |
+| TLS/cert work | `san_cert_manager.go` owns the whole surface — one ACME account, one allowlist, one rate limit; HTTP-01 and DNS-01 are strategies inside `san_cert_issuance.go` |
 | Metrics | `internal/metrics/metrics.go` — wire the setter, don't just define it (see ROADMAP R1) |
 | Anything upstream also touches | `.claude/rules/upstream-sync.md` conflict table — plan merge order, not just feature order |
 

@@ -7,7 +7,7 @@
 - High cohesion, low coupling
 - 200-400 lines typical
 - 800 lines maximum per file (`san_cert_manager.go` at 688 and `router_test.go` at 790 are already near the ceiling — split before adding, don't grow them)
-- Extract complex logic to a dedicated file in the same package (see `cert_registry.go` vs `cert_renewal.go` vs `registry_cert_manager.go` — one concern each)
+- Extract complex logic to a dedicated file in the same package (see `san_cert_manager.go` vs `san_cert_issuance.go` vs `san_cert_dynamic.go` vs `san_cert_import.go` — one concern each)
 - Organize by concern: `internal/server` (router, service, load balancer, cert managers), `internal/cmd` (one file per cobra subcommand), `internal/server/acme` (provider/solver, isolated from the rest of the server package)
 
 ## Go Style

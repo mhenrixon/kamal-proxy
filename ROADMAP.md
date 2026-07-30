@@ -6,7 +6,7 @@ Proxy-side roadmap for the dash fork. The cross-repo release sequencing, strateg
 
 | Item | Anchor |
 |---|---|
-| **Start `CertificateRenewalManager`** — defined but never started in `internal/cmd/run.go`; wildcard/registry certs currently renew only lazily during TLS handshakes within 24h of expiry | `internal/server/cert_renewal.go:14` (12h check / 30-day threshold), wire `.Start()` after `registry.Initialize` |
+| ~~**Start `CertificateRenewalManager`**~~ — DONE (#84). The registry stack was deleted rather than started; background renewal now runs in `certRenewer`, started by `DynamicDomainManager.Start()` and covering every managed certificate | `internal/server/domain_renewal.go` |
 | **Wire the 3 certificate Prometheus metrics** — expiry gauge, renewals counter, totals gauge have setters but no callers | `internal/metrics/metrics.go:81-101` → call from cert managers |
 | **Slowloris / server-timeout defaults** — no `ReadHeaderTimeout`/`ReadTimeout`/`WriteTimeout`/`IdleTimeout` on any listener (all Go zero = unlimited) | discussion basecamp/kamal-proxy#196; `internal/server/server.go:141,150,192`; make configurable via `run` flags, ship safe defaults |
 
@@ -34,7 +34,7 @@ Proxy-side roadmap for the dash fork. The cross-repo release sequencing, strateg
 
 | Item | Evidence | Anchor |
 |---|---|---|
-| **On-demand TLS with `ask` endpoint** | port PR #63 — 18mo open, prod-tested (LocomotiveCMS); discussions #141/#221 | integrate with dash's `CertificateRegistry` (`internal/server/cert_registry.go`) rather than the PR's standalone path; per-handshake gate in `router.go:293 GetCertificate` |
+| ~~**On-demand TLS with `ask` endpoint**~~ | DONE (PR #50) | `internal/server/tls_on_demand.go`; per-handshake gate in `Router.GetCertificate`, which asks the on-demand endpoint before any shared manager sees the name |
 | Min-TLS version / ciphers (no `MinVersion` today → TLS 1.2 default) | port PR #199 | `server.go:158` TLS config; `run` flag |
 | Cert observability — dashboards/alerts on the R1-wired metrics | — | `internal/metrics` |
 

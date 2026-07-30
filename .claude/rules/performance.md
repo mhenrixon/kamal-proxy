@@ -24,7 +24,7 @@ Any change to a **hot path** must come with a `make bench` before/after:
 | Request routing | `internal/server/router.go` | `Router.ServeHTTP`, `serviceForRequest` |
 | Proxy forwarding | `internal/server/target.go` | `Target.ServeHTTP`, `NewTarget`/`NewReadOnlyTarget` |
 | Target selection | `internal/server/load_balancer.go` | `LoadBalancer`, `NewTargetList` |
-| TLS cert lookup | `internal/server/cert_registry.go` | `CertificateRegistry.GetCertificate` (called from `tls.Config.GetCertificate` on every handshake) |
+| TLS cert lookup | `internal/server/san_cert_manager.go` | `SANCertManager.GetCertificate` (called from `Router.GetCertificate` on every handshake) |
 | SAN cert lookup | `internal/server/san_cert_manager.go` | equivalent `GetCertificate` path for the batching manager |
 
 A pure docs/test/refactor change with no hot-path edit does not need a bench.
@@ -57,13 +57,13 @@ no existing `Benchmark*` function nearby, add one in the same package
    request; three clear lines beat a clever rewrite there.
 3. **Never trade routing/cert correctness for speed** — host/path matching in
    `router.go`, target health checks in `load_balancer.go`, and cert
-   validation in `cert_registry.go`/`san_cert_manager.go` are not negotiable.
+   validation in `san_cert_manager.go`/`san_cert_issuance.go` are not negotiable.
    A faster wrong certificate is a security bug, not a win.
 4. **Never add a hard CI perf gate on a flaky threshold** — `make bench` is
    not wired into `ci.yml`; it stays a manual/local check until real
    production numbers justify a gate.
 5. **Never guess at concurrency behavior** — `LoadBalancer` and
-   `CertificateRegistry` are accessed from concurrent request goroutines; run
+   `SANCertManager` are accessed from concurrent request goroutines; run
    `go test -race ./...` alongside any hot-path change, not just `make bench`.
 
 ## Gem side (../kamal)

@@ -87,11 +87,19 @@ func newDomainIssuer(manager *SANCertManager, quarantine *domainQuarantine, conf
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// The manager owns the bucket so that handshake-driven issuance, the
+	// dynamic issuer, and the renewer all draw from one ceiling. A private
+	// bucket here would let the paths add up past the account's ACME limits.
+	bucket := manager.bucket
+	if bucket == nil {
+		bucket = newTokenBucket(config.Burst, config.RefillInterval)
+	}
+
 	return &domainIssuer{
 		manager:    manager,
 		quarantine: quarantine,
 		config:     config,
-		bucket:     newTokenBucket(config.Burst, config.RefillInterval),
+		bucket:     bucket,
 		queue:      []*issueRequest{},
 		queued:     make(map[string]struct{}),
 		inflight:   make(map[string]struct{}),

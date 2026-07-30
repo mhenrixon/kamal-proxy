@@ -25,11 +25,11 @@ Use agents PROACTIVELY without waiting for user prompt:
 # GOOD: Parallel execution
 Launch multiple agents simultaneously:
 1. Agent 1: Explore router.go + service.go for target-selection logic
-2. Agent 2: Check cert_registry.go vs san_cert_manager.go overlap
+2. Agent 2: Check san_cert_issuance.go vs domain_issuer.go overlap
 3. Agent 3: Review test coverage in load_balancer_test.go
 
 # BAD: Sequential when unnecessary
-First explore router.go, wait, then check cert_registry.go, wait, then review tests...
+First explore router.go, wait, then check san_cert_issuance.go, wait, then review tests...
 ```
 
 ## Exploration Surfaces (this repo)
@@ -41,7 +41,7 @@ Point Explore agents at the actual layers, not the whole tree:
 | Entry point | `cmd/kamal-proxy` | `main.go` only |
 | CLI + RPC client | `internal/cmd` | cobra commands (`deploy.go`, `run.go`, `rollout_*.go`); each dials the unix socket |
 | RPC server + core | `internal/server` | `router.go`, `service.go`, `load_balancer.go`, `target.go` — request path |
-| Cert managers | `internal/server` | `san_cert_manager.go` (SAN batching, fork-only), `cert_registry.go` + `acme/` (wildcard DNS-01, fork-only), `registry_cert_manager.go` (upstream) |
+| Cert managers | `internal/server` | `san_cert_manager.go` + `san_cert_issuance.go` + `san_cert_dynamic.go` (the single cert system: SAN batching, HTTP-01 and DNS-01, allowlist, rate limit), `acme/` (DNS-01 providers), `domain_issuer.go` / `domain_renewal.go` (async issuance and renewal) |
 | Middleware | `internal/server` | `*_middleware.go` — logging, buffering, error pages, request id |
 | Docs | repo root | `CLAUDE.md`, `ROADMAP.md`, `.claude/rules/upstream-sync.md` |
 
