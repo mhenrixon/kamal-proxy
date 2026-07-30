@@ -137,7 +137,7 @@ func (c *tlsOnDemandChecker) localHostPolicy() autocert.HostPolicy {
 		recorder := newBoundedResponseRecorder(tlsOnDemandCheckMaxBodyBytes)
 		c.service.ServeHTTP(recorder, req)
 
-		if recorder.status != http.StatusOK {
+		if !isTLSOnDemandApproval(recorder.status) {
 			return c.denialError(host, recorder.status, recorder.body.String())
 		}
 		return nil
@@ -169,12 +169,21 @@ func (c *tlsOnDemandChecker) externalHostPolicy() autocert.HostPolicy {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
+		if !isTLSOnDemandApproval(resp.StatusCode) {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, tlsOnDemandCheckMaxBodyBytes))
 			return c.denialError(host, resp.StatusCode, string(body))
 		}
 		return nil
 	}
+}
+
+// isTLSOnDemandApproval reports whether a status approves issuance. The
+// documented contract is "answer 2xx to approve", so 204 -- the natural way to
+// approve with no body -- counts, while a redirect does not: it is the
+// endpoint's final answer, and following it could turn a denial into an
+// approval from wherever it points.
+func isTLSOnDemandApproval(status int) bool {
+	return status >= http.StatusOK && status < http.StatusMultipleChoices
 }
 
 func (c *tlsOnDemandChecker) checkURL(host string) string {

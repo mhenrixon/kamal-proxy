@@ -14,10 +14,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +27,9 @@ import (
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/registration"
+
+	"github.com/basecamp/kamal-proxy/internal/server/acme"
+	"github.com/basecamp/kamal-proxy/internal/server/acme/providers"
 )
 
 const (
@@ -58,6 +63,18 @@ type SANCertManagerConfig struct {
 
 	// StatePath is where manager state is persisted
 	StatePath string
+
+	// DNSProvider names the DNS-01 challenge provider. Empty (or "none") leaves
+	// issuance on HTTP-01, which cannot answer for a wildcard.
+	DNSProvider acme.ProviderName
+
+	// PreferWildcard collapses a batch of sibling subdomains into a single
+	// wildcard certificate when a DNS provider can validate one.
+	PreferWildcard bool
+
+	// HTTPFallback retries an order over HTTP-01 when the DNS-01 attempt fails.
+	// It has no effect on wildcards, which only DNS-01 can validate.
+	HTTPFallback bool
 }
 
 // SANCertManager manages SAN certificates with domain batching.
@@ -68,9 +85,25 @@ type SANCertManager struct {
 	stateMu sync.Mutex // serializes state-file snapshots and writes
 	config  SANCertManagerConfig
 
-	// ACME client
-	client *lego.Client
-	user   *acmeUser
+	// ACME clients. Both are built on the SAME account (`acme_user.json`), so
+	// the whole proxy has exactly one ACME identity no matter which challenge
+	// type answers an order.
+	client    *lego.Client // HTTP-01
+	dnsClient *lego.Client // DNS-01, only when a provider is configured
+	user      *acmeUser
+
+	// Issuance seams, so the strategy can be exercised without a live
+	// directory. Initialize points them at the clients above.
+	httpObtainer certObtainer
+	dnsObtainer  certObtainer
+
+	// grouper decides when a batch is better served by a wildcard.
+	grouper *DomainGrouper
+
+	// bucket is the ceiling on ACME orders. Every issuance path in the process
+	// -- handshake-driven, dynamic issuer, renewer -- draws from this one
+	// bucket, so they cannot add up to more orders than the limit allows.
+	bucket *tokenBucket
 
 	// Certificate storage: certID -> certificate
 	certificates map[string]*ManagedCert
@@ -93,8 +126,8 @@ type SANCertManager struct {
 	// Currently provisioning: rootDomain -> done channel
 	provisioning map[string]chan struct{}
 
-	// HTTP-01 challenge tokens: token -> key authorization
-	challengeTokens map[string]string
+	// HTTP-01 challenge tokens: token -> the challenge it answers
+	challengeTokens map[string]http01Challenge
 
 	// State
 	ready bool
@@ -106,6 +139,13 @@ type ManagedCert struct {
 	Domains     []string         `json:"domains"`
 	NotAfter    time.Time        `json:"not_after"`
 	Certificate *tls.Certificate `json:"-"` // Not persisted, loaded from files
+}
+
+// http01Challenge is one presented challenge: the key authorization to serve,
+// and the single domain whose validation request may receive it.
+type http01Challenge struct {
+	domain  string
+	keyAuth string
 }
 
 // acmeUser implements registration.User for lego
@@ -130,15 +170,20 @@ func NewSANCertManager(config SANCertManagerConfig) (*SANCertManager, error) {
 		config.Directory = LetsEncryptProduction
 	}
 
+	grouper := NewDomainGrouper()
+	grouper.PreferWildcard = config.PreferWildcard
+
 	manager := &SANCertManager{
 		config:            config,
+		grouper:           grouper,
+		bucket:            newTokenBucket(DefaultIssuanceBurst, DefaultIssuanceRefillInterval),
 		certificates:      make(map[string]*ManagedCert),
 		domainToCert:      make(map[string]string),
 		pendingDomains:    make(map[string]string),
 		registeredDomains: make(map[string]struct{}),
 		dynamicDomains:    make(map[string]string),
 		provisioning:      make(map[string]chan struct{}),
-		challengeTokens:   make(map[string]string),
+		challengeTokens:   make(map[string]http01Challenge),
 	}
 
 	// Ensure cache directory exists
@@ -181,6 +226,7 @@ func (m *SANCertManager) Initialize(ctx context.Context) error {
 	}
 
 	m.client = client
+	m.httpObtainer = client.Certificate
 
 	// Register with ACME if not already registered
 	if user.Registration == nil {
@@ -198,17 +244,69 @@ func (m *SANCertManager) Initialize(ctx context.Context) error {
 		}
 	}
 
+	// The DNS-01 client rides the same registered account, so a proxy with a
+	// provider configured still has exactly one ACME identity.
+	if err := m.initDNSClient(); err != nil {
+		return err
+	}
+
 	// Load persisted state
 	if err := m.loadState(); err != nil {
 		slog.Warn("Failed to load certificate state", "error", err)
 	}
 
+	// Adopt anything the deleted certificate registry left behind, so an
+	// upgrade does not re-order certificates the proxy already holds.
+	m.importLegacyHTTP01Cache()
+
 	m.ready = true
 	slog.Info("SAN certificate manager initialized",
 		"email", m.config.Email,
 		"directory", m.config.Directory,
+		"dns_provider", m.config.DNSProvider,
+		"prefer_wildcard", m.config.PreferWildcard,
+		"http_fallback", m.config.HTTPFallback,
 	)
 
+	return nil
+}
+
+// initDNSClient builds the DNS-01 client when a provider is configured. A
+// provider that cannot be constructed is fatal unless HTTP-01 is allowed to
+// stand in for it. Must be called with m.mu held.
+func (m *SANCertManager) initDNSClient() error {
+	if m.config.DNSProvider == "" || m.config.DNSProvider == "none" {
+		return nil
+	}
+
+	dnsProvider, err := providers.NewProvider(m.config.DNSProvider)
+	if err != nil {
+		if !m.config.HTTPFallback {
+			return fmt.Errorf("failed to create DNS provider %q: %w", m.config.DNSProvider, err)
+		}
+		slog.Warn("DNS provider not available, staying on HTTP-01",
+			"provider", m.config.DNSProvider, "error", err)
+		return nil
+	}
+
+	legoConfig := lego.NewConfig(m.user)
+	legoConfig.CADirURL = m.config.Directory
+	legoConfig.Certificate.KeyType = certcrypto.EC256
+
+	client, err := lego.NewClient(legoConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create DNS-01 ACME client: %w", err)
+	}
+
+	if err := client.Challenge.SetDNS01Provider(dnsProvider); err != nil {
+		return fmt.Errorf("failed to set DNS-01 provider: %w", err)
+	}
+
+	m.dnsClient = client
+	m.dnsObtainer = client.Certificate
+	m.grouper.DNSProviderAvailable = true
+
+	slog.Info("DNS-01 challenge solver initialized", "provider", m.config.DNSProvider)
 	return nil
 }
 
@@ -219,7 +317,7 @@ type memoryHTTP01Provider struct {
 
 func (p *memoryHTTP01Provider) Present(domain, token, keyAuth string) error {
 	p.manager.mu.Lock()
-	p.manager.challengeTokens[token] = keyAuth
+	p.manager.challengeTokens[token] = http01Challenge{domain: domain, keyAuth: keyAuth}
 	p.manager.mu.Unlock()
 	slog.Debug("HTTP-01 challenge presented", "domain", domain, "token", token)
 	return nil
@@ -249,8 +347,8 @@ func (m *SANCertManager) RegisterDomain(domain string, service string) error {
 
 	m.registeredDomains[domain] = struct{}{}
 
-	// Check if domain already has a certificate
-	if certID, ok := m.domainToCert[domain]; ok {
+	// Check if domain already has a certificate, its own or a wildcard's
+	if certID := m.certIDCovering(domain); certID != "" {
 		cert := m.certificates[certID]
 		if cert != nil && time.Until(cert.NotAfter) > 24*time.Hour {
 			slog.Debug("Domain already has valid certificate",
@@ -314,9 +412,8 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 
 	m.mu.RLock()
 	ready := m.ready
-	certID, hasCert := m.domainToCert[domain]
 	var cert *ManagedCert
-	if hasCert {
+	if certID := m.certIDCovering(domain); certID != "" {
 		cert = m.certificates[certID]
 	}
 	_, isRegistered := m.registeredDomains[domain]
@@ -362,9 +459,17 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 	return nil, ErrCertNotFound
 }
 
-// provisionCertificate provisions a certificate for a domain
-// It batches together ALL pending domains (up to MaxSANsPerCertificate) into a single cert
-// This minimizes the number of certificates and avoids rate limits
+// provisionCertificate provisions a certificate for a domain.
+//
+// It batches together ALL pending domains (up to MaxSANsPerCertificate) into a
+// single certificate, which minimizes the number of certificates and stays well
+// inside Let's Encrypt's limits. With a DNS provider configured and
+// --acme-prefer-wildcard set, sibling subdomains collapse further into one
+// wildcard.
+//
+// The caller reached here only for a deploy-registered host, so the allowlist
+// has already been consulted. The rate limit has not, and this path is
+// handshake-driven, so it takes a token before ordering.
 func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string) (*tls.Certificate, error) {
 	// Use a single provisioning lock - we batch everything together
 	const provisioningKey = "_batch_"
@@ -409,15 +514,20 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 		m.mu.Unlock()
 	}()
 
-	// Sort domains for consistent certificate identifiers
-	sortedDomains := make([]string, len(domainsToProvision))
-	copy(sortedDomains, domainsToProvision)
+	// Sort the planned identifier set for consistent certificate identifiers
+	sortedDomains := m.planIssuanceDomains(domainsToProvision)
 	slices.Sort(sortedDomains)
 
 	slog.Info("Provisioning SAN certificate",
+		"requested", domainsToProvision,
 		"domains", sortedDomains,
 		"batch_size", len(sortedDomains),
 	)
+
+	if err := m.bucket.Take(ctx); err != nil {
+		m.restorePending(domainsToProvision)
+		return nil, err
+	}
 
 	// Request certificate for all domains
 	request := certificate.ObtainRequest{
@@ -425,14 +535,10 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 		Bundle:  true,
 	}
 
-	resource, err := m.client.Certificate.Obtain(request)
+	resource, err := m.obtainCertificate(request)
 	if err != nil {
 		// Re-add domains to pending so they can be retried
-		m.mu.Lock()
-		for _, d := range sortedDomains {
-			m.pendingDomains[d] = ""
-		}
-		m.mu.Unlock()
+		m.restorePending(domainsToProvision)
 		return nil, fmt.Errorf("failed to obtain certificate: %w", err)
 	}
 
@@ -503,8 +609,8 @@ func (m *SANCertManager) getCertForDomain(domain string) (*tls.Certificate, erro
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	certID, ok := m.domainToCert[domain]
-	if !ok {
+	certID := m.certIDCovering(domain)
+	if certID == "" {
 		return nil, ErrCertNotFound
 	}
 
@@ -516,31 +622,49 @@ func (m *SANCertManager) getCertForDomain(domain string) (*tls.Certificate, erro
 	return cert.Certificate, nil
 }
 
-// HTTPHandler returns the HTTP handler for ACME challenges
+// HTTPHandler returns the HTTP handler for ACME challenges.
+//
+// A key authorization is served only to a validation request for the domain the
+// challenge was presented for. A token exists only while an order we chose to
+// place is in flight, so this is belt and braces -- but it is the one handler
+// the proxy exposes unauthenticated on port 80, and RFC 8555 requires the
+// validating server to send the identifier as the Host header, so the check
+// costs nothing real.
 func (m *SANCertManager) HTTPHandler(fallback http.Handler) http.Handler {
 	const challengePrefix = "/.well-known/acme-challenge/"
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if this is an ACME challenge request
-		if len(r.URL.Path) > len(challengePrefix) && r.URL.Path[:len(challengePrefix)] == challengePrefix {
-			token := r.URL.Path[len(challengePrefix):]
-
+		if token, ok := strings.CutPrefix(r.URL.Path, challengePrefix); ok && token != "" {
 			m.mu.RLock()
-			keyAuth, ok := m.challengeTokens[token]
+			challenge, known := m.challengeTokens[token]
 			m.mu.RUnlock()
 
-			if ok {
-				slog.Debug("Serving HTTP-01 challenge", "token", token)
+			switch {
+			case !known:
+				slog.Debug("HTTP-01 challenge token not found", "token", token)
+			case !strings.EqualFold(requestHostname(r), challenge.domain):
+				slog.Warn("Refusing HTTP-01 challenge for a mismatched host",
+					"token", token, "challenge_domain", challenge.domain, "request_host", r.Host)
+			default:
+				slog.Debug("Serving HTTP-01 challenge", "domain", challenge.domain, "token", token)
 				w.Header().Set("Content-Type", "text/plain")
-				w.Write([]byte(keyAuth))
+				w.Write([]byte(challenge.keyAuth))
 				return
 			}
-
-			slog.Debug("HTTP-01 challenge token not found", "token", token)
 		}
 
 		fallback.ServeHTTP(w, r)
 	})
+}
+
+// requestHostname is the Host header without its port or trailing dot.
+func requestHostname(r *http.Request) string {
+	host := r.Host
+	if hostname, _, err := net.SplitHostPort(host); err == nil {
+		host = hostname
+	}
+	return strings.TrimSuffix(host, ".")
 }
 
 // GetStats returns statistics about the manager

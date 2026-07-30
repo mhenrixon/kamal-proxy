@@ -763,10 +763,17 @@ The URL may be:
 
 Before issuing a certificate for a host, Kamal Proxy will send a `GET` request
 to the endpoint, with the hostname in a `host` query parameter (for example,
-`?host=app1.example.com`) and matching `Host` header. A `200` response allows
-certificate issuance; any other response denies it, and the status code and up
-to 256 bytes of the response body are logged to help with debugging. Checks
-time out after 2 seconds, denying issuance for that attempt.
+`?host=app1.example.com`) and matching `Host` header. Any `2xx` response allows
+certificate issuance — `204 No Content` is a perfectly good way to approve.
+Anything else denies it, and the status code and up to 256 bytes of the response
+body are logged to help with debugging. A redirect is a denial rather than
+something to follow, since following it could turn a denial into an approval
+from wherever it points. Checks time out after 2 seconds, denying issuance for
+that attempt.
+
+A service deployed with `--tls-on-demand-url` owns the issuance decision for
+every host it catches: its endpoint is asked before anything else looks at the
+name, so a host it denies is never handed to the shared certificate manager.
 
 
 ### Custom TLS certificate
@@ -1084,6 +1091,29 @@ For testing, use the staging environment to avoid rate limits:
 kamal-proxy run --acme-email admin@example.com --acme-dns-provider cloudflare \
   --acme-directory https://acme-staging-v02.api.letsencrypt.org/directory
 ```
+
+**Which names get a certificate**
+
+Automatic TLS is deliberately not on-demand. Kamal Proxy will only ask Let's
+Encrypt for a name that is on its allowlist, which is exactly:
+
+- a `--host` on a service deployed with `--tls`, and
+- a domain returned by a service's `--tls-domains-source`.
+
+Any other server name presented in a TLS handshake is refused, and costs no ACME
+order — including under a catch-all service, which routes every name. Without
+that gate, anyone who points a DNS record at the proxy's IP could drive real
+issuance against your ACME account by sending that name as SNI, and burn the
+account's rate limit in the process.
+
+Issuance is rate limited on top of the allowlist: one shared token bucket
+(20 orders of burst, refilling one per 40 seconds — about 250 per 3 hours,
+under Let's Encrypt's 300) covers every path, whether an order comes from a
+handshake, from a domains source, or from renewal.
+
+If you want a name approved at handshake time by your own application rather
+than at deploy time, that is what [on-demand TLS](#on-demand-tls) is for. Your
+endpoint answers `2xx` to approve, anything else to deny.
 
 
 ## Specifying `run` options with environment variables

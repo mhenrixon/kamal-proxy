@@ -59,7 +59,6 @@ type Router struct {
 	recheckOnRestore     bool
 	sanCertManager       *SANCertManager
 	dynamicDomainManager *DynamicDomainManager
-	certRegistry         *CertificateRegistry
 	cacheStore           CacheStore
 	cacheLeases          CacheLeaseOptions
 	lifecycle            ContainerLifecycle
@@ -194,16 +193,6 @@ func (r *Router) currentCacheStore() CacheStore {
 	defer r.serviceLock.RUnlock()
 
 	return r.cacheStore
-}
-
-// SetCertificateRegistry sets the central certificate registry for the router
-func (r *Router) SetCertificateRegistry(registry *CertificateRegistry) {
-	r.certRegistry = registry
-}
-
-// GetCertificateRegistry returns the certificate registry if available
-func (r *Router) GetCertificateRegistry() *CertificateRegistry {
-	return r.certRegistry
 }
 
 func (r *Router) RestoreLastSavedState() error {
@@ -546,36 +535,23 @@ func (r *Router) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 		}
 	}
 
+	// Exactly two things can answer a handshake, in this order, and nothing
+	// falls through past them:
+	//
+	//  1. A service deployed with --tls-on-demand-url owns the issuance decision
+	//     for every host it catches, so its endpoint is asked before anything
+	//     else looks at the name.
+	//  2. Otherwise the service's own manager -- the shared SAN certificate
+	//     manager for automatic TLS, or a static/on-disk one -- which provisions
+	//     only for names on its allowlist.
+	//
+	// A name that routes nowhere is refused here. It used to reach the
+	// certificate registry, which provisioned on lookup with no allowlist at
+	// all: pointing any DNS record at the proxy and sending that name as SNI
+	// drove a real Let's Encrypt order against our account.
 	service := r.serviceForHost(hello.ServerName)
-
-	// A service deployed with --tls-on-demand-url owns the issuance decision for
-	// every host it catches. The registry provisions on lookup rather than
-	// consulting a host policy, so asking it first would issue certificates for
-	// hosts the endpoint denies -- defeating the gate, and letting
-	// attacker-chosen SNI drive orders against the ACME account.
-	if service != nil && service.options.TLSOnDemandURL != "" {
-		if service.certManager == nil {
-			slog.Debug("ACME: Unable to get certificate (service does not support TLS)")
-			return nil, ErrorUnknownServerName
-		}
-		return service.certManager.GetCertificate(hello)
-	}
-
-	// Try the central certificate registry first
-	if r.certRegistry != nil {
-		cert, err := r.certRegistry.GetCertificate(hello)
-		if err == nil {
-			return cert, nil
-		}
-		// If registry returns an error (except not found), log it
-		if !errors.Is(err, ErrCertificateNotFound) && !errors.Is(err, ErrCertificatePending) {
-			slog.Debug("Certificate registry error", "domain", hello.ServerName, "error", err)
-		}
-		// Fall through to per-service cert manager
-	}
-
 	if service == nil {
-		slog.Debug("ACME: Unable to get certificate (unknown server name)")
+		slog.Debug("ACME: Unable to get certificate (unknown server name)", "host", hello.ServerName)
 		return nil, ErrorUnknownServerName
 	}
 

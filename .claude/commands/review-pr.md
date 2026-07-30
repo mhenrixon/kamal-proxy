@@ -41,7 +41,7 @@ sync.Mutex copied by value (struct passed)   -> pass by pointer; go vet should c
 Ignoring context cancellation in RPC calls   -> respect ctx / net/rpc timeout on client
 err != nil swallowed silently                -> return wrapped error (fmt.Errorf("...: %w", err))
 Hardcoded socket/state paths                 -> use existing config (~/.config/kamal-proxy)
-New cert manager duplicating renewal loop    -> extend CertificateRenewalManager, don't fork it
+New cert manager duplicating renewal loop    -> extend certRenewer (domain_renewal.go), do not fork it
 Test file with no table-driven cases         -> prefer table-driven tests per Go convention
 Exported symbol with no doc comment          -> add one if it crosses a package boundary
 Direct target dial bypassing LoadBalancer    -> route through LoadBalancer.StartRequest

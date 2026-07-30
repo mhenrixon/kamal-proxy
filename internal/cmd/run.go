@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -149,12 +148,7 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	var dynamicDomains *server.DynamicDomainManager
 
 	if globalConfig.ACMEEmail != "" {
-		manager, err := server.NewSANCertManager(server.SANCertManagerConfig{
-			Email:     globalConfig.ACMEEmail,
-			Directory: globalConfig.ACMEDirectory,
-			CachePath: globalConfig.CertificatePath(),
-			StatePath: globalConfig.ACMEStatePath(),
-		})
+		manager, err := server.NewSANCertManager(globalConfig.SANCertManagerConfig())
 		if err != nil {
 			return err
 		}
@@ -174,18 +168,6 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		router.SetDynamicDomainManager(dynamicDomains)
 	}
 
-	// Initialize certificate registry if ACME is configured
-	var renewalManager *server.CertificateRenewalManager
-	if globalConfig.HasACMEConfig() {
-		manager, err := c.initCertificateRegistry(router)
-		if err != nil {
-			slog.Error("Failed to initialize certificate registry", "error", err)
-			// Continue without registry - will fall back to per-service certs
-		} else {
-			renewalManager = manager
-		}
-	}
-
 	s := server.NewServer(&globalConfig, router)
 	if err := s.Start(); err != nil {
 		return err
@@ -195,16 +177,11 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	if dynamicDomains != nil {
 		// Start after the listeners are bound (pre-flight probes and HTTP-01
 		// challenges route through them), and stop before they close so
-		// in-flight orders can still validate during shutdown.
+		// in-flight orders can still validate during shutdown. This also owns
+		// the renewal loop, which covers every managed certificate -- deploy
+		// hosts and dynamic domains alike.
 		dynamicDomains.Start()
 		defer dynamicDomains.Stop()
-	}
-
-	if renewalManager != nil {
-		// Start background renewal after the registry is ready; stop it during
-		// shutdown so an in-flight renewal can settle before we exit.
-		renewalManager.Start()
-		defer renewalManager.Stop()
 	}
 
 	ch := make(chan os.Signal, 1)
@@ -219,29 +196,6 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-func (c *runCommand) initCertificateRegistry(router *server.Router) (*server.CertificateRenewalManager, error) {
-	config := globalConfig.CertificateRegistryConfig()
-
-	registry, err := server.NewCertificateRegistry(config)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx := context.Background()
-	if err := registry.Initialize(ctx); err != nil {
-		return nil, err
-	}
-
-	router.SetCertificateRegistry(registry)
-	slog.Info("Certificate registry initialized",
-		"email", config.Email,
-		"dns_provider", config.DNSProvider,
-		"prefer_wildcard", config.PreferWildcard,
-	)
-
-	return server.NewCertificateRenewalManager(registry), nil
 }
 
 func (c *runCommand) setLogger() error {

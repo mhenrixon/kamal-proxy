@@ -146,16 +146,6 @@ func TestCheckEnvVars(t *testing.T) {
 	}
 }
 
-func TestACMEConfig_Defaults(t *testing.T) {
-	config := ACMEConfig{
-		Email: "test@example.com",
-	}
-
-	// Directory should be empty, will be set to default by NewACMEClient
-	assert.Empty(t, config.Directory)
-	assert.False(t, config.PreferWildcard)
-}
-
 func TestDefaultDirectories(t *testing.T) {
 	assert.Equal(t, "https://acme-v02.api.letsencrypt.org/directory", DefaultProductionDirectory)
 	assert.Equal(t, "https://acme-staging-v02.api.letsencrypt.org/directory", DefaultStagingDirectory)

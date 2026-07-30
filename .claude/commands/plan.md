@@ -31,7 +31,7 @@ Protect this session's context: delegate mechanical exploration to cheaper subag
 
 1. Fan out Explore agents for file discovery and call-site sweeps (e.g. "find every RPC client call site for `commands.go`"); use a general-purpose agent when a subsystem needs to be read and summarized. Launch independent explorations in parallel — see `.claude/rules/agents.md` for this repo's exploration surfaces (`internal/cmd` = CLI/RPC client, `internal/server` = router/service/load-balancer/cert managers).
 2. Read the load-bearing files yourself — the ones the design decision actually hinges on. Don't design from subagent summaries alone.
-3. Check `ROADMAP.md` first — planned work already has a code anchor (e.g. `internal/server/cert_renewal.go:14`, `internal/server/load_balancer.go:174`). If $ARGUMENTS matches a roadmap item, start from its anchor and evidence links instead of re-deriving them.
+3. Check `ROADMAP.md` first — planned work already has a code anchor (e.g. `internal/server/domain_renewal.go`, `internal/server/load_balancer.go:174`). If $ARGUMENTS matches a roadmap item, start from its anchor and evidence links instead of re-deriving them.
 4. Check the architecture layers and Critical Rules in `CLAUDE.md` — `kamal-proxy` naming is load-bearing (module/binary/RPC/socket), the branch map, and the "image tag IS the version" model constrain any design.
 5. Check `git log` and `git branch -a` for recent related work on `main`, `dash`, `san-certificate-batching`, `wildcard-certs` — the design should extend it, not fight it or duplicate a branch that already carries it.
 
@@ -54,7 +54,7 @@ Investigation tells you what the codebase says; this phase finds what the REQUES
 
 - Develop 2-3 candidate approaches with real tradeoffs. Pick one and say why; record why the others lost.
 - The chosen design must respect project invariants: never rename module/binary/RPC/socket away from `kamal-proxy`; new per-service knobs go in `ServiceOptions` (`internal/server/service.go:82`), per-target in `TargetOptions` (`internal/server/target.go:65`), one-shot in `DeploymentOptions` (`internal/server/service.go:76`); flags register in `internal/cmd/deploy.go` / `internal/cmd/run.go`; RPC arg structs in `internal/server/commands.go:19-63`; anything JSON-persisted must round-trip `Service.MarshalJSON/UnmarshalJSON` and be default-safe against old state files.
-- If the change touches `internal/server/san_cert_manager.go`, `internal/server/cert_registry.go`, or `internal/server/acme/`, flag the merge-conflict surface against `dash` per `.claude/rules/upstream-sync.md`'s conflict playbook — design the diff to minimize collision with the other cert branch.
+- If the change touches `internal/server/san_cert_manager.go`, `internal/server/san_cert_issuance.go`, or `internal/server/acme/`, flag the merge-conflict surface against `dash` per `.claude/rules/upstream-sync.md`'s conflict playbook — design the diff to minimize collision with the other cert branch.
 - If the feature needs a gem-side flag to reach `kamal deploy`, note the plumbing point in `../kamal/lib/kamal/configuration/proxy.rb` (or the three-file path when the loadbalancer tier must carry it too) so the plan doesn't stop at the proxy half.
 - Decide the test strategy: table-driven `_test.go` alongside the changed package, `go test ./...` scope, whether a benchmark belongs in `make bench`.
 

@@ -206,7 +206,7 @@ func TestSANCertManager_HTTPHandler(t *testing.T) {
 	require.NoError(t, err)
 
 	// Add a challenge token
-	manager.challengeTokens["test-token"] = "test-key-auth"
+	manager.challengeTokens["test-token"] = http01Challenge{domain: "example.com", keyAuth: "test-key-auth"}
 
 	fallback := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

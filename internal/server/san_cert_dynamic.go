@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-acme/lego/v4/certificate"
@@ -57,9 +58,20 @@ func (m *SANCertManager) DynamicDomains(service string) []string {
 
 // DomainAllowed reports whether a domain may have a certificate provisioned:
 // it must be deploy-registered or present in a service's dynamic set.
+//
+// A wildcard is never registered in its own right -- it is synthesised from a
+// batch of registered siblings -- so it is allowed by way of the names it
+// covers. That keeps the renewer from garbage-collecting a live wildcard on its
+// first reconcile, without letting a wildcard widen the allowlist: only
+// issuance consults this, and only a name already on the list can put a
+// wildcard on it.
 func (m *SANCertManager) DomainAllowed(domain string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
+	if strings.HasPrefix(domain, "*.") {
+		return m.coversAllowedDomain(domain)
+	}
 
 	if _, ok := m.registeredDomains[domain]; ok {
 		return true
@@ -68,14 +80,29 @@ func (m *SANCertManager) DomainAllowed(domain string) bool {
 	return ok
 }
 
+// coversAllowedDomain reports whether a wildcard covers at least one allowed
+// domain. Callers must hold m.mu.
+func (m *SANCertManager) coversAllowedDomain(wildcard string) bool {
+	for domain := range m.registeredDomains {
+		if matchesWildcard(wildcard, domain) {
+			return true
+		}
+	}
+	for domain := range m.dynamicDomains {
+		if matchesWildcard(wildcard, domain) {
+			return true
+		}
+	}
+	return false
+}
+
 // HasCertificate reports whether the manager has ever issued a certificate
 // covering the domain, even an expired one.
 func (m *SANCertManager) HasCertificate(domain string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	_, ok := m.domainToCert[domain]
-	return ok
+	return m.certIDCovering(domain) != ""
 }
 
 // HasValidCertificate reports whether the domain is covered by a loaded
@@ -84,8 +111,8 @@ func (m *SANCertManager) HasValidCertificate(domain string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	certID, ok := m.domainToCert[domain]
-	if !ok {
+	certID := m.certIDCovering(domain)
+	if certID == "" {
 		return false
 	}
 

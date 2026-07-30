@@ -349,11 +349,25 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 
 func (r *certRenewer) reportMetrics() {
 	certs := r.manager.ManagedCertificates()
-	metrics.Tracker.SetCertificateCount(len(certs), 0, len(certs))
+
+	wildcard := 0
+	for _, cert := range certs {
+		if containsWildcard(cert.Domains) {
+			wildcard++
+		}
+	}
+
+	// The third gauge counts what the wildcards are not. It is labeled http01
+	// for continuity with the gauge kamal-proxy has always published, and it is
+	// still the honest split for the common case: a wildcard needs DNS-01, and
+	// everything else is issued over HTTP-01 unless a DNS provider is
+	// configured, in which case the manager does not record which one answered.
+	metrics.Tracker.SetCertificateCount(len(certs), wildcard, len(certs)-wildcard)
 
 	for _, cert := range certs {
+		isWildcard := containsWildcard(cert.Domains)
 		for _, domain := range cert.Domains {
-			metrics.Tracker.SetCertificateExpiry(domain, false, cert.NotAfter)
+			metrics.Tracker.SetCertificateExpiry(domain, isWildcard, cert.NotAfter)
 		}
 	}
 }
