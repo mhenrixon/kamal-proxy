@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,10 @@ type fakeTracker struct {
 	cacheLeases     map[string]int // "service:outcome" -> count
 	cacheLeaseWaits map[string]int // "service:outcome" -> count
 	cacheEvictions  map[string]int // "service:state" -> count
+
+	redirectMapSizes map[string][2]int // service -> {hosts, rules}
+	redirectPolls    map[string]int    // "service:outcome" -> count
+	redirectHits     map[string]int    // "service:status" -> count
 }
 
 type certCountSample struct {
@@ -44,6 +49,10 @@ func newFakeTracker() *fakeTracker {
 		cacheLeases:     make(map[string]int),
 		cacheLeaseWaits: make(map[string]int),
 		cacheEvictions:  make(map[string]int),
+
+		redirectMapSizes: make(map[string][2]int),
+		redirectPolls:    make(map[string]int),
+		redirectHits:     make(map[string]int),
 	}
 }
 
@@ -79,6 +88,43 @@ func (f *fakeTracker) TrackCacheEviction(service, state string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cacheEvictions[service+":"+state]++
+}
+
+func (f *fakeTracker) SetDynamicRedirects(service string, hosts, rules int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.redirectMapSizes[service] = [2]int{hosts, rules}
+}
+
+func (f *fakeTracker) TrackDynamicRedirectPoll(service, outcome string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.redirectPolls[service+":"+outcome]++
+}
+
+func (f *fakeTracker) TrackDynamicRedirect(service string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.redirectHits[service+":"+strconv.Itoa(status)]++
+}
+
+func (f *fakeTracker) redirectPollCount(service, outcome string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.redirectPolls[service+":"+outcome]
+}
+
+func (f *fakeTracker) redirectHitCount(service string, status int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.redirectHits[service+":"+strconv.Itoa(status)]
+}
+
+func (f *fakeTracker) redirectMapSize(service string) (hosts, rules int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	size := f.redirectMapSizes[service]
+	return size[0], size[1]
 }
 
 func (f *fakeTracker) cacheEvictionCount(service, state string) int {
@@ -239,6 +285,24 @@ func (s *switchableTracker) TrackCacheLeaseWait(service, outcome string) {
 func (s *switchableTracker) TrackCacheEviction(service, state string) {
 	if fake := s.current(); fake != nil {
 		fake.TrackCacheEviction(service, state)
+	}
+}
+
+func (s *switchableTracker) SetDynamicRedirects(service string, hosts, rules int) {
+	if fake := s.current(); fake != nil {
+		fake.SetDynamicRedirects(service, hosts, rules)
+	}
+}
+
+func (s *switchableTracker) TrackDynamicRedirectPoll(service, outcome string) {
+	if fake := s.current(); fake != nil {
+		fake.TrackDynamicRedirectPoll(service, outcome)
+	}
+}
+
+func (s *switchableTracker) TrackDynamicRedirect(service string, status int) {
+	if fake := s.current(); fake != nil {
+		fake.TrackDynamicRedirect(service, status)
 	}
 }
 

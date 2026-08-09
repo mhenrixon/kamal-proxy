@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/acme"
@@ -174,6 +175,15 @@ type ServiceOptions struct {
 	Redirects []PathRule `json:"redirects,omitempty"`
 	Rewrites  []PathRule `json:"rewrites,omitempty"`
 
+	// RedirectsSource polls an application endpoint for a host-scoped redirect
+	// map, serving tenant-authored redirects without an app round trip. Empty
+	// (the default, and what every older state file restores to) polls nothing.
+	// See redirect_map.go and dynamic_redirects.go.
+	RedirectsSource string `json:"redirects_source,omitempty"`
+	// RedirectsInterval is the poll interval; zero means
+	// DefaultRedirectsInterval.
+	RedirectsInterval time.Duration `json:"redirects_interval,omitempty"`
+
 	// SleepAfter stops this service's containers after this long with no traffic,
 	// starting them again on the next request. Zero (the default) never sleeps.
 	SleepAfter time.Duration `json:"sleep_after,omitempty"`
@@ -298,6 +308,10 @@ func (so ServiceOptions) Validate() error {
 		return err
 	}
 
+	if err := so.validateDynamicRedirects(); err != nil {
+		return err
+	}
+
 	return so.validateDynamicDomains()
 }
 
@@ -352,6 +366,11 @@ type Service struct {
 	redirects      *pathRuleSet
 	rewrites       *pathRuleSet
 
+	// dynamicRedirects is the compiled host-scoped redirect map from this
+	// service's --redirects-source, swapped whole by the manager so matching
+	// never takes a lock. Nil means no dynamic redirects.
+	dynamicRedirects atomic.Pointer[dynamicRedirectMap]
+
 	// cacheStore is shared with every other service on this proxy, and possibly
 	// with every other proxy in the fleet. cacheHandler is this service's own
 	// entry into it, sitting between the checks above and the load balancer.
@@ -395,6 +414,12 @@ func (s *Service) SetSANCertManager(manager *SANCertManager) {
 			s.middleware = prevMiddleware
 		}
 	}
+}
+
+// SetDynamicRedirects installs a compiled redirect map from the dynamic
+// redirect manager. Nil evicts it.
+func (s *Service) SetDynamicRedirects(m *dynamicRedirectMap) {
+	s.dynamicRedirects.Store(m)
 }
 
 func (s *Service) Dispose() {
@@ -655,6 +680,13 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 
 	s.redirects = redirects
 	s.rewrites = rewrites
+
+	// The manager owns installing dynamic maps, but a redeploy that drops the
+	// source must not leave the old map serving until the manager catches up:
+	// the service's state should follow its options on its own.
+	if options.RedirectsSource == "" {
+		s.dynamicRedirects.Store(nil)
+	}
 	s.cacheHandler = s.createCacheHandler(options)
 	s.options = options
 	s.targetOptions = targetOptions
@@ -948,9 +980,25 @@ func (s *Service) redirectURLIfNeeded(r *http.Request) (string, int) {
 		desiredHost = s.options.CanonicalHost
 	}
 
-	current := url.URL{Scheme: currentScheme, Host: host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
-	if location, status := s.redirectRuleURL(current, url.URL{Scheme: desiredScheme, Host: desiredHost}); location != "" {
-		return location, status
+	// RawPath rides along so an encoded slash (%2F) stays data through the
+	// redirect rules instead of decoding into a separator.
+	current := url.URL{Scheme: currentScheme, Host: host, Path: r.URL.Path, RawPath: r.URL.RawPath, RawQuery: r.URL.RawQuery}
+	desired := url.URL{Scheme: desiredScheme, Host: desiredHost}
+
+	// ACME challenges and the proxy's own endpoints are exempt from redirect
+	// rules -- dynamic and static alike -- but not from the TLS/canonical hop
+	// below, which the ACME handlers above this check already bypass.
+	if !isRedirectExemptPath(current.Path) {
+		// The dynamic map answers first: a host entry there is per-host
+		// configuration the static, service-wide rules compose under.
+		if location, status := s.dynamicRedirects.Load().redirectURL(current, desired); location != "" {
+			metrics.Tracker.TrackDynamicRedirect(s.name, status)
+			return location, status
+		}
+
+		if location, status := s.redirectRuleURL(current, desired); location != "" {
+			return location, status
+		}
 	}
 
 	if desiredScheme != currentScheme || desiredHost != host {

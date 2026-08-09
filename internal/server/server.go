@@ -410,6 +410,11 @@ func (s *Server) buildHandler(traceContextMode TraceContextMode) http.Handler {
 		handler = dynamicDomains.WrapHandler(handler)
 	}
 
+	// Mount the redirects refresh nudge
+	if dynamicRedirects := s.router.DynamicRedirectManager(); dynamicRedirects != nil {
+		handler = dynamicRedirects.WrapHandler(handler)
+	}
+
 	// Outermost, and unconditional: a liveness probe has to answer on a proxy
 	// with nothing deployed, and stay out of the access log.
 	handler = WithPingMiddleware(handler)

@@ -166,11 +166,26 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		router.SetDynamicDomainManager(dynamicDomains)
 	}
 
+	// Unlike the domain manager, this does not depend on ACME: redirects are
+	// useful on a plain HTTP proxy too.
+	dynamicRedirects := server.NewDynamicRedirectManager(server.DynamicRedirectConfig{
+		StatePath:    globalConfig.DynamicRedirectsStatePath(),
+		RefreshToken: os.Getenv("KAMAL_PROXY_REFRESH_TOKEN"),
+		SourceToken:  os.Getenv("KAMAL_PROXY_REDIRECTS_TOKEN"),
+	}, router)
+	router.SetDynamicRedirectManager(dynamicRedirects)
+	defer dynamicRedirects.Stop()
+
 	s := server.NewServer(&globalConfig, router)
 	if err := s.Start(); err != nil {
 		return err
 	}
 	defer s.Stop()
+
+	// After Start, which is what enables the metrics tracker: maps restored
+	// from state were installed against the null tracker and would otherwise
+	// stay invisible until their next successful poll.
+	dynamicRedirects.PublishMetrics()
 
 	if dynamicDomains != nil {
 		// Start after the listeners are bound (pre-flight probes and HTTP-01

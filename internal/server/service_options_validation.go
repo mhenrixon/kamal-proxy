@@ -1,6 +1,10 @@
 package server
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
 
 // Validators for the fork-only ServiceOptions fields, kept out of service.go so
 // that file stays under the size ceiling and the upstream merge surface stays
@@ -11,6 +15,31 @@ func (so ServiceOptions) validateInterceptErrorStatuses() error {
 		if status < 400 || status > 599 {
 			return fmt.Errorf("%w: intercept-errors must be a 4xx or 5xx status code, got %d", ErrServiceOptionsInvalid, status)
 		}
+	}
+
+	return nil
+}
+
+func (so ServiceOptions) validateDynamicRedirects() error {
+	if so.RedirectsSource == "" {
+		if so.RedirectsInterval != 0 {
+			return fmt.Errorf("%w: redirects-interval requires redirects-source", ErrServiceOptionsInvalid)
+		}
+		return nil
+	}
+
+	// A prefix check alone would accept "https://" or "http://:8080", which
+	// pass the deploy and then fail every poll; a malformed source should fail
+	// on the operator's terminal instead.
+	if !strings.HasPrefix(so.RedirectsSource, "/") {
+		parsed, err := url.Parse(so.RedirectsSource)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+			return fmt.Errorf("%w: redirects-source must be a path or an http(s) URL: %q", ErrServiceOptionsInvalid, so.RedirectsSource)
+		}
+	}
+
+	if so.RedirectsInterval != 0 && so.RedirectsInterval < MinRedirectsInterval {
+		return fmt.Errorf("%w: redirects-interval must be at least %s", ErrServiceOptionsInvalid, MinRedirectsInterval)
 	}
 
 	return nil

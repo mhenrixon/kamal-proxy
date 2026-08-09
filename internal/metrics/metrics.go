@@ -21,6 +21,9 @@ type tracker interface {
 	TrackCacheLease(service, outcome string)
 	TrackCacheLeaseWait(service, outcome string)
 	TrackCacheEviction(service, state string)
+	SetDynamicRedirects(service string, hosts, rules int)
+	TrackDynamicRedirectPoll(service, outcome string)
+	TrackDynamicRedirect(service string, status int)
 }
 
 var Tracker tracker = &nullTracker{}
@@ -43,6 +46,9 @@ func (nullTracker) TrackCacheRefusal(service, reason string)                    
 func (nullTracker) TrackCacheLease(service, outcome string)                                   {}
 func (nullTracker) TrackCacheLeaseWait(service, outcome string)                               {}
 func (nullTracker) TrackCacheEviction(service, state string)                                  {}
+func (nullTracker) SetDynamicRedirects(service string, hosts, rules int)                      {}
+func (nullTracker) TrackDynamicRedirectPoll(service, outcome string)                          {}
+func (nullTracker) TrackDynamicRedirect(service string, status int)                           {}
 
 type prometheusTracker struct {
 	httpRequests     *prometheus.CounterVec
@@ -60,6 +66,11 @@ type prometheusTracker struct {
 	cacheLeases     *prometheus.CounterVec
 	cacheLeaseWaits *prometheus.CounterVec
 	cacheEvictions  *prometheus.CounterVec
+
+	// Dynamic redirect metrics
+	dynamicRedirectMapSize *prometheus.GaugeVec
+	dynamicRedirectPolls   *prometheus.CounterVec
+	dynamicRedirects       *prometheus.CounterVec
 }
 
 func NewPrometheusTracker() *prometheusTracker {
@@ -165,6 +176,36 @@ func NewPrometheusTracker() *prometheusTracker {
 			[]string{"service", "state"},
 		),
 
+		dynamicRedirectMapSize: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name:      "dynamic_redirect_map_size",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "Size of the dynamic redirect map, labeled by service and dimension (hosts, rules).",
+			},
+			[]string{"service", "dimension"},
+		),
+
+		dynamicRedirectPolls: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:      "dynamic_redirect_polls_total",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "Redirects source poll outcomes, labeled by service and outcome (applied, rejected). Rising 'rejected' means the app is publishing payloads the proxy refuses while the last good map keeps serving.",
+			},
+			[]string{"service", "outcome"},
+		),
+
+		dynamicRedirects: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:      "dynamic_redirects_total",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "Requests answered by the dynamic redirect map, labeled by service and status.",
+			},
+			[]string{"service", "status"},
+		),
+
 		certCount: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name:      "certificates_total",
@@ -188,6 +229,9 @@ func NewPrometheusTracker() *prometheusTracker {
 		tracker.cacheLeases,
 		tracker.cacheLeaseWaits,
 		tracker.cacheEvictions,
+		tracker.dynamicRedirectMapSize,
+		tracker.dynamicRedirectPolls,
+		tracker.dynamicRedirects,
 	)
 
 	return tracker
@@ -249,6 +293,19 @@ func (p *prometheusTracker) TrackCacheLeaseWait(service, outcome string) {
 
 func (p *prometheusTracker) TrackCacheEviction(service, state string) {
 	p.cacheEvictions.WithLabelValues(service, state).Inc()
+}
+
+func (p *prometheusTracker) SetDynamicRedirects(service string, hosts, rules int) {
+	p.dynamicRedirectMapSize.WithLabelValues(service, "hosts").Set(float64(hosts))
+	p.dynamicRedirectMapSize.WithLabelValues(service, "rules").Set(float64(rules))
+}
+
+func (p *prometheusTracker) TrackDynamicRedirectPoll(service, outcome string) {
+	p.dynamicRedirectPolls.WithLabelValues(service, outcome).Inc()
+}
+
+func (p *prometheusTracker) TrackDynamicRedirect(service string, status int) {
+	p.dynamicRedirects.WithLabelValues(service, strconv.Itoa(status)).Inc()
 }
 
 // Private

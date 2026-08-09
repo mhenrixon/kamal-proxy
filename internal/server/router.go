@@ -52,16 +52,17 @@ func RoutedTargetPath(r *http.Request) string {
 }
 
 type Router struct {
-	statePath            string
-	services             *ServiceMap
-	serviceLock          sync.RWMutex
-	saveLock             sync.Mutex
-	recheckOnRestore     bool
-	sanCertManager       *SANCertManager
-	dynamicDomainManager *DynamicDomainManager
-	cacheStore           CacheStore
-	cacheLeases          CacheLeaseOptions
-	lifecycle            ContainerLifecycle
+	statePath              string
+	services               *ServiceMap
+	serviceLock            sync.RWMutex
+	saveLock               sync.Mutex
+	recheckOnRestore       bool
+	sanCertManager         *SANCertManager
+	dynamicDomainManager   *DynamicDomainManager
+	dynamicRedirectManager *DynamicRedirectManager
+	cacheStore             CacheStore
+	cacheLeases            CacheLeaseOptions
+	lifecycle              ContainerLifecycle
 }
 
 type ServiceDescription struct {
@@ -132,6 +133,29 @@ func (r *Router) SetDynamicDomainManager(manager *DynamicDomainManager) {
 
 func (r *Router) DynamicDomainManager() *DynamicDomainManager {
 	return r.dynamicDomainManager
+}
+
+// SetDynamicRedirectManager installs the dynamic redirect coordinator and
+// reconciles it with the already-restored services.
+func (r *Router) SetDynamicRedirectManager(manager *DynamicRedirectManager) {
+	services := map[string]ServiceOptions{}
+
+	r.withReadLock(func() error {
+		r.dynamicRedirectManager = manager
+
+		for name, service := range r.services.All() {
+			services[name] = service.options
+		}
+		return nil
+	})
+
+	for name, options := range services {
+		manager.ServiceDeployed(name, options)
+	}
+}
+
+func (r *Router) DynamicRedirectManager() *DynamicRedirectManager {
+	return r.dynamicRedirectManager
 }
 
 // SetCacheStore installs the response cache store and hands it to the services
@@ -362,6 +386,13 @@ func (r *Router) DeployService(name string, targetURLs, readerURLs []string, opt
 		return err
 	}
 
+	// Before the drain below, which can block for the full drain timeout --
+	// new traffic should see the new source's redirects as soon as the load
+	// balancer is installed, not once the old targets finish draining.
+	if r.dynamicRedirectManager != nil {
+		r.dynamicRedirectManager.ServiceDeployed(name, options)
+	}
+
 	if replaced != nil {
 		replaced.Dispose()
 		replaced.DrainAll(deploymentOptions.DrainTimeout)
@@ -446,6 +477,10 @@ func (r *Router) RemoveService(name string) error {
 
 	if r.dynamicDomainManager != nil {
 		r.dynamicDomainManager.ServiceRemoved(name)
+	}
+
+	if r.dynamicRedirectManager != nil {
+		r.dynamicRedirectManager.ServiceRemoved(name)
 	}
 
 	return nil

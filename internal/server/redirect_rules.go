@@ -104,19 +104,41 @@ func (s *Service) redirectRuleURL(current, desired url.URL) (string, int) {
 		return "", 0
 	}
 
+	return resolveRedirectLocation(match, current, desired)
+}
+
+// resolveRedirectLocation completes a matched rule's target into the URL to
+// answer with. A rule that resolves to the request's own URL is dropped rather
+// than answered: the client would follow it around forever.
+func resolveRedirectLocation(match pathRuleMatch, current, desired url.URL) (string, int) {
 	if !match.target.IsAbs() {
 		match.target.Scheme = desired.Scheme
 		match.target.Host = desired.Host
 	}
 
-	// A rule that resolves to the request's own URL is dropped rather than
-	// answered: the client would follow it around forever.
-	location := match.target.String()
-	if location == current.String() {
+	if sameResource(match.target, &current) {
 		return "", 0
 	}
 
-	return location, match.status
+	return match.target.String(), match.status
+}
+
+// sameResource reports whether two URLs name the same resource, treating an
+// empty path as "/" the way clients do. String equality is not enough: a
+// redirect to "http://host" answered to a request for "http://host/" differs
+// as a string but loops as a redirect. Paths are compared in escaped form, so
+// "/a%2Fb" and "/a/b" stay the distinct resources they are.
+func sameResource(a, b *url.URL) bool {
+	pathA, pathB := a.EscapedPath(), b.EscapedPath()
+	if pathA == "" {
+		pathA = rootPath
+	}
+	if pathB == "" {
+		pathB = rootPath
+	}
+
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host) &&
+		pathA == pathB && a.RawQuery == b.RawQuery
 }
 
 // rewriteRequest returns the request the target should see, with the first
