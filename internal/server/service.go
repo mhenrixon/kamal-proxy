@@ -153,6 +153,13 @@ type ServiceOptions struct {
 	// Empty (the default) serves everyone. See ip_allow_list.go for which
 	// address is matched and why.
 	AllowIPs []string `json:"allow_ips,omitempty"`
+	// DenyIPs refuses the given addresses and CIDR ranges, checked before
+	// AllowIPs: an address on both lists is denied. Empty (the default) denies
+	// nobody. See deny_list.go for which address is matched and why.
+	DenyIPs []string `json:"deny_ips,omitempty"`
+	// DenyUserAgents refuses requests whose full User-Agent matches one of
+	// these RE2 patterns, compiled once at deploy. Checked after the IP rules.
+	DenyUserAgents []string `json:"deny_user_agents,omitempty"`
 	// TrustedProxies names the proxies in front of this one, allowing AllowIPs
 	// and the rate limit to be matched against the forwarded chain rather than
 	// the connecting peer.
@@ -288,6 +295,10 @@ func (so ServiceOptions) Validate() error {
 		return err
 	}
 
+	if err := so.validateDeny(); err != nil {
+		return err
+	}
+
 	if err := so.validateRateLimit(); err != nil {
 		return err
 	}
@@ -362,6 +373,7 @@ type Service struct {
 	middleware     http.Handler
 	basicAuth      *basicAuthCredential
 	allowedIPs     *ipAllowList
+	denyRules      *denyList
 	rateLimiter    *rateLimiter
 	redirects      *pathRuleSet
 	rewrites       *pathRuleSet
@@ -696,6 +708,7 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 	s.middleware = middleware
 	s.basicAuth = s.resolveBasicAuth(options)
 	s.allowedIPs = s.resolveIPAllowList(options)
+	s.denyRules = s.resolveDenyList(options)
 	s.rateLimiter = s.resolveRateLimiter(options)
 
 	return nil
@@ -865,6 +878,11 @@ func (s *Service) createMiddleware(options ServiceOptions, targetOptions TargetO
 
 func (s *Service) serviceRequestWithTarget(w http.ResponseWriter, r *http.Request) {
 	LoggingRequestContext(r).Service = s.name
+
+	// First, even before the allow list: an address on both lists is denied.
+	if s.rejectDenied(w, r) {
+		return
+	}
 
 	if s.rejectDisallowedIP(w, r) {
 		return

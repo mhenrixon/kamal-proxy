@@ -361,6 +361,10 @@ func (r *Router) DeployService(name string, targetURLs, readerURLs []string, opt
 		return err
 	}
 
+	if err := validateDenyHealthCheck(options, targetOptions); err != nil {
+		return err
+	}
+
 	if err := validateRateLimitHealthCheck(options, targetOptions); err != nil {
 		return err
 	}

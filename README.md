@@ -324,6 +324,47 @@ Things worth knowing:
 
 If you use `--error-pages`, add a `403.html` to that directory.
 
+### Denying abusive clients
+
+An allow list is the wrong shape for a service the whole internet is meant to
+reach. When a scraper or a misbehaving bot is hammering a public service right
+now, deploy it with deny rules instead:
+
+    kamal-proxy deploy service1 --target web-1:3000 --deny-ip 203.0.113.0/24
+    kamal-proxy deploy service1 --target web-1:3000 --deny-user-agent 'BadBot/.*'
+
+Matching requests get a `403`. `--deny-ip` takes addresses or CIDR ranges and
+may be repeated or comma-separated. `--deny-user-agent` takes an RE2 pattern
+matched against the full `User-Agent` value, compiled once at deploy, and may
+be repeated (but not comma-separated — patterns can contain commas).
+
+Things worth knowing:
+
+* **The client is resolved exactly as it is for `--allow-ip`** — the connecting
+  address unless `--trusted-proxy` says the peer is yours, in which case the
+  forwarded chain is walked with the same rules. Denying the connecting peer
+  behind a trusted load balancer would deny everyone.
+* **Deny runs first.** Before the allow list (an address on both lists is
+  denied), before the TLS redirect (a `403` solicits nothing), before the rate
+  limit (a denied client never spends budget), and before basic auth (a denied
+  network never learns credentials are wanted).
+* **IPv6 addresses are matched exactly as written** — an explicit address
+  denies that address alone, with none of the rate limiter's `/64` grouping. A
+  deny names exactly what you wrote; write the CIDR if you mean the network.
+* **A missing `User-Agent` is not a crime.** Only an explicit `^$` pattern
+  denies requests that send no `User-Agent` at all — even `.*` does not.
+  Patterns match the whole header value: `BadBot/.*` means that agent, not any
+  agent mentioning it somewhere.
+* **The health check path stays open**, and deploying deny rules with a health
+  check path of `/` is rejected, same as `--allow-ip`.
+* **Denials are counted** in the `kamal_proxy_denials_total` metric, labeled by
+  service and rule kind (`ip`, `user_agent`), and logged rate-limited per
+  service.
+* **Redeploying without the flags removes the block.** Rules live in the
+  service's deploy options like every other knob.
+
+If you use `--error-pages`, add a `403.html` to that directory.
+
 ### Rate limiting a service per client
 
 To cap how fast a single client may hit a service, deploy it with

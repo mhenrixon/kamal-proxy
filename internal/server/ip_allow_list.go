@@ -251,10 +251,10 @@ func parseIPPrefixes(entries []string, flagName string) ([]netip.Prefix, error) 
 }
 
 func (so ServiceOptions) validateAllowIPs() error {
-	// Rate limiting resolves the client the same way, so it is a second
-	// legitimate reason to declare the proxies in front of this one.
-	if len(so.TrustedProxies) > 0 && len(so.AllowIPs) == 0 && so.RateLimit <= 0 {
-		return fmt.Errorf("%w: trusted-proxy requires allow-ip or rate-limit", ErrServiceOptionsInvalid)
+	// Rate limiting and the deny list resolve the client the same way, so each
+	// is its own legitimate reason to declare the proxies in front of this one.
+	if len(so.TrustedProxies) > 0 && len(so.AllowIPs) == 0 && so.RateLimit <= 0 && len(so.DenyIPs) == 0 {
+		return fmt.Errorf("%w: trusted-proxy requires allow-ip, deny-ip or rate-limit", ErrServiceOptionsInvalid)
 	}
 
 	if len(so.AllowIPs) > 0 && so.ClientIPHeader != "" && len(so.TrustedProxies) == 0 {
