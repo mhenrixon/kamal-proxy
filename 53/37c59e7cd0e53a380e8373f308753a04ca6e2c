@@ -1,0 +1,29 @@
+internal/cmd/import.go
+  s_f41de5dce680dd::t_3e0e83783b917e 59-62
+internal/server/traefik_import.go
+  s_f41de5dce680dd::t_b84ca4964f835f 254-260,275-276,278,281-285
+  s_f41de5dce680dd::t_5fcfec3ddc9d79 319-332
+internal/cmd/run.go
+  s_f41de5dce680dd::t_497149ca7bdd05 110-111
+internal/cmd/util.go
+  s_f41de5dce680dd::t_0cc4f5b32b4339 4
+  s_f41de5dce680dd::t_3749efacb022cf 15-28
+internal/server/traefik_import_test.go
+  s_f41de5dce680dd::t_e3394df0d85754 431-456
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5337c59e7cd0e53a380e8373f308753a04ca6e2c",
+  "prompts": {},
+  "sessions": {
+    "s_f41de5dce680dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d2c80b1f-bbbd-4d09-adfd-782472fa6d89",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
