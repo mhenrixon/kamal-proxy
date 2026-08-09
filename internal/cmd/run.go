@@ -107,10 +107,8 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if globalConfig.AlternateConfigDir != "" {
-		if err := os.MkdirAll(globalConfig.AlternateConfigDir, 0700); err != nil {
-			return fmt.Errorf("failed to create data directory %q: %w", globalConfig.AlternateConfigDir, err)
-		}
+	if err := ensureDataDir(); err != nil {
+		return err
 	}
 
 	router := server.NewRouter(globalConfig.StatePath())

@@ -428,6 +428,32 @@ func TestImportTraefikCertificates_ErrorsOnBadInput(t *testing.T) {
 		assert.Equal(t, "null", string(data))
 	})
 
+	t.Run("a state file with a null certificate record is refused", func(t *testing.T) {
+		opts := testTraefikImportOptions(t)
+		writeTraefikAcme(t, opts.ACMEPath, map[string][]map[string]any{
+			"letsencrypt": {traefikCertEntry(t, []string{"app.example.com"}, time.Now().Add(-time.Hour), time.Now().Add(45*24*time.Hour))},
+		})
+		require.NoError(t, os.WriteFile(opts.StatePath,
+			[]byte(`{"certificates":{"san:torn":null},"domain_map":{}}`), 0600))
+
+		_, err := ImportTraefikCertificates(opts)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "san:torn")
+	})
+
+	t.Run("a state file with a dangling domain mapping is refused", func(t *testing.T) {
+		opts := testTraefikImportOptions(t)
+		writeTraefikAcme(t, opts.ACMEPath, map[string][]map[string]any{
+			"letsencrypt": {traefikCertEntry(t, []string{"app.example.com"}, time.Now().Add(-time.Hour), time.Now().Add(45*24*time.Hour))},
+		})
+		require.NoError(t, os.WriteFile(opts.StatePath,
+			[]byte(`{"certificates":{},"domain_map":{"app.example.com":"san:gone"}}`), 0600))
+
+		_, err := ImportTraefikCertificates(opts)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "san:gone")
+	})
+
 	t.Run("a corrupt existing state file is an error, not clobbered", func(t *testing.T) {
 		opts := testTraefikImportOptions(t)
 		writeTraefikAcme(t, opts.ACMEPath, map[string][]map[string]any{

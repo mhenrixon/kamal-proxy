@@ -251,10 +251,13 @@ func parseTraefikEntry(entry traefikCertificate) (*x509.Certificate, []byte, []b
 }
 
 // writeCertificateFiles stores a certificate in the SAN manager's layout, the
-// same paths saveCertificate uses. Each file goes through tmp+rename so a
-// replacement never leaves a torn file behind; if the pair is interrupted
-// between renames, loadState simply fails to load the mismatched pair and the
-// domain re-orders, so the state file stays trustworthy.
+// same paths saveCertificate uses. Both files are staged as temp files before
+// either is renamed into place, so a failed write never touches an existing
+// pair. A crash exactly between the two renames can still leave a mismatched
+// pair: loadState then leaves that certificate unloaded (a nil Certificate)
+// and its domains fall through to ordinary provisioning, so the cost is a
+// re-order, not an unrecoverable state -- and re-running the import rewrites
+// both files.
 func writeCertificateFiles(certsPath, certID string, certPEM, keyPEM []byte) error {
 	certDir := filepath.Join(certsPath, sanitizeFilename(certID))
 	if err := os.MkdirAll(certDir, 0700); err != nil {
@@ -269,13 +272,17 @@ func writeCertificateFiles(certsPath, certID string, certPEM, keyPEM []byte) err
 		{"key.pem", keyPEM},
 	}
 
+	// Stage everything first: a failed or partial write aborts before any
+	// rename, leaving an existing pair untouched.
 	for _, file := range files {
-		path := filepath.Join(certDir, file.name)
-		tmpPath := path + ".tmp"
-		if err := os.WriteFile(tmpPath, file.data, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(certDir, file.name+".tmp"), file.data, 0600); err != nil {
 			return err
 		}
-		if err := os.Rename(tmpPath, path); err != nil {
+	}
+
+	for _, file := range files {
+		path := filepath.Join(certDir, file.name)
+		if err := os.Rename(path+".tmp", path); err != nil {
 			return err
 		}
 	}
@@ -307,6 +314,20 @@ func loadStateForImport(path string) (managerState, error) {
 
 	if state.Certificates == nil || state.DomainMap == nil {
 		return managerState{}, fmt.Errorf("refusing to overwrite %s: it does not look like a certificate state file", path)
+	}
+
+	// A healthy manager never persists null records or dangling mappings
+	// (removeCertificate unmaps domains in the same critical section), so
+	// either one means the file is not trustworthy enough to merge into.
+	for id, cert := range state.Certificates {
+		if cert == nil {
+			return managerState{}, fmt.Errorf("refusing to overwrite %s: certificate %q is null", path, id)
+		}
+	}
+	for domain, id := range state.DomainMap {
+		if _, ok := state.Certificates[id]; !ok {
+			return managerState{}, fmt.Errorf("refusing to overwrite %s: domain %q references a missing certificate %q", path, domain, id)
+		}
 	}
 
 	return state, nil
