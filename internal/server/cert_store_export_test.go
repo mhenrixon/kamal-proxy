@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,8 +142,9 @@ func TestExportCertificateStore_ArchivesTheWholeEstate(t *testing.T) {
 	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
 
 	// The staged write must not leave its temp file behind.
-	_, err = os.Stat(outputPath + ".tmp")
-	assert.True(t, os.IsNotExist(err))
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(outputPath), ".kamal-proxy-cert-export-*"))
+	require.NoError(t, err)
+	assert.Empty(t, leftovers)
 }
 
 func TestExportCertificateStore_EmptyStoreIsAnError(t *testing.T) {
@@ -429,4 +431,18 @@ func TestExportCertificateStore_SurfacesUnrestorableAccountKeyWarning(t *testing
 		joined += warning + "\n"
 	}
 	assert.Contains(t, joined, "account key")
+}
+
+func TestExportCertificateStore_LongOutputBasename(t *testing.T) {
+	// A destination near the filesystem's 255-byte component limit must not
+	// fail because the staging file appends to its name.
+	paths := testCertStorePaths(t)
+	populateCertStore(t, paths, []string{"example.com"})
+
+	longName := strings.Repeat("b", 240) + ".tar.gz"
+	outputPath := filepath.Join(t.TempDir(), longName)
+
+	_, err := ExportCertificateStore(paths, outputPath)
+	require.NoError(t, err)
+	assert.FileExists(t, outputPath)
 }

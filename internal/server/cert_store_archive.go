@@ -69,6 +69,23 @@ type archiveCertPair struct {
 	leaf    *x509.Certificate
 }
 
+// certArchiveWarningKind classifies a reader warning, so callers can act on a
+// class of warning without being coupled to its human-readable text.
+type certArchiveWarningKind int
+
+const (
+	// warnMissingCertificate: the state references a certificate whose files
+	// the archive does not hold; its domains re-order after a restore.
+	warnMissingCertificate certArchiveWarningKind = iota
+	// warnAccountKey: the account key entry is unusable and will not restore.
+	warnAccountKey
+)
+
+type certArchiveWarning struct {
+	kind certArchiveWarningKind
+	text string
+}
+
 // certStoreArchive is a fully read and validated certificate store archive.
 // Reading never touches the store: verification and restore share this.
 type certStoreArchive struct {
@@ -82,7 +99,20 @@ type certStoreArchive struct {
 	// certificate identifier).
 	certs map[string]archiveCertPair
 
-	warnings []string
+	warnings []certArchiveWarning
+}
+
+// warningTexts flattens the warnings for reporting.
+func (a *certStoreArchive) warningTexts() []string {
+	if len(a.warnings) == 0 {
+		return nil
+	}
+
+	texts := make([]string, 0, len(a.warnings))
+	for _, warning := range a.warnings {
+		texts = append(texts, warning.text)
+	}
+	return texts
 }
 
 // readCertStoreArchive reads and validates an exported certificate store
@@ -92,15 +122,23 @@ type certStoreArchive struct {
 // certificate is not an error; a faithful backup of an expired certificate is
 // still a backup.
 func readCertStoreArchive(archivePath string) (certStoreArchive, error) {
-	archive := certStoreArchive{certs: map[string]archiveCertPair{}}
-
 	file, err := os.Open(archivePath)
 	if err != nil {
-		return archive, fmt.Errorf("failed to open the archive: %w", err)
+		return certStoreArchive{}, fmt.Errorf("failed to open the archive: %w", err)
 	}
 	defer file.Close()
 
-	gz, err := gzip.NewReader(file)
+	return readCertStoreArchiveFrom(file, archivePath)
+}
+
+// readCertStoreArchiveFrom is readCertStoreArchive over an already-open
+// source; archivePath only labels error messages. The exporter uses it to
+// verify its staged archive through the file handle it wrote, rather than
+// re-opening a path.
+func readCertStoreArchiveFrom(source io.Reader, archivePath string) (certStoreArchive, error) {
+	archive := certStoreArchive{certs: map[string]archiveCertPair{}}
+
+	gz, err := gzip.NewReader(source)
 	if err != nil {
 		return archive, fmt.Errorf("failed to read the archive %s: %w", archivePath, err)
 	}
@@ -160,6 +198,17 @@ func readCertStoreArchive(archivePath string) (certStoreArchive, error) {
 		if err := archive.placeEntry(header.Name, data, rawCerts); err != nil {
 			return archive, err
 		}
+	}
+
+	// Drain the rest of the stream: the tar reader stops at its end-of-archive
+	// marker, but the gzip trailer -- its checksum included -- still has to
+	// parse and fit the cap, otherwise a corrupt or oversized backup could
+	// verify successfully.
+	if _, err := io.Copy(io.Discard, capped); err != nil {
+		if errors.Is(err, errCertArchiveTooLarge) {
+			return archive, fmt.Errorf("refusing the archive %s: it decompresses beyond %d bytes", archivePath, int64(maxCertArchiveBytes))
+		}
+		return archive, fmt.Errorf("failed to read the archive %s: %w", archivePath, err)
 	}
 
 	// Directory headers alone do not make an archive: emptiness is decided by
@@ -272,8 +321,10 @@ func (a *certStoreArchive) validate() error {
 			// A state-referenced certificate missing from the archive restores
 			// to the same place loadState puts a missing file: the domain
 			// re-orders. Warn, don't fail -- the export warned identically.
-			a.warnings = append(a.warnings,
-				fmt.Sprintf("certificate %s is referenced by the state file but missing from the archive; its domains will re-order after a restore", id))
+			a.warnings = append(a.warnings, certArchiveWarning{
+				kind: warnMissingCertificate,
+				text: fmt.Sprintf("certificate %s is referenced by the state file but missing from the archive; its domains will re-order after a restore", id),
+			})
 			continue
 		}
 
@@ -308,8 +359,10 @@ func (a *certStoreArchive) checkAccountKey() {
 
 	var user acmeUser
 	if err := json.Unmarshal(a.accountKey, &user); err != nil {
-		a.warnings = append(a.warnings,
-			fmt.Sprintf("the archived ACME account key does not parse and will not be restored; the next boot will register a fresh account: %v", err))
+		a.warnings = append(a.warnings, certArchiveWarning{
+			kind: warnAccountKey,
+			text: fmt.Sprintf("the archived ACME account key does not parse and will not be restored; the next boot will register a fresh account: %v", err),
+		})
 		a.accountKey = nil
 		return
 	}
@@ -325,8 +378,10 @@ func (a *certStoreArchive) checkAccountKey() {
 		err = errors.New("the key is not an ECDSA key")
 	}
 
-	a.warnings = append(a.warnings,
-		fmt.Sprintf("the archived ACME account key holds no usable private key and will not be restored; the next boot will register a fresh account: %v", err))
+	a.warnings = append(a.warnings, certArchiveWarning{
+		kind: warnAccountKey,
+		text: fmt.Sprintf("the archived ACME account key holds no usable private key and will not be restored; the next boot will register a fresh account: %v", err),
+	})
 	a.accountKey = nil
 }
 

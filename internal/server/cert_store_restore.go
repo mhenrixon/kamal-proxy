@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"time"
 )
 
@@ -68,7 +69,7 @@ func RestoreCertificateStore(opts CertStoreRestoreOptions) (CertsRestoreSummary,
 	if err != nil {
 		return summary, err
 	}
-	summary.Warnings = archive.warnings
+	summary.Warnings = archive.warningTexts()
 
 	if !opts.Force {
 		if occupant := certStoreOccupant(opts.Paths); occupant != "" {
@@ -158,7 +159,7 @@ func VerifyCertificateArchive(archivePath string) (CertArchiveReport, error) {
 	report.DomainMappings = len(archive.state.DomainMap)
 	report.HasAccountKey = archive.accountKey != nil
 	report.HasDynamicDomains = archive.dynamicDomains != nil
-	report.Warnings = archive.warnings
+	report.Warnings = archive.warningTexts()
 
 	return report, nil
 }
@@ -167,6 +168,7 @@ func VerifyCertificateArchive(archivePath string) (CertArchiveReport, error) {
 // restored state references but the archive does not hold, so those domains
 // actually re-order instead of serving whatever the old store left behind.
 func removeStaleCertDirs(certsPath string, archive certStoreArchive) error {
+	removed := 0
 	for _, id := range slices.Sorted(maps.Keys(archive.state.Certificates)) {
 		dir := sanitizeFilename(id)
 		if _, ok := archive.certs[dir]; ok {
@@ -183,17 +185,45 @@ func removeStaleCertDirs(certsPath string, archive certStoreArchive) error {
 		if err := os.RemoveAll(filepath.Join(certsPath, dir)); err != nil {
 			return fmt.Errorf("failed to remove the stale certificate directory for %s: %w", id, err)
 		}
+		removed++
 	}
 
+	// Commit the unlinks: without a directory sync, a crash after the restore
+	// reported success could resurrect a stale directory and undo the
+	// "missing certificate re-orders" behavior the warnings promised.
+	if removed > 0 {
+		if err := syncDir(certsPath); err != nil {
+			return fmt.Errorf("failed to sync the certificate directory: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// syncDir fsyncs a directory so renames and unlinks inside it survive power
+// loss; only a filesystem that cannot sync a directory is excused.
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+
+	if err := dir.Sync(); err != nil && !errors.Is(err, syscall.ENOTSUP) && !errors.Is(err, syscall.EINVAL) {
+		return err
+	}
 	return nil
 }
 
 // writeFileStaged writes a file through a uniquely named same-directory temp
 // file and a rename, so an interrupted restore never leaves the target
 // truncated, a pre-planted path cannot redirect the write, and a pre-existing
-// temp file cannot lend the private key its old permissions.
+// temp file cannot lend the private key its old permissions. The temp pattern
+// is short and fixed so a near-limit destination basename cannot push it past
+// the filesystem's component length. The directory is synced after the
+// rename, so a restore that reported success survives power loss.
 func writeFileStaged(path string, data []byte) error {
-	file, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	file, err := os.CreateTemp(filepath.Dir(path), ".kamal-proxy-restore-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -224,7 +254,7 @@ func writeFileStaged(path string, data []byte) error {
 		return err
 	}
 
-	return nil
+	return syncDir(filepath.Dir(path))
 }
 
 // certStoreOccupant names the first thing found occupying the target store, or

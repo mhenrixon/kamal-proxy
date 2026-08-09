@@ -3,10 +3,13 @@ package server
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -125,7 +128,7 @@ func ExportCertificateStore(paths CertStorePaths, outputPath string) (CertsExpor
 		return strings.Compare(a.name, b.name)
 	})
 
-	readerWarnings, err := writeCertArchive(outputPath, files)
+	readerWarnings, err := writeCertArchive(outputPath, paths, files)
 	if err != nil {
 		return summary, err
 	}
@@ -135,8 +138,8 @@ func ExportCertificateStore(paths CertStorePaths, outputPath string) (CertsExpor
 	// missing-certificate warnings are skipped: each of those was already
 	// reported above from the disk side.
 	for _, warning := range readerWarnings {
-		if !strings.Contains(warning, "missing from the archive") {
-			summary.Warnings = append(summary.Warnings, warning)
+		if warning.kind != warnMissingCertificate {
+			summary.Warnings = append(summary.Warnings, warning.text)
 		}
 	}
 
@@ -372,19 +375,34 @@ func readFileWithModTime(path string) ([]byte, time.Time, error) {
 	return data, info.ModTime(), nil
 }
 
-// writeCertArchive writes the staged files as a gzipped tarball, staged as a
-// uniquely named same-directory temp file and renamed into place so a partial
-// write never looks like a valid backup and a pre-planted path cannot redirect
-// the write. The archive holds private keys: the temp file is created 0600 by
-// CreateTemp and chmodded to be certain. It is fsynced before the rename --
-// this is a disaster-recovery artifact, "written" has to mean "on disk".
-// It returns the warnings the staged-archive verification produced.
-func writeCertArchive(outputPath string, files []archiveFile) ([]string, error) {
-	file, err := os.CreateTemp(filepath.Dir(outputPath), filepath.Base(outputPath)+".*.tmp")
+// writeCertArchive writes the staged files as a gzipped tarball into the
+// output path's directory, which is pinned as an os.Root handle for the whole
+// create-verify-rename-sync sequence -- re-validated by identity after
+// pinning, so a parent component swapped between the path check and the write
+// cannot redirect the archive into the store. The temp file has a short fixed
+// name pattern (a long destination basename must not push the temp name past
+// the filesystem's component limit), is created 0600, and is fsynced before
+// the rename -- this is a disaster-recovery artifact, "written" has to mean
+// "on disk". It returns the warnings the staged-archive verification
+// produced.
+func writeCertArchive(outputPath string, paths CertStorePaths, files []archiveFile) ([]certArchiveWarning, error) {
+	root, err := os.OpenRoot(filepath.Dir(outputPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open the output directory: %w", err)
+	}
+	defer root.Close()
+
+	base := filepath.Base(outputPath)
+	if err := rejectPinnedRootInsideStore(root, base, paths); err != nil {
+		return nil, err
+	}
+
+	const tmpPattern = ".kamal-proxy-cert-export-*.tmp"
+	file, err := createTempInRoot(root, tmpPattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create the archive: %w", err)
 	}
-	tmpPath := file.Name()
+	tmpName := filepath.Base(file.Name())
 
 	err = func() error {
 		if err := file.Chmod(0600); err != nil {
@@ -419,42 +437,118 @@ func writeCertArchive(outputPath string, files []archiveFile) ([]string, error) 
 	}()
 	if err != nil {
 		file.Close()
-		os.Remove(tmpPath)
+		root.Remove(tmpName)
 		return nil, fmt.Errorf("failed to write the archive: %w", err)
 	}
 
 	if err := file.Close(); err != nil {
-		os.Remove(tmpPath)
+		root.Remove(tmpName)
 		return nil, fmt.Errorf("failed to write the archive: %w", err)
 	}
 
 	// Read the staged archive back through the same strict reader verify and
-	// restore use, so a published export is restorable by construction -- any
-	// disagreement between what was collected and what the reader accepts
-	// fails the backup here, not in a disaster.
-	staged, err := readCertStoreArchive(tmpPath)
+	// restore use -- via the pinned root, not a re-resolved path -- so a
+	// published export is restorable by construction.
+	staged, err := verifyStagedArchive(root, tmpName)
 	if err != nil {
-		os.Remove(tmpPath)
+		root.Remove(tmpName)
 		return nil, fmt.Errorf("the staged archive failed verification: %w", err)
 	}
 
-	if err := os.Rename(tmpPath, outputPath); err != nil {
-		os.Remove(tmpPath)
+	if err := root.Rename(tmpName, base); err != nil {
+		root.Remove(tmpName)
 		return nil, fmt.Errorf("failed to finalize the archive: %w", err)
 	}
 
-	// Sync the directory so the rename itself survives power loss. Only a
-	// filesystem that genuinely does not support syncing a directory is
+	// Sync the pinned directory so the rename itself survives power loss. Only
+	// a filesystem that genuinely does not support syncing a directory is
 	// excused; a real failure means the backup's existence is not durable,
 	// which a disaster-recovery artifact cannot shrug off.
-	dir, err := os.Open(filepath.Dir(outputPath))
-	if err != nil {
-		return nil, fmt.Errorf("failed to sync the archive's directory: %w", err)
-	}
-	defer dir.Close()
-	if err := dir.Sync(); err != nil && !errors.Is(err, syscall.ENOTSUP) && !errors.Is(err, syscall.EINVAL) {
+	if err := syncRootDir(root); err != nil {
 		return nil, fmt.Errorf("failed to sync the archive's directory: %w", err)
 	}
 
 	return staged.warnings, nil
+}
+
+// rejectPinnedRootInsideStore re-validates the already-opened output directory
+// by filesystem identity: the handle, not a pathname, is what the writes go
+// through, so this check cannot be raced by swapping path components.
+func rejectPinnedRootInsideStore(root *os.Root, base string, paths CertStorePaths) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return fmt.Errorf("failed to inspect the output directory: %w", err)
+	}
+	defer dir.Close()
+
+	rootInfo, err := dir.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to inspect the output directory: %w", err)
+	}
+
+	if certsInfo, err := os.Stat(paths.CertsPath); err == nil && os.SameFile(certsInfo, rootInfo) {
+		return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
+	}
+
+	if targetInfo, err := root.Stat(base); err == nil {
+		for _, statePath := range []string{paths.ACMEStatePath, paths.DynamicDomainsStatePath} {
+			if stateInfo, err := os.Stat(statePath); err == nil && os.SameFile(stateInfo, targetInfo) {
+				return fmt.Errorf("refusing to write the archive over the store's own %s", filepath.Base(statePath))
+			}
+		}
+	}
+
+	return nil
+}
+
+// createTempInRoot is os.CreateTemp confined to an os.Root: a uniquely named
+// file created with O_EXCL and mode 0600 inside the pinned directory.
+func createTempInRoot(root *os.Root, pattern string) (*os.File, error) {
+	prefix, suffix, _ := strings.Cut(pattern, "*")
+
+	for range 10 {
+		random := make([]byte, 8)
+		if _, err := rand.Read(random); err != nil {
+			return nil, err
+		}
+
+		name := prefix + hex.EncodeToString(random) + suffix
+		file, err := root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return file, nil
+	}
+
+	return nil, errors.New("could not create a unique temporary file")
+}
+
+// verifyStagedArchive runs the strict archive reader over the staged file,
+// opened through the pinned root.
+func verifyStagedArchive(root *os.Root, tmpName string) (certStoreArchive, error) {
+	staged, err := root.Open(tmpName)
+	if err != nil {
+		return certStoreArchive{}, err
+	}
+	defer staged.Close()
+
+	return readCertStoreArchiveFrom(staged, "staged archive")
+}
+
+// syncRootDir fsyncs the pinned directory; only a filesystem that cannot sync
+// a directory is excused.
+func syncRootDir(root *os.Root) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+
+	if err := dir.Sync(); err != nil && !errors.Is(err, syscall.ENOTSUP) && !errors.Is(err, syscall.EINVAL) {
+		return err
+	}
+	return nil
 }

@@ -399,13 +399,17 @@ func TestSANCertManager_InitializeAdoptsLegacyCacheWithoutDeadlock(t *testing.T)
 	var directory *httptest.Server
 	directory = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+		// t.Error, not require: this runs on the server's goroutine, where
+		// FailNow would kill the handler instead of failing the test.
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"newNonce":   directory.URL + "/nonce",
 			"newAccount": directory.URL + "/account",
 			"newOrder":   directory.URL + "/order",
 			"revokeCert": directory.URL + "/revoke",
 			"keyChange":  directory.URL + "/keychange",
-		}))
+		}); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer directory.Close()
 

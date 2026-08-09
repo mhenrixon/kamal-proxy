@@ -610,3 +610,18 @@ func testRSAAccountKeyJSON(t testing.TB) []byte {
 	require.NoError(t, err)
 	return data
 }
+
+func TestVerifyCertificateArchive_RejectsCorruptGzipTrailer(t *testing.T) {
+	// The tar reader stops at the end-of-archive marker, before the gzip
+	// trailer; a verifier that never drains the stream would bless a backup
+	// whose checksum no longer matches its contents.
+	archivePath, _ := exportedTestArchive(t, []string{"example.com"})
+
+	data, err := os.ReadFile(archivePath)
+	require.NoError(t, err)
+	data[len(data)-1] ^= 0xff // corrupt the gzip trailer (ISIZE)
+	require.NoError(t, os.WriteFile(archivePath, data, 0600))
+
+	_, err = VerifyCertificateArchive(archivePath)
+	require.Error(t, err)
+}
