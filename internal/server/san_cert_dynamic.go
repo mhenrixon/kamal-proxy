@@ -165,6 +165,12 @@ func (m *SANCertManager) ManagedCertificates() []*ManagedCert {
 // removeCertificate drops a certificate from the maps, deletes its cached
 // files, and persists. Domains still mapped to it are unmapped.
 func (m *SANCertManager) removeCertificate(certID string) {
+	// Map changes, file removal, and the state write all happen under one hold
+	// of the store's disk-write lock, so a concurrent persist or export never
+	// captures the removal half-applied.
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
 	m.mu.Lock()
 	delete(m.certificates, certID)
 	for domain, id := range m.domainToCert {
@@ -173,12 +179,6 @@ func (m *SANCertManager) removeCertificate(certID string) {
 		}
 	}
 	m.mu.Unlock()
-
-	// File removal and the state write share the store's disk-write lock, so a
-	// concurrent export never captures a state file referencing a half-removed
-	// certificate directory.
-	m.stateMu.Lock()
-	defer m.stateMu.Unlock()
 
 	if m.config.CachePath != "" {
 		if err := os.RemoveAll(filepath.Join(m.config.CachePath, sanitizeFilename(certID))); err != nil {

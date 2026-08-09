@@ -582,6 +582,12 @@ func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sorted
 		Certificate: &tlsCert,
 	}
 
+	// The maps are published and the files written under one hold of the
+	// store's disk-write lock: if the in-memory maps changed hands first,
+	// another goroutine's persist could snapshot a state file naming this
+	// certificate before its files exist, and an export taken at that moment
+	// would archive the incomplete pair.
+	m.stateMu.Lock()
 	m.mu.Lock()
 	m.certificates[certID] = managed
 	for _, d := range sortedDomains {
@@ -589,10 +595,6 @@ func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sorted
 	}
 	m.mu.Unlock()
 
-	// Save certificate and state under the store's disk-write lock, so a
-	// concurrent export never sees the certificate files and the state file
-	// mid-update.
-	m.stateMu.Lock()
 	if err := m.saveCertificate(certID, resource); err != nil {
 		slog.Warn("Failed to save certificate", "error", err)
 	}

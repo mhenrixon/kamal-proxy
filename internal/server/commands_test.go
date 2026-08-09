@@ -133,7 +133,16 @@ func TestCommandHandler_CertsExport(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "backup.tar.gz")
 	require.NoError(t, handler.CertsExport(CertsExportArgs{Path: outputPath}, &summary))
 	assert.Equal(t, 1, summary.Certificates)
-	assert.FileExists(t, outputPath)
+
+	// The summary counts come from acme.state; prove the tarball itself holds
+	// the estate, not just that a file appeared.
+	entries := readCertArchive(t, outputPath)
+	certDir := "certs/" + sanitizeFilename(sanCertID([]string{"example.com"}))
+	assert.Contains(t, entries, "acme.state")
+	assert.Contains(t, entries, "certs/acme_user.json")
+	assert.Contains(t, entries, "dynamic-domains.state")
+	assert.Contains(t, entries, certDir+"/cert.pem")
+	assert.Contains(t, entries, certDir+"/key.pem")
 
 	// With a manager installed, the export goes through its disk-write lock.
 	router.SetSANCertManager(testSANCertManager(t))

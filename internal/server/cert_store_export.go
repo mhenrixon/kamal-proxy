@@ -3,6 +3,7 @@ package server
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,14 +80,26 @@ func (m *SANCertManager) ExportStore(paths CertStorePaths, outputPath string) (C
 func ExportCertificateStore(paths CertStorePaths, outputPath string) (CertsExportSummary, error) {
 	summary := CertsExportSummary{}
 
+	if err := rejectOutputInsideStore(paths, outputPath); err != nil {
+		return summary, err
+	}
+
 	state, files, err := collectStateEntry(paths.ACMEStatePath, &summary)
 	if err != nil {
 		return summary, err
 	}
+	hasState := len(files) > 0
 
 	certFiles, err := collectCertsEntries(paths.CertsPath, state, &summary)
 	if err != nil {
 		return summary, err
+	}
+
+	// Certificates without a state file cannot restore into a working store
+	// (the state is the estate's index), and the archive reader rejects that
+	// shape -- fail the backup now rather than hand over an unrestorable one.
+	if !hasState && len(certFiles) > 0 {
+		return summary, fmt.Errorf("the certificate store has certificates but no state file at %s; refusing to export an unrestorable archive", paths.ACMEStatePath)
 	}
 	files = append(files, certFiles...)
 
@@ -125,6 +138,13 @@ func collectStateEntry(path string, summary *CertsExportSummary) (managerState, 
 
 	if err := json.Unmarshal(data, &state); err != nil {
 		return state, nil, fmt.Errorf("refusing to export the unreadable state file %s: %w", path, err)
+	}
+
+	// An inconsistent state file exports into an archive the verifier and the
+	// restore path reject; fail the backup while the operator can still fix
+	// the live store.
+	if err := validateManagerState(state); err != nil {
+		return state, nil, fmt.Errorf("refusing to export the state file %s: %w", path, err)
 	}
 
 	summary.Certificates = len(state.Certificates)
@@ -177,8 +197,10 @@ func collectCertsEntries(certsPath string, state managerState, summary *CertsExp
 }
 
 // collectCertPair captures one certificate directory's cert.pem and key.pem.
-// A directory with only half the pair is skipped with a warning: restoring it
-// would leave a certificate the manager cannot load.
+// A directory with only half the pair, or a pair that does not parse, is
+// skipped with a warning: the strict archive reader would reject the whole
+// archive over it, and a certificate the manager cannot load is not worth
+// failing the backup for.
 func collectCertPair(certsPath, dir string, summary *CertsExportSummary) ([]archiveFile, bool) {
 	pair := make([]archiveFile, 0, 2)
 
@@ -192,7 +214,37 @@ func collectCertPair(certsPath, dir string, summary *CertsExportSummary) ([]arch
 		pair = append(pair, archiveFile{name: archiveCertsPrefix + dir + "/" + name, data: data, modTime: modTime})
 	}
 
+	if _, err := tls.X509KeyPair(pair[0].data, pair[1].data); err != nil {
+		summary.Warnings = append(summary.Warnings,
+			fmt.Sprintf("not exported: certificate %s does not parse: %v", dir, err))
+		return nil, false
+	}
+
 	return pair, true
+}
+
+// rejectOutputInsideStore refuses an output path that would overwrite part of
+// the store being exported -- writing the archive over acme.state completes
+// the export and then destroys the live state it archived.
+func rejectOutputInsideStore(paths CertStorePaths, outputPath string) error {
+	output, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve the output path: %w", err)
+	}
+
+	for _, statePath := range []string{paths.ACMEStatePath, paths.DynamicDomainsStatePath} {
+		if abs, err := filepath.Abs(statePath); err == nil && abs == output {
+			return fmt.Errorf("refusing to write the archive over the store's own %s", filepath.Base(statePath))
+		}
+	}
+
+	if certsAbs, err := filepath.Abs(paths.CertsPath); err == nil {
+		if output == certsAbs || strings.HasPrefix(output, certsAbs+string(filepath.Separator)) {
+			return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
+		}
+	}
+
+	return nil
 }
 
 // warnMissingStateCerts flags certificates the state file references that have
@@ -243,17 +295,23 @@ func readFileWithModTime(path string) ([]byte, time.Time, error) {
 }
 
 // writeCertArchive writes the staged files as a gzipped tarball, staged as a
-// temp file and renamed into place so a partial write never looks like a valid
-// backup. The archive holds private keys: it is created with mode 0600.
+// uniquely named same-directory temp file and renamed into place so a partial
+// write never looks like a valid backup and a pre-planted path cannot redirect
+// the write. The archive holds private keys: the temp file is created 0600 by
+// CreateTemp and chmodded to be certain. It is fsynced before the rename --
+// this is a disaster-recovery artifact, "written" has to mean "on disk".
 func writeCertArchive(outputPath string, files []archiveFile) error {
-	tmpPath := outputPath + ".tmp"
-
-	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	file, err := os.CreateTemp(filepath.Dir(outputPath), filepath.Base(outputPath)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create the archive: %w", err)
 	}
+	tmpPath := file.Name()
 
 	err = func() error {
+		if err := file.Chmod(0600); err != nil {
+			return err
+		}
+
 		gz := gzip.NewWriter(file)
 		tw := tar.NewWriter(gz)
 
@@ -275,7 +333,10 @@ func writeCertArchive(outputPath string, files []archiveFile) error {
 		if err := tw.Close(); err != nil {
 			return err
 		}
-		return gz.Close()
+		if err := gz.Close(); err != nil {
+			return err
+		}
+		return file.Sync()
 	}()
 	if err != nil {
 		file.Close()
@@ -291,6 +352,13 @@ func writeCertArchive(outputPath string, files []archiveFile) error {
 	if err := os.Rename(tmpPath, outputPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to finalize the archive: %w", err)
+	}
+
+	// Best-effort directory sync so the rename itself survives power loss;
+	// not every filesystem supports it, and the archive is already durable.
+	if dir, err := os.Open(filepath.Dir(outputPath)); err == nil {
+		_ = dir.Sync()
+		dir.Close()
 	}
 
 	return nil

@@ -14,12 +14,20 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/go-acme/lego/v4/certcrypto"
 )
 
-// maxCertArchiveBytes caps how much an archive may decompress to. The whole
-// estate of a 1,000-domain fleet is a few megabytes; anything near this limit
-// is not a certificate backup.
-const maxCertArchiveBytes = 512 << 20
+// maxCertArchiveBytes caps how much an archive may decompress to, and
+// maxCertArchiveEntries caps how many entries it may hold (zero-length entries
+// cost no payload bytes, so a byte cap alone would not bound the tar walk).
+// The whole estate of a 1,000-domain fleet is a few megabytes across a few
+// thousand entries; anything near these limits is not a certificate backup.
+const (
+	maxCertArchiveBytes   = 512 << 20
+	maxCertArchiveEntries = 100_000
+)
 
 // archiveCertPair is one certificate directory from an archive, parsed and
 // validated.
@@ -80,6 +88,11 @@ func readCertStoreArchive(archivePath string) (certStoreArchive, error) {
 			return archive, fmt.Errorf("failed to read the archive %s: %w", archivePath, err)
 		}
 
+		entryCount++
+		if entryCount > maxCertArchiveEntries {
+			return archive, fmt.Errorf("refusing the archive %s: more than %d entries", archivePath, maxCertArchiveEntries)
+		}
+
 		if header.Typeflag == tar.TypeDir {
 			continue
 		}
@@ -96,7 +109,6 @@ func readCertStoreArchive(archivePath string) (certStoreArchive, error) {
 		if err != nil {
 			return archive, fmt.Errorf("failed to read the archive entry %q: %w", header.Name, err)
 		}
-		entryCount++
 
 		if err := archive.placeEntry(header.Name, data, rawCerts); err != nil {
 			return archive, err
@@ -143,7 +155,11 @@ func (a *certStoreArchive) placeEntry(name string, data []byte, rawCerts map[str
 
 	if rest, ok := strings.CutPrefix(name, archiveCertsPrefix); ok {
 		dir, base, found := strings.Cut(rest, "/")
-		if found && dir != "" && (base == "cert.pem" || base == "key.pem") && !strings.Contains(base, "/") {
+		// The directory must already be in the sanitized form the exporter
+		// writes: two spellings that sanitize to the same on-disk path would
+		// otherwise silently overwrite each other during a restore.
+		if found && dir != "" && dir == sanitizeFilename(dir) &&
+			(base == "cert.pem" || base == "key.pem") && !strings.Contains(base, "/") {
 			if rawCerts[dir] == nil {
 				rawCerts[dir] = map[string][]byte{}
 			}
@@ -183,8 +199,11 @@ func (a *certStoreArchive) assembleCertPairs(rawCerts map[string]map[string][]by
 	return nil
 }
 
-// validate cross-checks the state file against the archived certificates.
+// validate cross-checks the state file against the archived certificates and
+// discards an account key that could not carry the ACME identity forward.
 func (a *certStoreArchive) validate() error {
+	a.checkAccountKey()
+
 	if !a.hasState {
 		if len(a.certs) > 0 {
 			return errors.New("the archive contains certificates but no acme.state; it cannot restore a working store")
@@ -196,17 +215,61 @@ func (a *certStoreArchive) validate() error {
 		return fmt.Errorf("the archive's %s is not trustworthy: %w", archiveStateEntry, err)
 	}
 
-	// A state-referenced certificate missing from the archive restores to the
-	// same place loadState puts a missing file: the domain re-orders. Warn,
-	// don't fail -- the export warned identically when it happened.
 	for _, id := range slices.Sorted(maps.Keys(a.state.Certificates)) {
-		if _, ok := a.certs[sanitizeFilename(id)]; !ok {
+		record := a.state.Certificates[id]
+
+		pair, ok := a.certs[sanitizeFilename(id)]
+		if !ok {
+			// A state-referenced certificate missing from the archive restores
+			// to the same place loadState puts a missing file: the domain
+			// re-orders. Warn, don't fail -- the export warned identically.
 			a.warnings = append(a.warnings,
 				fmt.Sprintf("certificate %s is referenced by the state file but missing from the archive; its domains will re-order after a restore", id))
+			continue
+		}
+
+		// The certificate must actually be what the state record says it is:
+		// restoring a record whose leaf names other hosts or expired earlier
+		// would have the manager serving the wrong certificate, or keeping it
+		// past its real expiry.
+		for _, domain := range record.Domains {
+			if !slices.Contains(pair.leaf.DNSNames, domain) {
+				return fmt.Errorf("the archived certificate %s does not cover %q, which its state record claims", id, domain)
+			}
+		}
+		// Compared at second precision: x509 validity has no sub-second field,
+		// while state metadata written from other sources may.
+		if !record.NotAfter.Truncate(time.Second).Equal(pair.leaf.NotAfter.Truncate(time.Second)) {
+			return fmt.Errorf("the archived certificate %s expires %s, but its state record says %s",
+				id, pair.leaf.NotAfter.Format(time.RFC3339), record.NotAfter.Format(time.RFC3339))
 		}
 	}
 
 	return nil
+}
+
+// checkAccountKey drops an account key entry that does not hold usable key
+// material, with a warning: restoring it would make the next boot silently
+// register a fresh ACME account while the operator believes the identity was
+// preserved. The estate's certificates still restore.
+func (a *certStoreArchive) checkAccountKey() {
+	if a.accountKey == nil {
+		return
+	}
+
+	var user acmeUser
+	if err := json.Unmarshal(a.accountKey, &user); err != nil {
+		a.warnings = append(a.warnings,
+			fmt.Sprintf("the archived ACME account key does not parse and will not be restored; the next boot will register a fresh account: %v", err))
+		a.accountKey = nil
+		return
+	}
+
+	if _, err := certcrypto.ParsePEMPrivateKey(user.KeyPEM); err != nil {
+		a.warnings = append(a.warnings,
+			fmt.Sprintf("the archived ACME account key holds no usable private key and will not be restored; the next boot will register a fresh account: %v", err))
+		a.accountKey = nil
+	}
 }
 
 // validateManagerState checks the invariants a healthy manager always

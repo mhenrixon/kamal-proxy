@@ -3,6 +3,9 @@ package server
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"os"
@@ -10,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,11 +59,24 @@ func populateCertStore(t testing.TB, paths CertStorePaths, domainSets ...[]strin
 	require.NoError(t, os.MkdirAll(paths.CertsPath, 0700))
 	require.NoError(t, writeManagerStateFile(paths.ACMEStatePath, state))
 	require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, "acme_user.json"),
-		[]byte(`{"email":"ops@example.com","key_pem":"dGVzdA=="}`), 0600))
+		testAccountKeyJSON(t), 0600))
 	require.NoError(t, os.WriteFile(paths.DynamicDomainsStatePath,
 		[]byte(`{"services":{},"quarantine":{},"saved_at":"2026-08-09T00:00:00Z"}`), 0600))
 
 	return state
+}
+
+// testAccountKeyJSON builds an acme_user.json with real key material, the way
+// saveUser writes it.
+func testAccountKeyJSON(t testing.TB) []byte {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	data, err := json.Marshal(acmeUser{Email: "ops@example.com", KeyPEM: certcrypto.PEMEncode(key)})
+	require.NoError(t, err)
+	return data
 }
 
 // readCertArchive extracts an exported archive into a name -> content map.
@@ -250,15 +267,81 @@ func TestSANCertManager_ExportStoreHoldsTheDiskLock(t *testing.T) {
 	assert.Equal(t, 1, summary.Domains)
 }
 
-func TestExportCertificateStore_StateWithoutMapsStillCounts(t *testing.T) {
-	paths := testCertStorePaths(t)
-	require.NoError(t, os.MkdirAll(paths.CertsPath, 0700))
-	require.NoError(t, os.WriteFile(paths.ACMEStatePath, []byte(`{"saved_at":"2026-08-09T00:00:00Z"}`), 0600))
+func TestExportCertificateStore_InvalidStateIsAnError(t *testing.T) {
+	tests := []struct {
+		name  string
+		state string
+	}{
+		// A state without its maps would export into an archive the reader
+		// rejects, so the export fails instead of producing it.
+		{name: "missing maps", state: `{"saved_at":"2026-08-09T00:00:00Z"}`},
+		{name: "dangling domain mapping", state: `{"certificates":{},"domain_map":{"a.test":"san:missing"},"saved_at":"2026-08-09T00:00:00Z"}`},
+		{name: "null certificate record", state: `{"certificates":{"san:x":null},"domain_map":{},"saved_at":"2026-08-09T00:00:00Z"}`},
+	}
 
-	summary, err := ExportCertificateStore(paths, filepath.Join(t.TempDir(), "backup.tar.gz"))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testCertStorePaths(t)
+			require.NoError(t, os.MkdirAll(paths.CertsPath, 0700))
+			require.NoError(t, os.WriteFile(paths.ACMEStatePath, []byte(tt.state), 0600))
+
+			_, err := ExportCertificateStore(paths, filepath.Join(t.TempDir(), "backup.tar.gz"))
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestExportCertificateStore_CertsWithoutStateIsAnError(t *testing.T) {
+	paths := testCertStorePaths(t)
+	populateCertStore(t, paths, []string{"example.com"})
+	require.NoError(t, os.Remove(paths.ACMEStatePath))
+
+	_, err := ExportCertificateStore(paths, filepath.Join(t.TempDir(), "backup.tar.gz"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no state file")
+}
+
+func TestExportCertificateStore_SkipsUnparseablePairs(t *testing.T) {
+	paths := testCertStorePaths(t)
+	populateCertStore(t, paths, []string{"example.com"}, []string{"broken.test"})
+
+	brokenID := sanitizeFilename(sanCertID([]string{"broken.test"}))
+	require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, brokenID, "cert.pem"), []byte("not a cert"), 0600))
+
+	outputPath := filepath.Join(t.TempDir(), "backup.tar.gz")
+	summary, err := ExportCertificateStore(paths, outputPath)
 	require.NoError(t, err)
-	assert.Equal(t, 0, summary.Certificates)
-	assert.Equal(t, 0, summary.Domains)
+
+	// Both the skip and the resulting state/disk mismatch warn.
+	require.NotEmpty(t, summary.Warnings)
+	joined := ""
+	for _, warning := range summary.Warnings {
+		joined += warning + "\n"
+	}
+	assert.Contains(t, joined, "does not parse")
+
+	entries := readCertArchive(t, outputPath)
+	assert.NotContains(t, entries, "certs/"+brokenID+"/cert.pem")
+	assert.NotContains(t, entries, "certs/"+brokenID+"/key.pem")
+}
+
+func TestExportCertificateStore_RejectsOutputInsideTheStore(t *testing.T) {
+	paths := testCertStorePaths(t)
+	populateCertStore(t, paths, []string{"example.com"})
+
+	for _, outputPath := range []string{
+		paths.ACMEStatePath,
+		paths.DynamicDomainsStatePath,
+		filepath.Join(paths.CertsPath, "backup.tar.gz"),
+	} {
+		_, err := ExportCertificateStore(paths, outputPath)
+		require.Error(t, err, "output path %s is inside the store", outputPath)
+		assert.Contains(t, err.Error(), "refusing")
+	}
+
+	// The store must be untouched afterwards.
+	_, err := ExportCertificateStore(paths, filepath.Join(t.TempDir(), "backup.tar.gz"))
+	require.NoError(t, err)
 }
 
 func TestExportCertificateStore_SkipsInvalidOptionalFiles(t *testing.T) {

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -63,16 +62,18 @@ func newImportCertsCommand() *importCertsCommand {
 	importCertsCommand.cmd.MarkFlagsOneRequired("traefik-acme", "archive")
 	importCertsCommand.cmd.MarkFlagsMutuallyExclusive("traefik-acme", "archive")
 	importCertsCommand.cmd.MarkFlagsMutuallyExclusive("archive", "resolver")
-	importCertsCommand.cmd.MarkFlagsMutuallyExclusive("verify", "force")
+	// --verify and --force are archive-only and meaningless for a Traefik
+	// import; grouping traefik-acme with them makes cobra reject those
+	// combinations while still allowing --archive with either.
+	importCertsCommand.cmd.MarkFlagsMutuallyExclusive("verify", "force", "traefik-acme")
 
 	return importCertsCommand
 }
 
 func (c *importCertsCommand) run(cmd *cobra.Command, args []string) error {
+	// The flag groups guarantee --verify comes with --archive: one of
+	// traefik-acme/archive is required, and verify excludes traefik-acme.
 	if c.verify {
-		if c.archivePath == "" {
-			return errors.New("--verify requires --archive")
-		}
 		return c.runVerify(cmd)
 	}
 

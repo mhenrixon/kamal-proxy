@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/rpc"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -38,7 +39,7 @@ type exportCertsCommand struct {
 func newExportCertsCommand() *exportCertsCommand {
 	exportCertsCommand := &exportCertsCommand{}
 	exportCertsCommand.cmd = &cobra.Command{
-		Use:   "certs [output-path]",
+		Use:   "certs <output-path>",
 		Short: "Export the certificate store to an archive for disaster recovery",
 		Long: "Export the certificate store -- ACME account key, issued certificates,\n" +
 			"domain mappings, and dynamic domain state -- to a gzipped tar archive.\n\n" +
@@ -86,6 +87,13 @@ func (c *exportCertsCommand) export(cmd *cobra.Command, outputPath string) (serv
 	if dialErr == nil {
 		defer client.Close()
 		err := client.Call("kamal-proxy.CertsExport", server.CertsExportArgs{Path: outputPath}, &summary)
+		if err != nil && strings.Contains(err.Error(), "can't find method") {
+			// A proxy is answering the socket but predates this command. Do
+			// NOT fall back to reading the data dir -- that proxy is live and
+			// writing, which is exactly the torn-snapshot case the RPC path
+			// exists to prevent.
+			return summary, fmt.Errorf("the running proxy does not support certificate export; upgrade it, or stop it and re-run for an offline export: %w", err)
+		}
 		return summary, err
 	}
 

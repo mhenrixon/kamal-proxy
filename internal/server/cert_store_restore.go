@@ -83,18 +83,26 @@ func RestoreCertificateStore(opts CertStoreRestoreOptions) (CertsRestoreSummary,
 		}
 	}
 
+	// A forced restore over an existing store must not let a leftover target
+	// directory answer for a state-referenced certificate the archive itself
+	// does not hold -- the "will re-order" warning would instead silently
+	// revive whatever pair the old store had under that identifier.
+	if err := removeStaleCertDirs(opts.Paths.CertsPath, archive); err != nil {
+		return summary, err
+	}
+
 	if archive.accountKey != nil {
 		if err := os.MkdirAll(opts.Paths.CertsPath, 0700); err != nil {
 			return summary, fmt.Errorf("failed to create the certificate directory: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(opts.Paths.CertsPath, acmeUserFile), archive.accountKey, 0600); err != nil {
+		if err := writeFileStaged(filepath.Join(opts.Paths.CertsPath, acmeUserFile), archive.accountKey); err != nil {
 			return summary, fmt.Errorf("failed to restore the ACME account key: %w", err)
 		}
 		summary.AccountKeyRestored = true
 	}
 
 	if archive.dynamicDomains != nil {
-		if err := os.WriteFile(opts.Paths.DynamicDomainsStatePath, archive.dynamicDomains, 0600); err != nil {
+		if err := writeFileStaged(opts.Paths.DynamicDomainsStatePath, archive.dynamicDomains); err != nil {
 			return summary, fmt.Errorf("failed to restore the dynamic domains state: %w", err)
 		}
 		summary.DynamicDomainsRestored = true
@@ -150,6 +158,35 @@ func VerifyCertificateArchive(archivePath string) (CertArchiveReport, error) {
 	report.Warnings = archive.warnings
 
 	return report, nil
+}
+
+// removeStaleCertDirs deletes target directories for certificates the
+// restored state references but the archive does not hold, so those domains
+// actually re-order instead of serving whatever the old store left behind.
+func removeStaleCertDirs(certsPath string, archive certStoreArchive) error {
+	for _, id := range slices.Sorted(maps.Keys(archive.state.Certificates)) {
+		dir := sanitizeFilename(id)
+		if _, ok := archive.certs[dir]; ok {
+			continue
+		}
+
+		if err := os.RemoveAll(filepath.Join(certsPath, dir)); err != nil {
+			return fmt.Errorf("failed to remove the stale certificate directory for %s: %w", id, err)
+		}
+	}
+
+	return nil
+}
+
+// writeFileStaged writes a file through a same-directory temp file and a
+// rename, so an interrupted restore never leaves the target truncated.
+func writeFileStaged(path string, data []byte) error {
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
 }
 
 // certStoreOccupant names the first thing found occupying the target store, or

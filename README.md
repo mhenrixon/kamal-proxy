@@ -1215,10 +1215,13 @@ kamal-proxy import certs --archive /backup/certs-2026-08-09.tar.gz --verify
 2. Restore the estate: `kamal-proxy import certs --archive /backup/certs-2026-08-09.tar.gz`
    (add `--data-dir` if the proxy runs with one). The import refuses to
    overwrite a non-empty certificate store unless you pass `--force`.
-3. Start the proxy.
-4. Verify: `kamal-proxy domains list` and the certificate expiry metrics
-   should show the restored estate; handshakes for restored domains serve
-   immediately, with no new ACME orders.
+3. Start the proxy, then redeploy your TLS services (or restore the routing
+   state separately) — the archive holds certificates, not routes, and the
+   proxy refuses a TLS handshake for a host no service is deployed for.
+4. Verify a restored static host with a TLS handshake; the certificate expiry
+   metrics should show the restored estate, with no new ACME orders.
+   (`kamal-proxy domains list` covers only dynamic `--tls-domains-source`
+   domains.)
 
 Restores run offline against the data directory, sharing their writing path
 with the Traefik `acme.json` importer (`import certs --traefik-acme`), so

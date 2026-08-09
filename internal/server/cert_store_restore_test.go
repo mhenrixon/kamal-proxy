@@ -3,6 +3,9 @@ package server
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,8 +16,13 @@ import (
 )
 
 // exportedTestArchive populates a store and exports it, returning the archive
-// path and the state that was captured.
+// path, the state that was captured, and the source store's paths.
 func exportedTestArchive(t testing.TB, domainSets ...[]string) (string, managerState) {
+	archivePath, state, _ := exportedTestArchiveWithSource(t, domainSets...)
+	return archivePath, state
+}
+
+func exportedTestArchiveWithSource(t testing.TB, domainSets ...[]string) (string, managerState, CertStorePaths) {
 	t.Helper()
 
 	paths := testCertStorePaths(t)
@@ -24,7 +32,7 @@ func exportedTestArchive(t testing.TB, domainSets ...[]string) (string, managerS
 	_, err := ExportCertificateStore(paths, archivePath)
 	require.NoError(t, err)
 
-	return archivePath, state
+	return archivePath, state, paths
 }
 
 // writeTestArchive crafts a tar.gz with exactly the given entries, for
@@ -48,7 +56,7 @@ func writeTestArchive(t testing.TB, path string, entries map[string][]byte) {
 }
 
 func TestRestoreCertificateStore_RoundTrip(t *testing.T) {
-	archivePath, exported := exportedTestArchive(t, []string{"example.com", "www.example.com"}, []string{"other.test"})
+	archivePath, exported, source := exportedTestArchiveWithSource(t, []string{"example.com", "www.example.com"}, []string{"other.test"})
 
 	target := testCertStorePaths(t)
 	summary, err := RestoreCertificateStore(CertStoreRestoreOptions{ArchivePath: archivePath, Paths: target})
@@ -81,7 +89,9 @@ func TestRestoreCertificateStore_RoundTrip(t *testing.T) {
 	// Account key and dynamic domain state come back byte-for-byte.
 	accountKey, err := os.ReadFile(filepath.Join(target.CertsPath, "acme_user.json"))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"email":"ops@example.com","key_pem":"dGVzdA=="}`, string(accountKey))
+	sourceKey, err := os.ReadFile(filepath.Join(source.CertsPath, "acme_user.json"))
+	require.NoError(t, err)
+	assert.Equal(t, sourceKey, accountKey)
 
 	_, err = os.Stat(target.DynamicDomainsStatePath)
 	require.NoError(t, err)
@@ -341,4 +351,151 @@ func TestVerifyCertificateArchive_NotAnArchive(t *testing.T) {
 
 	_, err := VerifyCertificateArchive(archivePath)
 	require.Error(t, err)
+}
+
+// stateJSON marshals a managerState for hand-built archives.
+func stateJSON(t testing.TB, state managerState) []byte {
+	t.Helper()
+
+	data, err := json.Marshal(state)
+	require.NoError(t, err)
+	return data
+}
+
+// resourceLeaf parses the leaf certificate of a test resource.
+func resourceLeaf(t testing.TB, certPEM, keyPEM []byte) *x509.Certificate {
+	t.Helper()
+
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	require.NoError(t, err)
+	leaf, err := x509.ParseCertificate(tlsCert.Certificate[0])
+	require.NoError(t, err)
+	return leaf
+}
+
+func TestRestoreCertificateStore_ForceRemovesStaleStateReferencedDirs(t *testing.T) {
+	// The archive's state references a certificate whose files the archive
+	// does not hold. The target store has a leftover directory under that same
+	// identifier: restoring must remove it, or the "will re-order" warning
+	// would silently revive the old pair instead.
+	staleID := sanCertID([]string{"stale.test"})
+	notAfter := time.Now().Add(30 * 24 * time.Hour)
+
+	archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+	writeTestArchive(t, archivePath, map[string][]byte{
+		"acme.state": stateJSON(t, managerState{
+			Certificates: map[string]*ManagedCert{
+				staleID: {Identifier: staleID, Domains: []string{"stale.test"}, NotAfter: notAfter},
+			},
+			DomainMap: map[string]string{"stale.test": staleID},
+			SavedAt:   time.Now(),
+		}),
+	})
+
+	paths := testCertStorePaths(t)
+	old := testCertResource(t, []string{"stale.test"}, time.Now().Add(-time.Hour), notAfter)
+	require.NoError(t, writeCertificateFiles(paths.CertsPath, staleID, old.Certificate, old.PrivateKey))
+
+	summary, err := RestoreCertificateStore(CertStoreRestoreOptions{ArchivePath: archivePath, Paths: paths, Force: true})
+	require.NoError(t, err)
+	require.NotEmpty(t, summary.Warnings)
+
+	assert.NoDirExists(t, filepath.Join(paths.CertsPath, sanitizeFilename(staleID)),
+		"the stale directory must not answer for a certificate the archive does not hold")
+}
+
+func TestReadCertStoreArchive_RejectsUnsanitizedDirNames(t *testing.T) {
+	// "san:x" sanitizes to "san_x": two spellings, one on-disk path. Only the
+	// sanitized form the exporter writes is accepted.
+	archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+	writeTestArchive(t, archivePath, map[string][]byte{
+		"acme.state":           []byte(`{"certificates":{},"domain_map":{},"saved_at":"2026-08-09T00:00:00Z"}`),
+		"certs/san:x/cert.pem": []byte("x"),
+		"certs/san:x/key.pem":  []byte("x"),
+	})
+
+	_, err := VerifyCertificateArchive(archivePath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected archive entry")
+}
+
+func TestVerifyCertificateArchive_DropsInvalidAccountKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  []byte
+	}{
+		{name: "not JSON at all is rejected at export time, valid JSON without key material is not", key: []byte(`{"email":"ops@example.com"}`)},
+		{name: "garbage key material", key: []byte(`{"email":"ops@example.com","key_pem":"bm90IGEga2V5"}`)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+			writeTestArchive(t, archivePath, map[string][]byte{
+				"acme.state":           []byte(`{"certificates":{},"domain_map":{},"saved_at":"2026-08-09T00:00:00Z"}`),
+				"certs/acme_user.json": tt.key,
+			})
+
+			report, err := VerifyCertificateArchive(archivePath)
+			require.NoError(t, err)
+			assert.False(t, report.HasAccountKey)
+			require.NotEmpty(t, report.Warnings)
+
+			// The restore skips it rather than planting a broken identity.
+			summary, err := RestoreCertificateStore(CertStoreRestoreOptions{ArchivePath: archivePath, Paths: testCertStorePaths(t)})
+			require.NoError(t, err)
+			assert.False(t, summary.AccountKeyRestored)
+		})
+	}
+}
+
+func TestVerifyCertificateArchive_RejectsLeafDisagreeingWithState(t *testing.T) {
+	resource := testCertResource(t, []string{"example.com"}, time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour))
+	leaf := resourceLeaf(t, resource.Certificate, resource.PrivateKey)
+	certID := sanCertID([]string{"example.com"})
+	dir := sanitizeFilename(certID)
+
+	tests := []struct {
+		name    string
+		record  *ManagedCert
+		errPart string
+	}{
+		{
+			name:    "state claims a domain the leaf does not cover",
+			record:  &ManagedCert{Identifier: certID, Domains: []string{"evil.test", "example.com"}, NotAfter: leaf.NotAfter},
+			errPart: "evil.test",
+		},
+		{
+			name:    "state expiry disagrees with the leaf",
+			record:  &ManagedCert{Identifier: certID, Domains: []string{"example.com"}, NotAfter: leaf.NotAfter.Add(90 * 24 * time.Hour)},
+			errPart: "expires",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			domainMap := map[string]string{}
+			for _, domain := range tt.record.Domains {
+				domainMap[domain] = certID
+			}
+
+			archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+			writeTestArchive(t, archivePath, map[string][]byte{
+				"acme.state": stateJSON(t, managerState{
+					Certificates: map[string]*ManagedCert{certID: tt.record},
+					DomainMap:    domainMap,
+					SavedAt:      time.Now(),
+				}),
+				"certs/" + dir + "/cert.pem": resource.Certificate,
+				"certs/" + dir + "/key.pem":  resource.PrivateKey,
+			})
+
+			_, err := VerifyCertificateArchive(archivePath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errPart)
+
+			_, err = RestoreCertificateStore(CertStoreRestoreOptions{ArchivePath: archivePath, Paths: testCertStorePaths(t)})
+			require.Error(t, err)
+		})
+	}
 }
