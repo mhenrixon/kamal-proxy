@@ -87,8 +87,12 @@ type SANCertManagerConfig struct {
 // It batches up to 100 domains into a single certificate,
 // reducing the number of certificates and avoiding rate limits.
 type SANCertManager struct {
-	mu      sync.RWMutex
-	stateMu sync.Mutex // serializes state-file snapshots and writes
+	mu sync.RWMutex
+	// stateMu serializes every disk write to the certificate store: state-file
+	// snapshots, certificate file writes, and certificate removals. Holding it
+	// yields a consistent on-disk snapshot, which is what the store exporter
+	// relies on.
+	stateMu sync.Mutex
 	config  SANCertManagerConfig
 
 	// ACME clients. All are built on the SAME account (`acme_user.json`), so
@@ -585,15 +589,17 @@ func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sorted
 	}
 	m.mu.Unlock()
 
-	// Save certificate to disk
+	// Save certificate and state under the store's disk-write lock, so a
+	// concurrent export never sees the certificate files and the state file
+	// mid-update.
+	m.stateMu.Lock()
 	if err := m.saveCertificate(certID, resource); err != nil {
 		slog.Warn("Failed to save certificate", "error", err)
 	}
-
-	// Persist state (called without lock held)
-	if err := m.persistState(); err != nil {
+	if err := m.persistStateLocked(); err != nil {
 		slog.Warn("Failed to save state", "error", err)
 	}
+	m.stateMu.Unlock()
 
 	slog.Info("Certificate provisioned successfully",
 		"identifier", certID,
@@ -695,7 +701,7 @@ func (m *SANCertManager) GetStats() map[string]interface{} {
 // Persistence methods
 
 func (m *SANCertManager) loadOrCreateUser() (*acmeUser, error) {
-	userPath := filepath.Join(m.config.CachePath, "acme_user.json")
+	userPath := filepath.Join(m.config.CachePath, acmeUserFile)
 
 	data, err := os.ReadFile(userPath)
 	if err == nil {
@@ -739,31 +745,19 @@ func (m *SANCertManager) saveUser() error {
 		return err
 	}
 
-	userPath := filepath.Join(m.config.CachePath, "acme_user.json")
+	userPath := filepath.Join(m.config.CachePath, acmeUserFile)
 	return os.WriteFile(userPath, data, 0600)
 }
 
+// saveCertificate stores a certificate pair via the same staged-write path the
+// offline importers use, so a crash or concurrent reader never sees a torn
+// pair. Callers must hold stateMu.
 func (m *SANCertManager) saveCertificate(certID string, resource *certificate.Resource) error {
 	if m.config.CachePath == "" {
 		return nil
 	}
 
-	certDir := filepath.Join(m.config.CachePath, sanitizeFilename(certID))
-	if err := os.MkdirAll(certDir, 0700); err != nil {
-		return err
-	}
-
-	// Save certificate
-	if err := os.WriteFile(filepath.Join(certDir, "cert.pem"), resource.Certificate, 0600); err != nil {
-		return err
-	}
-
-	// Save private key
-	if err := os.WriteFile(filepath.Join(certDir, "key.pem"), resource.PrivateKey, 0600); err != nil {
-		return err
-	}
-
-	return nil
+	return writeCertificateFiles(m.config.CachePath, certID, resource.Certificate, resource.PrivateKey)
 }
 
 type managerState struct {
@@ -816,15 +810,21 @@ func (m *SANCertManager) loadState() error {
 }
 
 func (m *SANCertManager) persistState() error {
-	if m.config.StatePath == "" {
-		return nil
-	}
-
 	// Serialize snapshot+write: issuer goroutines, the renewer, and
 	// handshake-driven provisioning all persist concurrently, and interleaved
 	// writes to the shared .tmp file would corrupt it.
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
+
+	return m.persistStateLocked()
+}
+
+// persistStateLocked snapshots and writes the state file. Callers must hold
+// stateMu (and not m.mu, which it takes itself).
+func (m *SANCertManager) persistStateLocked() error {
+	if m.config.StatePath == "" {
+		return nil
+	}
 
 	m.mu.RLock()
 	certs := make(map[string]*ManagedCert, len(m.certificates))

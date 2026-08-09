@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -110,4 +111,32 @@ func TestRouter_CacheStatsAndPurgeReadTheStoreUnderTheLock(t *testing.T) {
 		wg.Go(func() { _, _ = router.PurgeCache("service1", "") })
 	}
 	wg.Wait()
+}
+
+func TestCommandHandler_CertsExport(t *testing.T) {
+	router := testRouter(t)
+	handler := NewCommandHandler(router)
+
+	// Without a running server there is no config to locate the store.
+	var summary CertsExportSummary
+	err := handler.CertsExport(CertsExportArgs{Path: filepath.Join(t.TempDir(), "backup.tar.gz")}, &summary)
+	require.ErrorContains(t, err, "not available")
+
+	// With a server config pointing at a populated data dir, the export runs
+	// even without a certificate manager (a proxy started without --acme-email
+	// can still hold files worth backing up).
+	dataDir := t.TempDir()
+	handler.server = &Server{config: &Config{AlternateConfigDir: dataDir}}
+	paths := handler.server.config.CertStorePaths()
+	populateCertStore(t, paths, []string{"example.com"})
+
+	outputPath := filepath.Join(t.TempDir(), "backup.tar.gz")
+	require.NoError(t, handler.CertsExport(CertsExportArgs{Path: outputPath}, &summary))
+	assert.Equal(t, 1, summary.Certificates)
+	assert.FileExists(t, outputPath)
+
+	// With a manager installed, the export goes through its disk-write lock.
+	router.SetSANCertManager(testSANCertManager(t))
+	require.NoError(t, handler.CertsExport(CertsExportArgs{Path: outputPath}, &summary))
+	assert.Equal(t, 1, summary.Certificates)
 }

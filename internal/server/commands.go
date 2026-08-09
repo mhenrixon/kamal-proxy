@@ -67,6 +67,13 @@ type RolloutStopArgs struct {
 	Service string
 }
 
+type CertsExportArgs struct {
+	// Path is where the archive is written, resolved server-side: the CLI
+	// absolutizes it before the call, and CLI and server share a filesystem
+	// (the socket is local by construction).
+	Path string
+}
+
 type CachePurgeArgs struct {
 	Service    string
 	PathPrefix string
@@ -220,6 +227,32 @@ func (h *CommandHandler) CacheStats(args CacheStatsArgs, reply *CacheStats) erro
 	}
 
 	*reply = stats
+	return nil
+}
+
+// CertsExport archives the certificate store from inside the running proxy,
+// under the store's disk-write lock, so a backup taken mid-renewal is never
+// torn. Without a certificate manager the store has no writers, so the export
+// runs directly.
+func (h *CommandHandler) CertsExport(args CertsExportArgs, reply *CertsExportSummary) error {
+	if h.server == nil {
+		return errors.New("certificate export is not available")
+	}
+
+	paths := h.server.config.CertStorePaths()
+
+	var summary CertsExportSummary
+	var err error
+	if manager := h.router.SANCertManager(); manager != nil {
+		summary, err = manager.ExportStore(paths, args.Path)
+	} else {
+		summary, err = ExportCertificateStore(paths, args.Path)
+	}
+	if err != nil {
+		return err
+	}
+
+	*reply = summary
 	return nil
 }
 

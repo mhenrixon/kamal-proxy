@@ -174,13 +174,19 @@ func (m *SANCertManager) removeCertificate(certID string) {
 	}
 	m.mu.Unlock()
 
+	// File removal and the state write share the store's disk-write lock, so a
+	// concurrent export never captures a state file referencing a half-removed
+	// certificate directory.
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
 	if m.config.CachePath != "" {
 		if err := os.RemoveAll(filepath.Join(m.config.CachePath, sanitizeFilename(certID))); err != nil {
 			slog.Warn("Failed to remove certificate files", "certificate", certID, "error", err)
 		}
 	}
 
-	if err := m.persistState(); err != nil {
+	if err := m.persistStateLocked(); err != nil {
 		slog.Warn("Failed to save state", "error", err)
 	}
 }
