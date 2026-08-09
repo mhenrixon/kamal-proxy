@@ -1,0 +1,49 @@
+internal/server/router.go
+  s_10546d96640229::t_5885eaec2d43de 364-367
+README.md
+  s_10546d96640229::t_6aae6cf7167cb1 327-366
+internal/metrics/metrics.go
+  s_10546d96640229::t_49e3b143b5014a 214-223
+  s_10546d96640229::t_bf5cf0a20955b2 250
+  s_10546d96640229::t_3d1b5162f81f80 327-330
+  s_10546d96640229::t_5e1bb9ffe5a15d 53
+  s_10546d96640229::t_c4a8ed95a098be 76-78
+  s_10546d96640229::t_23cd92b254bad4 27
+internal/server/deny_list_service_test.go
+  s_10546d96640229::t_c5aeae7f2b1084 1-382
+internal/server/deny_list_test.go
+  s_10546d96640229::t_21cc7c830a55c1 1-221
+internal/cmd/deploy.go
+  s_10546d96640229::t_da666a79d8622e 105-110
+internal/server/service.go
+  s_10546d96640229::t_b0d14e72a9333e 376
+  s_10546d96640229::t_fd4a0cf9c37c81 298-301
+  s_10546d96640229::t_4b7e46bb6d88c4 882-886
+  s_10546d96640229::t_aa387ff06ea114 156-162
+  s_10546d96640229::t_a7745e96bae3b9 711
+internal/server/ip_allow_list.go
+  s_10546d96640229::t_8f9a570b199171 254-257
+internal/server/cert_metrics_test.go
+  s_10546d96640229::t_cbee8c665b3241 115-126
+  s_10546d96640229::t_671478798bd248 325-330
+  s_10546d96640229::t_242fb389bb8597 36-37
+  s_10546d96640229::t_a23177b9699f3f 58-59
+internal/server/deny_list.go
+  s_10546d96640229::t_41630386865400 1-242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "db5c9b6d9a9ce0b65f64e0d33a5531e661fbb8eb",
+  "prompts": {},
+  "sessions": {
+    "s_10546d96640229": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a608b307-e4e7-4707-9edf-a2410b2042d4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
