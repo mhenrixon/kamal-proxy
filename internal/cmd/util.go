@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"net/rpc"
 	"os"
 	"strconv"
@@ -10,6 +11,20 @@ import (
 const (
 	ENV_PREFIX = "KAMAL_PROXY_"
 )
+
+// ensureDataDir creates the --data-dir when one was supplied, so state and
+// certificate files can be written into it on first use. Shared by every
+// command that writes into the data directory (`run`, `import certs`).
+func ensureDataDir() error {
+	if globalConfig.AlternateConfigDir == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(globalConfig.AlternateConfigDir, 0700); err != nil {
+		return fmt.Errorf("failed to create data directory %q: %w", globalConfig.AlternateConfigDir, err)
+	}
+	return nil
+}
 
 func withRPCClient(socketPath string, fn func(client *rpc.Client) error) error {
 	client, err := rpc.Dial("unix", socketPath)

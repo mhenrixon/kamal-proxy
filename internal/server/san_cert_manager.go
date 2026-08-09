@@ -844,17 +844,23 @@ func (m *SANCertManager) persistState() error {
 }
 
 func (m *SANCertManager) writeState(state managerState) error {
+	return writeManagerStateFile(m.config.StatePath, state)
+}
+
+// writeManagerStateFile persists manager state atomically (tmp+rename), shared
+// by the running manager and the offline Traefik import.
+func writeManagerStateFile(path string, state managerState) error {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	tmpPath := m.config.StatePath + ".tmp"
+	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return err
 	}
 
-	return os.Rename(tmpPath, m.config.StatePath)
+	return os.Rename(tmpPath, path)
 }
 
 func sanCertID(domains []string) string {
