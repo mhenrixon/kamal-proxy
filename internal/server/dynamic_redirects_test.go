@@ -42,6 +42,16 @@ func TestServiceOptions_ValidateDynamicRedirects(t *testing.T) {
 			errorMsg: "redirects-source must be a path or an http(s) URL",
 		},
 		{
+			name:     "URL source needs a host",
+			options:  ServiceOptions{RedirectsSource: "https://"},
+			errorMsg: "redirects-source must be a path or an http(s) URL",
+		},
+		{
+			name:     "URL source needs a hostname, not just a port",
+			options:  ServiceOptions{RedirectsSource: "http://:8080/redirects"},
+			errorMsg: "redirects-source must be a path or an http(s) URL",
+		},
+		{
 			name:     "interval below the minimum",
 			options:  ServiceOptions{RedirectsSource: "/redirects", RedirectsInterval: time.Second},
 			errorMsg: "redirects-interval must be at least",
@@ -124,7 +134,7 @@ func TestDynamicRedirectManager_KeepsLastGoodOnInvalidPayload(t *testing.T) {
 	// An unreachable source, so the only applied payloads are the ones this
 	// test feeds in by hand.
 	dm.ServiceDeployed("service1", ServiceOptions{RedirectsSource: "http://127.0.0.1:1/unreachable"})
-	require.NoError(t, dm.applyPayload("service1", strings.NewReader(testRedirectPayload)))
+	require.NoError(t, dm.applyPayload("service1", dm.sources["service1"], strings.NewReader(testRedirectPayload)))
 
 	assert.Equal(t, 1, tracker.redirectPollCount("service1", "applied"))
 	hosts, rules := tracker.redirectMapSize("service1")
@@ -135,19 +145,90 @@ func TestDynamicRedirectManager_KeepsLastGoodOnInvalidPayload(t *testing.T) {
 	require.NotNil(t, service.dynamicRedirects.Load())
 
 	for _, payload := range []string{
-		`{"hosts": {`,   // unparseable
-		`{"hosts": {}}`, // empty must not wipe
-		`{}`,            // missing hosts
+		`{"hosts": {`, // unparseable
+		`{}`,          // missing hosts key
 		`{"hosts": {"not a hostname": {"paths": []}}}`, // nothing valid survives
 	} {
-		require.Error(t, dm.applyPayload("service1", strings.NewReader(payload)), payload)
+		require.Error(t, dm.applyPayload("service1", dm.sources["service1"], strings.NewReader(payload)), payload)
 
 		hosts, rules := service.dynamicRedirects.Load().counts()
 		assert.Equal(t, 2, hosts, payload)
 		assert.Equal(t, 1, rules, payload)
 	}
 
-	assert.Equal(t, 4, tracker.redirectPollCount("service1", "rejected"))
+	assert.Equal(t, 3, tracker.redirectPollCount("service1", "rejected"))
+}
+
+func TestDynamicRedirectManager_ExplicitEmptyPayloadClearsRedirects(t *testing.T) {
+	tracker := installFakeTracker(t)
+	dm, resolver := testDynamicRedirectManager(t, DynamicRedirectConfig{})
+
+	dm.ServiceDeployed("service1", ServiceOptions{RedirectsSource: "http://127.0.0.1:1/unreachable"})
+	require.NoError(t, dm.applyPayload("service1", dm.sources["service1"], strings.NewReader(testRedirectPayload)))
+
+	service := resolver.serviceForName("service1")
+	require.NotNil(t, service.dynamicRedirects.Load())
+
+	// The app deleting its last redirect publishes an explicit empty map; that
+	// is a clear, not an error.
+	require.NoError(t, dm.applyPayload("service1", dm.sources["service1"], strings.NewReader(`{"hosts": {}}`)))
+
+	assert.Nil(t, service.dynamicRedirects.Load())
+	hosts, rules := tracker.redirectMapSize("service1")
+	assert.Zero(t, hosts)
+	assert.Zero(t, rules)
+	assert.Equal(t, 2, tracker.redirectPollCount("service1", "applied"))
+}
+
+func TestDynamicRedirectManager_SupersededPollerCannotApply(t *testing.T) {
+	dm, resolver := testDynamicRedirectManager(t, DynamicRedirectConfig{})
+
+	dm.ServiceDeployed("service1", ServiceOptions{RedirectsSource: "http://127.0.0.1:1/old"})
+	oldPoller := dm.sources["service1"]
+
+	dm.ServiceDeployed("service1", ServiceOptions{RedirectsSource: "http://127.0.0.1:1/new"})
+
+	// An in-flight poll from the replaced deployment must not install its map.
+	require.NoError(t, dm.applyPayload("service1", oldPoller, strings.NewReader(testRedirectPayload)))
+
+	service := resolver.serviceForName("service1")
+	assert.Nil(t, service.dynamicRedirects.Load())
+}
+
+func TestDynamicRedirectManager_SourceChangeDropsETag(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "dynamic-redirects.state")
+
+	dm, _ := testDynamicRedirectManager(t, DynamicRedirectConfig{StatePath: statePath})
+	dm.ServiceDeployed("service1", ServiceOptions{RedirectsSource: "http://127.0.0.1:1/old"})
+	dm.sources["service1"].SeedETag(`"v1"`)
+	require.NoError(t, dm.applyPayload("service1", dm.sources["service1"], strings.NewReader(testRedirectPayload)))
+	dm.Stop()
+
+	// Same source: the persisted ETag is seeded so the first poll can 304.
+	dm2, _ := testDynamicRedirectManager(t, DynamicRedirectConfig{StatePath: statePath})
+	dm2.ServiceDeployed("service1", ServiceOptions{RedirectsSource: "http://127.0.0.1:1/old"})
+	assert.Equal(t, `"v1"`, dm2.sources["service1"].ETag())
+	dm2.Stop()
+
+	// Different source: the ETag belongs to the old resource and must not be
+	// offered to the new one, or a coincidental 304 freezes stale redirects.
+	dm3, resolver3 := testDynamicRedirectManager(t, DynamicRedirectConfig{StatePath: statePath})
+	dm3.ServiceDeployed("service1", ServiceOptions{RedirectsSource: "http://127.0.0.1:1/new"})
+	assert.Empty(t, dm3.sources["service1"].ETag())
+
+	// The persisted map still serves across the source change.
+	assert.NotNil(t, resolver3.serviceForName("service1").dynamicRedirects.Load())
+}
+
+func TestDynamicRedirectManager_PollFailuresAreCounted(t *testing.T) {
+	tracker := installFakeTracker(t)
+	dm, _ := testDynamicRedirectManager(t, DynamicRedirectConfig{})
+
+	dm.ServiceDeployed("service1", ServiceOptions{RedirectsSource: "http://127.0.0.1:1/unreachable"})
+
+	require.Eventually(t, func() bool {
+		return tracker.redirectPollCount("service1", "error") >= 1
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestDynamicRedirectManager_StateSurvivesRestart(t *testing.T) {
@@ -156,7 +237,7 @@ func TestDynamicRedirectManager_StateSurvivesRestart(t *testing.T) {
 
 	dm, _ := testDynamicRedirectManager(t, DynamicRedirectConfig{StatePath: statePath})
 	dm.ServiceDeployed("service1", ServiceOptions{RedirectsSource: backend.URL})
-	require.NoError(t, dm.applyPayload("service1", strings.NewReader(testRedirectPayload)))
+	require.NoError(t, dm.applyPayload("service1", dm.sources["service1"], strings.NewReader(testRedirectPayload)))
 	dm.Stop()
 
 	// A fresh manager restores state and serves the persisted map on deploy,
@@ -178,7 +259,7 @@ func TestDynamicRedirectManager_ServiceRemovedEvictsRedirects(t *testing.T) {
 	dm, resolver := testDynamicRedirectManager(t, DynamicRedirectConfig{})
 
 	dm.ServiceDeployed("service1", ServiceOptions{RedirectsSource: backend.URL})
-	require.NoError(t, dm.applyPayload("service1", strings.NewReader(testRedirectPayload)))
+	require.NoError(t, dm.applyPayload("service1", dm.sources["service1"], strings.NewReader(testRedirectPayload)))
 
 	service := resolver.serviceForName("service1")
 	require.NotNil(t, service.dynamicRedirects.Load())
@@ -193,7 +274,7 @@ func TestDynamicRedirectManager_RedeployWithoutSourceEvictsRedirects(t *testing.
 	dm, resolver := testDynamicRedirectManager(t, DynamicRedirectConfig{})
 
 	dm.ServiceDeployed("service1", ServiceOptions{RedirectsSource: backend.URL})
-	require.NoError(t, dm.applyPayload("service1", strings.NewReader(testRedirectPayload)))
+	require.NoError(t, dm.applyPayload("service1", dm.sources["service1"], strings.NewReader(testRedirectPayload)))
 
 	dm.ServiceDeployed("service1", ServiceOptions{})
 
@@ -210,21 +291,24 @@ func TestDynamicRedirectManager_RefreshEndpoint(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 
-	send := func(method, token string) int {
+	send := func(method, token string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, redirectsRefreshPath, nil)
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
-		return w.Result().StatusCode
+		return w
 	}
 
-	assert.Equal(t, http.StatusMethodNotAllowed, send(http.MethodGet, "refresh-secret"))
-	assert.Equal(t, http.StatusUnauthorized, send(http.MethodPost, "wrong-token"))
-	assert.Equal(t, http.StatusAccepted, send(http.MethodPost, "refresh-secret"))
+	got := send(http.MethodGet, "refresh-secret")
+	assert.Equal(t, http.StatusMethodNotAllowed, got.Result().StatusCode)
+	assert.Equal(t, http.MethodPost, got.Result().Header.Get("Allow"))
+
+	assert.Equal(t, http.StatusUnauthorized, send(http.MethodPost, "wrong-token").Result().StatusCode)
+	assert.Equal(t, http.StatusAccepted, send(http.MethodPost, "refresh-secret").Result().StatusCode)
 	// Rate limited within refreshMinInterval
-	assert.Equal(t, http.StatusTooManyRequests, send(http.MethodPost, "refresh-secret"))
+	assert.Equal(t, http.StatusTooManyRequests, send(http.MethodPost, "refresh-secret").Result().StatusCode)
 
 	// Other paths fall through to the wrapped handler
 	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
@@ -240,11 +324,15 @@ func TestDynamicRedirectManager_RefreshEndpointHiddenWithoutToken(t *testing.T) 
 
 	handler := dm.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
-	req := httptest.NewRequest(http.MethodPost, redirectsRefreshPath, nil)
-	req.Header.Set("Authorization", "Bearer anything")
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusNotFound, w.Result().StatusCode)
+	// Every method answers 404 on a disabled endpoint: a 405 for GET would
+	// reveal that the route exists.
+	for _, method := range []string{http.MethodPost, http.MethodGet} {
+		req := httptest.NewRequest(method, redirectsRefreshPath, nil)
+		req.Header.Set("Authorization", "Bearer anything")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Result().StatusCode, method)
+	}
 }
 
 func TestRouter_DynamicRedirectsAnswerRequests(t *testing.T) {
@@ -324,6 +412,55 @@ func TestRouter_DynamicRedirectsAnswerRequests(t *testing.T) {
 	// Dynamic hits are counted by status; the static rule's redirect is not.
 	assert.Equal(t, 2, tracker.redirectHitCount("service1", http.StatusMovedPermanently))
 	assert.Equal(t, 1, tracker.redirectHitCount("service1", http.StatusFound))
+}
+
+func TestRouter_RedirectRulesNeverShadowInternalPaths(t *testing.T) {
+	router := testRouter(t)
+	_, target := testBackend(t, "app", http.StatusOK)
+
+	// A static catch-all redirect AND a dynamic catch-all: neither may touch
+	// ACME challenges or the proxy's own endpoints.
+	options := defaultServiceOptions
+	redirects, err := NewRedirectRules([]string{"/(.*)=https://elsewhere.example/$1"})
+	require.NoError(t, err)
+	options.Redirects = redirects
+
+	require.NoError(t, router.DeployService("service1", []string{target}, defaultEmptyReaders,
+		options, defaultTargetOptions, defaultDeploymentOptions))
+
+	router.serviceForName("service1").SetDynamicRedirects(compileRedirectMap(map[string]redirectHostConfig{
+		"www.tenant.example": {RedirectTo: "https://elsewhere.example", PreservePath: true},
+	}))
+
+	for _, path := range []string{
+		"/.well-known/acme-challenge/token123",
+		"/.kamal-proxy/anything",
+	} {
+		t.Run(path, func(t *testing.T) {
+			status, body := sendGETRequest(router, "http://www.tenant.example"+path)
+			assert.Equal(t, http.StatusOK, status)
+			assert.Equal(t, "app", body)
+		})
+	}
+}
+
+func TestService_RedeployWithoutSourceClearsDynamicRedirects(t *testing.T) {
+	router := testRouter(t)
+	_, target := testBackend(t, "app", http.StatusOK)
+
+	require.NoError(t, router.DeployService("service1", []string{target}, defaultEmptyReaders,
+		defaultServiceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	service := router.serviceForName("service1")
+	service.SetDynamicRedirects(compileRedirectMap(map[string]redirectHostConfig{
+		"old.example.com": {RedirectTo: "https://www.tenant.example"},
+	}))
+	require.NotNil(t, service.dynamicRedirects.Load())
+
+	// A redeploy without a source clears the map in the service itself, even
+	// before the manager's own eviction runs.
+	require.NoError(t, service.UpdateOptions(defaultServiceOptions, defaultTargetOptions))
+	assert.Nil(t, service.dynamicRedirects.Load())
 }
 
 func TestDynamicRedirectManager_EndToEndThroughRouter(t *testing.T) {

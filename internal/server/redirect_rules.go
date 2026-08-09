@@ -116,12 +116,28 @@ func resolveRedirectLocation(match pathRuleMatch, current, desired url.URL) (str
 		match.target.Host = desired.Host
 	}
 
-	location := match.target.String()
-	if location == current.String() {
+	if sameResource(match.target, &current) {
 		return "", 0
 	}
 
-	return location, match.status
+	return match.target.String(), match.status
+}
+
+// sameResource reports whether two URLs name the same resource, treating an
+// empty path as "/" the way clients do. String equality is not enough: a
+// redirect to "http://host" answered to a request for "http://host/" differs
+// as a string but loops as a redirect.
+func sameResource(a, b *url.URL) bool {
+	pathA, pathB := a.Path, b.Path
+	if pathA == "" {
+		pathA = rootPath
+	}
+	if pathB == "" {
+		pathB = rootPath
+	}
+
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host) &&
+		pathA == pathB && a.RawQuery == b.RawQuery
 }
 
 // rewriteRequest returns the request the target should see, with the first

@@ -1,11 +1,7 @@
 package server
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
-	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -13,10 +9,6 @@ import (
 const (
 	domainsRefreshPath  = "/.kamal-proxy/domains/refresh"
 	preflightPathPrefix = "/.kamal-proxy/preflight/"
-
-	// refreshMinInterval rate-limits refresh nudges; the poll interval remains
-	// the source of truth so a lost nudge is only a latency hit.
-	refreshMinInterval = 10 * time.Second
 )
 
 // WrapHandler mounts the refresh nudge and pre-flight probe endpoints ahead of
@@ -40,38 +32,24 @@ func (dm *DynamicDomainManager) WrapHandler(next http.Handler) http.Handler {
 // immediately. It carries no domain data: the poll stays the single source of
 // truth, replays are harmless, and it works from any host.
 func (dm *DynamicDomainManager) handleRefresh(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	refreshNudge{
+		Kind:       "domains",
+		Token:      dm.config.RefreshToken,
+		HasSources: dm.HasSources,
+		TryClaim:   dm.tryClaimRefresh,
+		Refresh:    dm.RefreshAll,
+	}.serve(w, r)
+}
 
-	// Hidden unless a token is configured AND at least one service has a source
-	if dm.config.RefreshToken == "" || !dm.HasSources() {
-		http.NotFound(w, r)
-		return
-	}
-
-	token, ok := bearerToken(r)
-	if !ok || !tokensEqual(token, dm.config.RefreshToken) {
-		slog.Warn("Rejected domain refresh request", "remote_addr", r.RemoteAddr)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
+func (dm *DynamicDomainManager) tryClaimRefresh() bool {
 	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
 	if time.Since(dm.lastRefresh) < refreshMinInterval {
-		dm.mu.Unlock()
-		w.Header().Set("Retry-After", strconv.Itoa(int(refreshMinInterval.Seconds())))
-		http.Error(w, "refresh requested too recently", http.StatusTooManyRequests)
-		return
+		return false
 	}
 	dm.lastRefresh = time.Now()
-	dm.mu.Unlock()
-
-	count := dm.RefreshAll()
-	slog.Info("Domain refresh requested", "sources", count, "remote_addr", r.RemoteAddr)
-
-	w.WriteHeader(http.StatusAccepted)
+	return true
 }
 
 // handlePreflight serves the per-boot nonce used by the pre-issuance
@@ -89,16 +67,4 @@ func (dm *DynamicDomainManager) handlePreflight(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.Write([]byte(dm.preflightNonce))
-}
-
-func bearerToken(r *http.Request) (string, bool) {
-	return strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-}
-
-// tokensEqual compares tokens in constant time, via digests so length is not
-// leaked either.
-func tokensEqual(a, b string) bool {
-	digestA := sha256.Sum256([]byte(a))
-	digestB := sha256.Sum256([]byte(b))
-	return subtle.ConstantTimeCompare(digestA[:], digestB[:]) == 1
 }

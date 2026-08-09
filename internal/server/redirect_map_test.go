@@ -33,14 +33,14 @@ func TestParseRedirectPayload(t *testing.T) {
 			errorMsg: "failed to parse redirect list",
 		},
 		{
-			name:     "empty hosts must not wipe the last good map",
-			payload:  `{"hosts": {}}`,
-			errorMsg: "no hosts",
+			name:    "explicit empty hosts is a valid clear",
+			payload: `{"hosts": {}}`,
+			hosts:   0,
 		},
 		{
-			name:     "missing hosts key",
+			name:     "missing hosts key is malformed, not a clear",
 			payload:  `{}`,
-			errorMsg: "no hosts",
+			errorMsg: "no hosts key",
 		},
 	}
 
@@ -80,9 +80,10 @@ func TestParseRedirectPayload_RejectsTooManyRules(t *testing.T) {
 
 func TestCompileRedirectMap_SkipsInvalidEntries(t *testing.T) {
 	hosts := map[string]redirectHostConfig{
-		"not a hostname":  {RedirectTo: "https://www.example.com"},
-		"bad.example.com": {RedirectTo: "ftp://www.example.com"},
-		"sta.example.com": {RedirectTo: "https://www.example.com", Status: 418},
+		"not a hostname":   {RedirectTo: "https://www.example.com"},
+		"bad.example.com":  {RedirectTo: "ftp://www.example.com"},
+		"sta.example.com":  {RedirectTo: "https://www.example.com", Status: 418},
+		"port.example.com": {RedirectTo: "http://:8080"}, // authority without a hostname
 		"slash.example.com": {
 			TrailingSlash: "add", // unknown policy
 		},
@@ -123,6 +124,8 @@ func TestDynamicRedirectMap_HostRedirect(t *testing.T) {
 		"legacy.example.com": {RedirectTo: "https://www.tenant.example"},
 		"move.example.com":   {RedirectTo: "https://www.tenant.example", Status: 302, PreservePath: true},
 		"loop.example.com":   {RedirectTo: "http://loop.example.com/"},
+		"bare.example.com":   {RedirectTo: "http://bare.example.com"}, // no trailing slash
+		"pin.example.com":    {RedirectTo: "http://pin.example.com", PreservePath: true},
 	})
 
 	tests := []struct {
@@ -147,6 +150,20 @@ func TestDynamicRedirectMap_HostRedirect(t *testing.T) {
 			name:     "self-loop is dropped",
 			current:  url.URL{Scheme: "http", Host: "loop.example.com", Path: "/"},
 			location: "",
+		},
+		{
+			name:    "self-loop without a trailing slash is still a loop",
+			current: url.URL{Scheme: "http", Host: "bare.example.com", Path: "/"},
+		},
+		{
+			name:    "preserve_path pointing at its own host loops on every path",
+			current: url.URL{Scheme: "http", Host: "pin.example.com", Path: "/deep", RawQuery: "q=1"},
+		},
+		{
+			name:     "host lookup normalizes case and a trailing dot",
+			current:  url.URL{Scheme: "http", Host: "Legacy.Example.COM.", Path: "/x"},
+			location: "https://www.tenant.example",
+			status:   301,
 		},
 		{
 			name:    "unknown host matches nothing",
@@ -279,26 +296,39 @@ func TestDynamicRedirectMap_TrailingSlash(t *testing.T) {
 	}
 }
 
-func TestDynamicRedirectMap_NeverShadowsInternalPaths(t *testing.T) {
+func TestCompileRedirectMap_NormalizationCollisionsAreDeterministic(t *testing.T) {
 	m := compileRedirectMap(map[string]redirectHostConfig{
-		"www.tenant.example": {
-			RedirectTo:    "https://elsewhere.example",
-			TrailingSlash: "strip",
-			Paths:         []redirectPathRule{{From: "/.*", To: "/shadowed"}},
-		},
+		"A.example.com": {RedirectTo: "https://first.example"},
+		"a.example.com": {RedirectTo: "https://second.example", Paths: []redirectPathRule{{From: "/x", To: "/y"}}},
 	})
 
-	for _, path := range []string{
-		"/.well-known/acme-challenge/token123",
-		"/.kamal-proxy/preflight/abc",
-		"/.kamal-proxy/domains/refresh",
-	} {
-		t.Run(path, func(t *testing.T) {
-			location, _ := m.redirectURL(
-				url.URL{Scheme: "http", Host: "www.tenant.example", Path: path},
-				url.URL{Scheme: "http", Host: "www.tenant.example"},
-			)
-			assert.Empty(t, location)
-		})
-	}
+	// Keys are walked sorted, first normalized key wins; the loser's rules
+	// must not leak into the counts.
+	hosts, rules := m.counts()
+	assert.Equal(t, 1, hosts)
+	assert.Equal(t, 0, rules)
+
+	location, _ := m.redirectURL(
+		url.URL{Scheme: "http", Host: "a.example.com", Path: "/"},
+		url.URL{Scheme: "http", Host: "a.example.com"},
+	)
+	assert.Equal(t, "https://first.example", location)
+}
+
+func TestDynamicRedirectMap_PreservePathKeepsEncodedSlashes(t *testing.T) {
+	m := compileRedirectMap(map[string]redirectHostConfig{
+		"enc.example.com": {RedirectTo: "https://www.tenant.example", PreservePath: true},
+	})
+
+	current := url.URL{Scheme: "http", Host: "enc.example.com", Path: "/a/b", RawPath: "/a%2Fb"}
+	location, _ := m.redirectURL(current, url.URL{Scheme: "http", Host: "enc.example.com"})
+	assert.Equal(t, "https://www.tenant.example/a%2Fb", location)
+}
+
+func TestIsRedirectExemptPath(t *testing.T) {
+	assert.True(t, isRedirectExemptPath("/.well-known/acme-challenge/token123"))
+	assert.True(t, isRedirectExemptPath("/.kamal-proxy/preflight/abc"))
+	assert.True(t, isRedirectExemptPath("/.kamal-proxy/domains/refresh"))
+	assert.False(t, isRedirectExemptPath("/normal/path"))
+	assert.False(t, isRedirectExemptPath("/"))
 }

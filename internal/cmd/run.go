@@ -184,6 +184,11 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Stop()
 
+	// After Start, which is what enables the metrics tracker: maps restored
+	// from state were installed against the null tracker and would otherwise
+	// stay invisible until their next successful poll.
+	dynamicRedirects.PublishMetrics()
+
 	if dynamicDomains != nil {
 		// Start after the listeners are bound (pre-flight probes and HTTP-01
 		// challenges route through them), and stop before they close so

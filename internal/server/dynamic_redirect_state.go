@@ -13,6 +13,10 @@ type serviceRedirectState struct {
 	Hosts     map[string]redirectHostConfig `json:"hosts"`
 	ETag      string                        `json:"etag,omitempty"`
 	FetchedAt time.Time                     `json:"fetched_at"`
+	// Source records which endpoint the state came from, so a redeploy with a
+	// different source drops the ETag instead of sending the new endpoint a
+	// tag it never issued.
+	Source string `json:"source,omitempty"`
 }
 
 // dynamicRedirectsState is the on-disk schema of dynamic-redirects.state.
@@ -59,11 +63,16 @@ func (dm *DynamicRedirectManager) loadState() {
 	)
 }
 
-// saveState persists the last good redirect maps atomically.
+// saveState persists the last good redirect maps atomically. Writers are
+// serialized: concurrent polls share one temp file path, and the snapshot of
+// one save must not interleave with another's write.
 func (dm *DynamicRedirectManager) saveState() {
 	if dm.config.StatePath == "" {
 		return
 	}
+
+	dm.saveLock.Lock()
+	defer dm.saveLock.Unlock()
 
 	dm.mu.Lock()
 	services := make(map[string]*serviceRedirectState, len(dm.states))

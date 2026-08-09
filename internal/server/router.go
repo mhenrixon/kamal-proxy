@@ -386,6 +386,13 @@ func (r *Router) DeployService(name string, targetURLs, readerURLs []string, opt
 		return err
 	}
 
+	// Before the drain below, which can block for the full drain timeout --
+	// new traffic should see the new source's redirects as soon as the load
+	// balancer is installed, not once the old targets finish draining.
+	if r.dynamicRedirectManager != nil {
+		r.dynamicRedirectManager.ServiceDeployed(name, options)
+	}
+
 	if replaced != nil {
 		replaced.Dispose()
 		replaced.DrainAll(deploymentOptions.DrainTimeout)
@@ -393,10 +400,6 @@ func (r *Router) DeployService(name string, targetURLs, readerURLs []string, opt
 
 	if r.dynamicDomainManager != nil {
 		r.dynamicDomainManager.ServiceDeployed(name, options)
-	}
-
-	if r.dynamicRedirectManager != nil {
-		r.dynamicRedirectManager.ServiceDeployed(name, options)
 	}
 
 	slog.Info("Deployed", "service", name, "targets", targetURLs, "hosts", options.Hosts, "paths", options.PathPrefixes, "tls", options.TLSEnabled)

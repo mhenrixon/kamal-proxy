@@ -3,6 +3,7 @@ package server
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -42,6 +43,11 @@ type sourcePollerConfig struct {
 	// error keeps the previous ETag, so a broken payload is retried rather
 	// than answered with 304s until the content changes again.
 	OnBody func(body io.Reader) error
+
+	// OnPollError, when set, is told about polls that never reached OnBody: an
+	// unresolvable endpoint, a transport failure, an unexpected status, or an
+	// unreadable body. A 304 is a healthy poll and is not reported.
+	OnPollError func()
 }
 
 // sourcePoller polls an application endpoint, honoring ETags, and hands each
@@ -67,9 +73,17 @@ func newSourcePoller(config sourcePollerConfig) *sourcePoller {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	client := &http.Client{Timeout: sourcePollTimeout}
+	if strings.HasPrefix(config.Source, "/") {
+		// Path-mode polls go to one specific healthy target; an HTTP_PROXY
+		// environment variable must neither intercept them nor see the bearer
+		// token on the plain-HTTP target leg.
+		client.Transport = &http.Transport{Proxy: nil}
+	}
+
 	return &sourcePoller{
 		config:  config,
-		client:  &http.Client{Timeout: sourcePollTimeout},
+		client:  client,
 		refresh: make(chan struct{}, 1),
 		ctx:     ctx,
 		cancel:  cancel,
@@ -139,6 +153,7 @@ func (s *sourcePoller) poll() {
 	url, host, err := s.endpoint()
 	if err != nil {
 		slog.Warn("Unable to resolve source endpoint", "kind", s.config.Kind, "service", s.config.Service, "error", err)
+		s.pollFailed()
 		return
 	}
 
@@ -148,6 +163,7 @@ func (s *sourcePoller) poll() {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		slog.Warn("Unable to build source request", "kind", s.config.Kind, "service", s.config.Service, "error", err)
+		s.pollFailed()
 		return
 	}
 
@@ -170,6 +186,7 @@ func (s *sourcePoller) poll() {
 	resp, err := s.client.Do(req)
 	if err != nil {
 		slog.Warn("Source poll failed", "kind", s.config.Kind, "service", s.config.Service, "url", url, "error", err)
+		s.pollFailed()
 		return
 	}
 	defer resp.Body.Close()
@@ -181,6 +198,7 @@ func (s *sourcePoller) poll() {
 
 	if resp.StatusCode != http.StatusOK {
 		slog.Warn("Source returned unexpected status", "kind", s.config.Kind, "service", s.config.Service, "status", resp.StatusCode)
+		s.pollFailed()
 		return
 	}
 
@@ -189,6 +207,7 @@ func (s *sourcePoller) poll() {
 		gz, err := gzip.NewReader(resp.Body)
 		if err != nil {
 			slog.Warn("Source returned an unreadable gzip body", "kind", s.config.Kind, "service", s.config.Service, "error", err)
+			s.pollFailed()
 			return
 		}
 		defer gz.Close()
@@ -212,9 +231,21 @@ func (s *sourcePoller) poll() {
 	}
 }
 
+func (s *sourcePoller) pollFailed() {
+	if s.config.OnPollError != nil {
+		s.config.OnPollError()
+	}
+}
+
 func (s *sourcePoller) endpoint() (url, host string, err error) {
 	if !strings.HasPrefix(s.config.Source, "/") {
 		return s.config.Source, "", nil
+	}
+
+	// A path-mode source without a resolver is a caller bug; failing the poll
+	// beats panicking in the poll goroutine on every tick.
+	if s.config.Endpoint == nil {
+		return "", "", errors.New("path-mode source has no endpoint resolver")
 	}
 
 	baseURL, host, err := s.config.Endpoint()
@@ -222,7 +253,7 @@ func (s *sourcePoller) endpoint() (url, host string, err error) {
 		return "", "", err
 	}
 
-	return baseURL + s.config.Source, host, nil
+	return strings.TrimSuffix(baseURL, "/") + s.config.Source, host, nil
 }
 
 // jitteredInterval spreads polls by ±10% so many proxies do not thundering-herd

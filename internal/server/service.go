@@ -680,6 +680,13 @@ func (s *Service) initialize(options ServiceOptions, targetOptions TargetOptions
 
 	s.redirects = redirects
 	s.rewrites = rewrites
+
+	// The manager owns installing dynamic maps, but a redeploy that drops the
+	// source must not leave the old map serving until the manager catches up:
+	// the service's state should follow its options on its own.
+	if options.RedirectsSource == "" {
+		s.dynamicRedirects.Store(nil)
+	}
 	s.cacheHandler = s.createCacheHandler(options)
 	s.options = options
 	s.targetOptions = targetOptions
@@ -976,15 +983,20 @@ func (s *Service) redirectURLIfNeeded(r *http.Request) (string, int) {
 	current := url.URL{Scheme: currentScheme, Host: host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 	desired := url.URL{Scheme: desiredScheme, Host: desiredHost}
 
-	// The dynamic map answers first: a host entry there is per-host
-	// configuration the static, service-wide rules compose under.
-	if location, status := s.dynamicRedirects.Load().redirectURL(current, desired); location != "" {
-		metrics.Tracker.TrackDynamicRedirect(s.name, status)
-		return location, status
-	}
+	// ACME challenges and the proxy's own endpoints are exempt from redirect
+	// rules -- dynamic and static alike -- but not from the TLS/canonical hop
+	// below, which the ACME handlers above this check already bypass.
+	if !isRedirectExemptPath(current.Path) {
+		// The dynamic map answers first: a host entry there is per-host
+		// configuration the static, service-wide rules compose under.
+		if location, status := s.dynamicRedirects.Load().redirectURL(current, desired); location != "" {
+			metrics.Tracker.TrackDynamicRedirect(s.name, status)
+			return location, status
+		}
 
-	if location, status := s.redirectRuleURL(current, desired); location != "" {
-		return location, status
+		if location, status := s.redirectRuleURL(current, desired); location != "" {
+			return location, status
+		}
 	}
 
 	if desiredScheme != currentScheme || desiredHost != host {

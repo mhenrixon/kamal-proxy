@@ -1,6 +1,10 @@
 package server
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
 
 // Validators for the fork-only ServiceOptions fields, kept out of service.go so
 // that file stays under the size ceiling and the upstream merge surface stays
@@ -24,8 +28,14 @@ func (so ServiceOptions) validateDynamicRedirects() error {
 		return nil
 	}
 
-	if !validDomainSource(so.RedirectsSource) {
-		return fmt.Errorf("%w: redirects-source must be a path or an http(s) URL: %q", ErrServiceOptionsInvalid, so.RedirectsSource)
+	// A prefix check alone would accept "https://" or "http://:8080", which
+	// pass the deploy and then fail every poll; a malformed source should fail
+	// on the operator's terminal instead.
+	if !strings.HasPrefix(so.RedirectsSource, "/") {
+		parsed, err := url.Parse(so.RedirectsSource)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+			return fmt.Errorf("%w: redirects-source must be a path or an http(s) URL: %q", ErrServiceOptionsInvalid, so.RedirectsSource)
+		}
 	}
 
 	if so.RedirectsInterval != 0 && so.RedirectsInterval < MinRedirectsInterval {

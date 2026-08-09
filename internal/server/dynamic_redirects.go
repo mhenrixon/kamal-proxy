@@ -34,14 +34,6 @@ type DynamicRedirectConfig struct {
 	SourceToken string
 }
 
-// redirectServiceSettings caches the per-service options captured at deploy
-// time, so background goroutines never read live ServiceOptions.
-type redirectServiceSettings struct {
-	source   string
-	interval time.Duration
-	host     string
-}
-
 // DynamicRedirectManager coordinates the dynamic redirect subsystem: one
 // poller per service with a redirects source, the compiled-map handoff to the
 // service, and state persistence. It deliberately mirrors
@@ -52,9 +44,14 @@ type DynamicRedirectManager struct {
 
 	mu          sync.Mutex
 	sources     map[string]*sourcePoller
-	settings    map[string]redirectServiceSettings
+	hosts       map[string]string // service -> Host header for path-mode polls
 	states      map[string]*serviceRedirectState
+	counts      map[string][2]int // service -> {hosts, rules} last installed
 	lastRefresh time.Time
+
+	// saveLock serializes state writes: concurrent polls share one temp file
+	// path, and interleaved writers would tear it despite the atomic rename.
+	saveLock sync.Mutex
 }
 
 func NewDynamicRedirectManager(config DynamicRedirectConfig, resolver serviceResolver) *DynamicRedirectManager {
@@ -62,8 +59,9 @@ func NewDynamicRedirectManager(config DynamicRedirectConfig, resolver serviceRes
 		config:   config,
 		resolver: resolver,
 		sources:  make(map[string]*sourcePoller),
-		settings: make(map[string]redirectServiceSettings),
+		hosts:    make(map[string]string),
 		states:   make(map[string]*serviceRedirectState),
+		counts:   make(map[string][2]int),
 	}
 
 	dm.loadState()
@@ -104,11 +102,7 @@ func (dm *DynamicRedirectManager) ServiceDeployed(name string, options ServiceOp
 	dm.mu.Lock()
 
 	previous := dm.sources[name]
-	dm.settings[name] = redirectServiceSettings{
-		source:   options.RedirectsSource,
-		interval: options.RedirectsInterval,
-		host:     host,
-	}
+	dm.hosts[name] = host
 
 	state := dm.states[name]
 	if state == nil {
@@ -116,19 +110,32 @@ func (dm *DynamicRedirectManager) ServiceDeployed(name string, options ServiceOp
 		dm.states[name] = state
 	}
 
+	// The persisted map keeps serving across a source change, but its ETag
+	// belongs to the old resource: seeding it could let the new source answer
+	// 304 to a tag it never issued, freezing the old redirects in place.
+	if state.Source != options.RedirectsSource {
+		state.ETag = ""
+		state.Source = options.RedirectsSource
+	}
+
 	interval := options.RedirectsInterval
 	if interval == 0 {
 		interval = DefaultRedirectsInterval
 	}
 
-	source := newSourcePoller(sourcePollerConfig{
-		Service:  name,
-		Kind:     "redirects source",
-		Source:   options.RedirectsSource,
-		Interval: interval,
-		Token:    dm.config.SourceToken,
-		Endpoint: dm.endpointFor(name),
-		OnBody:   func(body io.Reader) error { return dm.applyPayload(name, body) },
+	// The closure captures the poller variable so applyPayload can refuse
+	// payloads from a superseded poller: an in-flight poll from the previous
+	// deployment must not overwrite the new source's state.
+	var source *sourcePoller
+	source = newSourcePoller(sourcePollerConfig{
+		Service:     name,
+		Kind:        "redirects source",
+		Source:      options.RedirectsSource,
+		Interval:    interval,
+		Token:       dm.config.SourceToken,
+		Endpoint:    dm.endpointFor(name),
+		OnBody:      func(body io.Reader) error { return dm.applyPayload(name, source, body) },
+		OnPollError: func() { metrics.Tracker.TrackDynamicRedirectPoll(name, "error") },
 	})
 	source.SeedETag(state.ETag)
 	dm.sources[name] = source
@@ -157,8 +164,9 @@ func (dm *DynamicRedirectManager) ServiceRemoved(name string) {
 	source := dm.sources[name]
 	state := dm.states[name]
 	delete(dm.sources, name)
-	delete(dm.settings, name)
+	delete(dm.hosts, name)
 	delete(dm.states, name)
+	delete(dm.counts, name)
 	dm.mu.Unlock()
 
 	if source == nil && state == nil {
@@ -203,12 +211,30 @@ func (dm *DynamicRedirectManager) HasSources() bool {
 	return len(dm.sources) > 0
 }
 
+// PublishMetrics re-emits the map size gauges. Maps restored from state are
+// installed before the metrics endpoint exists, so run.go calls this once the
+// server is up; without it a proxy serving only persisted redirects reports
+// no map at all.
+func (dm *DynamicRedirectManager) PublishMetrics() {
+	dm.mu.Lock()
+	counts := make(map[string][2]int, len(dm.counts))
+	for service, count := range dm.counts {
+		counts[service] = count
+	}
+	dm.mu.Unlock()
+
+	for service, count := range counts {
+		metrics.Tracker.SetDynamicRedirects(service, count[0], count[1])
+	}
+}
+
 // Private
 
-// applyPayload parses and installs one fetched payload. Returning an error
-// keeps the last good map serving and rolls the poller's ETag back, so a
-// broken payload is retried rather than silently accepted.
-func (dm *DynamicRedirectManager) applyPayload(service string, body io.Reader) error {
+// applyPayload parses and installs one fetched payload. An explicit empty map
+// clears the service's redirects; a malformed payload returns an error, which
+// keeps the last good map serving and rolls the poller's ETag back so the
+// payload is retried rather than silently accepted.
+func (dm *DynamicRedirectManager) applyPayload(service string, from *sourcePoller, body io.Reader) error {
 	hosts, err := parseRedirectPayload(body)
 	if err != nil {
 		metrics.Tracker.TrackDynamicRedirectPoll(service, "rejected")
@@ -225,31 +251,38 @@ func (dm *DynamicRedirectManager) applyPayload(service string, body io.Reader) e
 
 	compiled := compileRedirectMap(hosts)
 	hostCount, ruleCount := compiled.counts()
-	if hostCount == 0 {
+	if len(hosts) > 0 && hostCount == 0 {
 		// Parseable but nothing survived validation: treat it like an invalid
-		// payload rather than wiping live redirects with garbage.
+		// payload rather than wiping live redirects with garbage. An explicit
+		// empty map is the sanctioned way to clear.
 		metrics.Tracker.TrackDynamicRedirectPoll(service, "rejected")
 		return fmt.Errorf("redirect list has no valid hosts; keeping the previous map")
 	}
 
+	var install *dynamicRedirectMap
+	if hostCount > 0 {
+		install = compiled
+	}
+
 	dm.mu.Lock()
-	// A poll can complete while its service is being removed or replaced;
-	// applying it would resurrect state for a dead service.
-	source, ok := dm.sources[service]
-	if !ok {
+	// A poll can complete while its poller is being replaced or removed;
+	// applying it would resurrect state for a dead deployment.
+	if dm.sources[service] != from {
 		dm.mu.Unlock()
-		slog.Debug("Ignoring redirect update for removed service", "service", service)
+		slog.Debug("Ignoring redirect update from superseded poller", "service", service)
 		return nil
 	}
 
 	dm.states[service] = &serviceRedirectState{
 		Hosts:     hosts,
-		ETag:      source.ETag(),
+		ETag:      from.ETag(),
 		FetchedAt: time.Now(),
+		Source:    from.config.Source,
 	}
+	dm.counts[service] = [2]int{hostCount, ruleCount}
 	dm.mu.Unlock()
 
-	svc.SetDynamicRedirects(compiled)
+	svc.SetDynamicRedirects(install)
 	metrics.Tracker.SetDynamicRedirects(service, hostCount, ruleCount)
 	metrics.Tracker.TrackDynamicRedirectPoll(service, "applied")
 
@@ -270,6 +303,9 @@ func (dm *DynamicRedirectManager) installMap(service string, hosts map[string]re
 	svc.SetDynamicRedirects(compiled)
 
 	hostCount, ruleCount := compiled.counts()
+	dm.mu.Lock()
+	dm.counts[service] = [2]int{hostCount, ruleCount}
+	dm.mu.Unlock()
 	metrics.Tracker.SetDynamicRedirects(service, hostCount, ruleCount)
 }
 
@@ -277,7 +313,7 @@ func (dm *DynamicRedirectManager) installMap(service string, hosts map[string]re
 func (dm *DynamicRedirectManager) endpointFor(service string) func() (string, string, error) {
 	return func() (string, string, error) {
 		dm.mu.Lock()
-		host := dm.settings[service].host
+		host := dm.hosts[service]
 		dm.mu.Unlock()
 
 		svc := dm.resolver.serviceForName(service)

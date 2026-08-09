@@ -1,9 +1,7 @@
 package server
 
 import (
-	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 )
 
@@ -27,36 +25,22 @@ func (dm *DynamicRedirectManager) WrapHandler(next http.Handler) http.Handler {
 // sources immediately. It carries no redirect data: the poll stays the single
 // source of truth, replays are harmless, and it works from any host.
 func (dm *DynamicRedirectManager) handleRefresh(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	refreshNudge{
+		Kind:       "redirects",
+		Token:      dm.config.RefreshToken,
+		HasSources: dm.HasSources,
+		TryClaim:   dm.tryClaimRefresh,
+		Refresh:    dm.RefreshAll,
+	}.serve(w, r)
+}
 
-	// Hidden unless a token is configured AND at least one service has a source
-	if dm.config.RefreshToken == "" || !dm.HasSources() {
-		http.NotFound(w, r)
-		return
-	}
-
-	token, ok := bearerToken(r)
-	if !ok || !tokensEqual(token, dm.config.RefreshToken) {
-		slog.Warn("Rejected redirects refresh request", "remote_addr", r.RemoteAddr)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
+func (dm *DynamicRedirectManager) tryClaimRefresh() bool {
 	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
 	if time.Since(dm.lastRefresh) < refreshMinInterval {
-		dm.mu.Unlock()
-		w.Header().Set("Retry-After", strconv.Itoa(int(refreshMinInterval.Seconds())))
-		http.Error(w, "refresh requested too recently", http.StatusTooManyRequests)
-		return
+		return false
 	}
 	dm.lastRefresh = time.Now()
-	dm.mu.Unlock()
-
-	count := dm.RefreshAll()
-	slog.Info("Redirects refresh requested", "sources", count, "remote_addr", r.RemoteAddr)
-
-	w.WriteHeader(http.StatusAccepted)
+	return true
 }
