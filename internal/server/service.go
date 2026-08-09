@@ -980,7 +980,9 @@ func (s *Service) redirectURLIfNeeded(r *http.Request) (string, int) {
 		desiredHost = s.options.CanonicalHost
 	}
 
-	current := url.URL{Scheme: currentScheme, Host: host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
+	// RawPath rides along so an encoded slash (%2F) stays data through the
+	// redirect rules instead of decoding into a separator.
+	current := url.URL{Scheme: currentScheme, Host: host, Path: r.URL.Path, RawPath: r.URL.RawPath, RawQuery: r.URL.RawQuery}
 	desired := url.URL{Scheme: desiredScheme, Host: desiredHost}
 
 	// ACME challenges and the proxy's own endpoints are exempt from redirect

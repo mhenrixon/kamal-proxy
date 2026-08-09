@@ -368,6 +368,12 @@ func TestRouter_DynamicRedirectsAnswerRequests(t *testing.T) {
 			location: "https://www.tenant.example/deep/page?q=1",
 		},
 		{
+			name:     "encoded slashes survive preserve_path end to end",
+			url:      "http://old.example.com/a%2Fb",
+			status:   http.StatusMovedPermanently,
+			location: "https://www.tenant.example/a%2Fb",
+		},
+		{
 			name:     "path rule",
 			url:      "http://www.tenant.example/old",
 			status:   http.StatusFound,
@@ -410,7 +416,7 @@ func TestRouter_DynamicRedirectsAnswerRequests(t *testing.T) {
 	}
 
 	// Dynamic hits are counted by status; the static rule's redirect is not.
-	assert.Equal(t, 2, tracker.redirectHitCount("service1", http.StatusMovedPermanently))
+	assert.Equal(t, 3, tracker.redirectHitCount("service1", http.StatusMovedPermanently))
 	assert.Equal(t, 1, tracker.redirectHitCount("service1", http.StatusFound))
 }
 

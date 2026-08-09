@@ -126,9 +126,10 @@ func resolveRedirectLocation(match pathRuleMatch, current, desired url.URL) (str
 // sameResource reports whether two URLs name the same resource, treating an
 // empty path as "/" the way clients do. String equality is not enough: a
 // redirect to "http://host" answered to a request for "http://host/" differs
-// as a string but loops as a redirect.
+// as a string but loops as a redirect. Paths are compared in escaped form, so
+// "/a%2Fb" and "/a/b" stay the distinct resources they are.
 func sameResource(a, b *url.URL) bool {
-	pathA, pathB := a.Path, b.Path
+	pathA, pathB := a.EscapedPath(), b.EscapedPath()
 	if pathA == "" {
 		pathA = rootPath
 	}
