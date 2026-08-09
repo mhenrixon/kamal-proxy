@@ -24,6 +24,7 @@ type tracker interface {
 	SetDynamicRedirects(service string, hosts, rules int)
 	TrackDynamicRedirectPoll(service, outcome string)
 	TrackDynamicRedirect(service string, status int)
+	TrackDenial(service, rule string)
 }
 
 var Tracker tracker = &nullTracker{}
@@ -49,6 +50,7 @@ func (nullTracker) TrackCacheEviction(service, state string)                    
 func (nullTracker) SetDynamicRedirects(service string, hosts, rules int)                      {}
 func (nullTracker) TrackDynamicRedirectPoll(service, outcome string)                          {}
 func (nullTracker) TrackDynamicRedirect(service string, status int)                           {}
+func (nullTracker) TrackDenial(service, rule string)                                          {}
 
 type prometheusTracker struct {
 	httpRequests     *prometheus.CounterVec
@@ -71,6 +73,9 @@ type prometheusTracker struct {
 	dynamicRedirectMapSize *prometheus.GaugeVec
 	dynamicRedirectPolls   *prometheus.CounterVec
 	dynamicRedirects       *prometheus.CounterVec
+
+	// Deny rule metrics
+	denials *prometheus.CounterVec
 }
 
 func NewPrometheusTracker() *prometheusTracker {
@@ -206,6 +211,16 @@ func NewPrometheusTracker() *prometheusTracker {
 			[]string{"service", "status"},
 		),
 
+		denials: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:      "denials_total",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "Requests refused by --deny-ip or --deny-user-agent, labeled by service and rule kind (ip, user_agent).",
+			},
+			[]string{"service", "rule"},
+		),
+
 		certCount: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name:      "certificates_total",
@@ -232,6 +247,7 @@ func NewPrometheusTracker() *prometheusTracker {
 		tracker.dynamicRedirectMapSize,
 		tracker.dynamicRedirectPolls,
 		tracker.dynamicRedirects,
+		tracker.denials,
 	)
 
 	return tracker
@@ -306,6 +322,10 @@ func (p *prometheusTracker) TrackDynamicRedirectPoll(service, outcome string) {
 
 func (p *prometheusTracker) TrackDynamicRedirect(service string, status int) {
 	p.dynamicRedirects.WithLabelValues(service, strconv.Itoa(status)).Inc()
+}
+
+func (p *prometheusTracker) TrackDenial(service, rule string) {
+	p.denials.WithLabelValues(service, rule).Inc()
 }
 
 // Private

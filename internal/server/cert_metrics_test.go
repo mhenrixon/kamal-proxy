@@ -33,6 +33,8 @@ type fakeTracker struct {
 	redirectMapSizes map[string][2]int // service -> {hosts, rules}
 	redirectPolls    map[string]int    // "service:outcome" -> count
 	redirectHits     map[string]int    // "service:status" -> count
+
+	denials map[string]int // "service:rule" -> count
 }
 
 type certCountSample struct {
@@ -53,6 +55,8 @@ func newFakeTracker() *fakeTracker {
 		redirectMapSizes: make(map[string][2]int),
 		redirectPolls:    make(map[string]int),
 		redirectHits:     make(map[string]int),
+
+		denials: make(map[string]int),
 	}
 }
 
@@ -106,6 +110,18 @@ func (f *fakeTracker) TrackDynamicRedirect(service string, status int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.redirectHits[service+":"+strconv.Itoa(status)]++
+}
+
+func (f *fakeTracker) TrackDenial(service, rule string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.denials[service+":"+rule]++
+}
+
+func (f *fakeTracker) denialCount(service, rule string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.denials[service+":"+rule]
 }
 
 func (f *fakeTracker) redirectPollCount(service, outcome string) int {
@@ -303,6 +319,12 @@ func (s *switchableTracker) TrackDynamicRedirectPoll(service, outcome string) {
 func (s *switchableTracker) TrackDynamicRedirect(service string, status int) {
 	if fake := s.current(); fake != nil {
 		fake.TrackDynamicRedirect(service, status)
+	}
+}
+
+func (s *switchableTracker) TrackDenial(service, rule string) {
+	if fake := s.current(); fake != nil {
+		fake.TrackDenial(service, rule)
 	}
 }
 
