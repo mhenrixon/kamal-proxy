@@ -1,0 +1,24 @@
+internal/server/service.go
+  s_4d3ad88fb3c637::t_197a244c132176 983-985
+internal/server/dynamic_redirects_test.go
+  s_4d3ad88fb3c637::t_c858583e4941ab 419
+  s_4d3ad88fb3c637::t_0eac38c58a2b90 371-375
+internal/server/redirect_rules.go
+  s_4d3ad88fb3c637::t_1edbf85d6147c7 129-130,132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "20db44c8b860f7b5f2df64b9bc1120c091a65945",
+  "prompts": {},
+  "sessions": {
+    "s_4d3ad88fb3c637": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c5ff50db-b75a-4df7-826c-927b0b127c77",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
