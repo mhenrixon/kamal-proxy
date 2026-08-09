@@ -104,13 +104,18 @@ func (s *Service) redirectRuleURL(current, desired url.URL) (string, int) {
 		return "", 0
 	}
 
+	return resolveRedirectLocation(match, current, desired)
+}
+
+// resolveRedirectLocation completes a matched rule's target into the URL to
+// answer with. A rule that resolves to the request's own URL is dropped rather
+// than answered: the client would follow it around forever.
+func resolveRedirectLocation(match pathRuleMatch, current, desired url.URL) (string, int) {
 	if !match.target.IsAbs() {
 		match.target.Scheme = desired.Scheme
 		match.target.Host = desired.Host
 	}
 
-	// A rule that resolves to the request's own URL is dropped rather than
-	// answered: the client would follow it around forever.
 	location := match.target.String()
 	if location == current.String() {
 		return "", 0

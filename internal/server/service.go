@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/acme"
@@ -174,6 +175,15 @@ type ServiceOptions struct {
 	Redirects []PathRule `json:"redirects,omitempty"`
 	Rewrites  []PathRule `json:"rewrites,omitempty"`
 
+	// RedirectsSource polls an application endpoint for a host-scoped redirect
+	// map, serving tenant-authored redirects without an app round trip. Empty
+	// (the default, and what every older state file restores to) polls nothing.
+	// See redirect_map.go and dynamic_redirects.go.
+	RedirectsSource string `json:"redirects_source,omitempty"`
+	// RedirectsInterval is the poll interval; zero means
+	// DefaultRedirectsInterval.
+	RedirectsInterval time.Duration `json:"redirects_interval,omitempty"`
+
 	// SleepAfter stops this service's containers after this long with no traffic,
 	// starting them again on the next request. Zero (the default) never sleeps.
 	SleepAfter time.Duration `json:"sleep_after,omitempty"`
@@ -298,6 +308,10 @@ func (so ServiceOptions) Validate() error {
 		return err
 	}
 
+	if err := so.validateDynamicRedirects(); err != nil {
+		return err
+	}
+
 	return so.validateDynamicDomains()
 }
 
@@ -352,6 +366,11 @@ type Service struct {
 	redirects      *pathRuleSet
 	rewrites       *pathRuleSet
 
+	// dynamicRedirects is the compiled host-scoped redirect map from this
+	// service's --redirects-source, swapped whole by the manager so matching
+	// never takes a lock. Nil means no dynamic redirects.
+	dynamicRedirects atomic.Pointer[dynamicRedirectMap]
+
 	// cacheStore is shared with every other service on this proxy, and possibly
 	// with every other proxy in the fleet. cacheHandler is this service's own
 	// entry into it, sitting between the checks above and the load balancer.
@@ -395,6 +414,12 @@ func (s *Service) SetSANCertManager(manager *SANCertManager) {
 			s.middleware = prevMiddleware
 		}
 	}
+}
+
+// SetDynamicRedirects installs a compiled redirect map from the dynamic
+// redirect manager. Nil evicts it.
+func (s *Service) SetDynamicRedirects(m *dynamicRedirectMap) {
+	s.dynamicRedirects.Store(m)
 }
 
 func (s *Service) Dispose() {
@@ -949,7 +974,16 @@ func (s *Service) redirectURLIfNeeded(r *http.Request) (string, int) {
 	}
 
 	current := url.URL{Scheme: currentScheme, Host: host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
-	if location, status := s.redirectRuleURL(current, url.URL{Scheme: desiredScheme, Host: desiredHost}); location != "" {
+	desired := url.URL{Scheme: desiredScheme, Host: desiredHost}
+
+	// The dynamic map answers first: a host entry there is per-host
+	// configuration the static, service-wide rules compose under.
+	if location, status := s.dynamicRedirects.Load().redirectURL(current, desired); location != "" {
+		metrics.Tracker.TrackDynamicRedirect(s.name, status)
+		return location, status
+	}
+
+	if location, status := s.redirectRuleURL(current, desired); location != "" {
 		return location, status
 	}
 

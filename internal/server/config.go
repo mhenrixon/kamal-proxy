@@ -143,6 +143,10 @@ func (c Config) DynamicDomainsStatePath() string {
 	return path.Join(c.dataDirectory(), "dynamic-domains.state")
 }
 
+func (c Config) DynamicRedirectsStatePath() string {
+	return path.Join(c.dataDirectory(), "dynamic-redirects.state")
+}
+
 // SANCertManagerConfig returns the configuration for the certificate manager,
 // which is the proxy's only ACME system: one account, one cache, one allowlist,
 // both challenge types.

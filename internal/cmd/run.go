@@ -168,6 +168,16 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		router.SetDynamicDomainManager(dynamicDomains)
 	}
 
+	// Unlike the domain manager, this does not depend on ACME: redirects are
+	// useful on a plain HTTP proxy too.
+	dynamicRedirects := server.NewDynamicRedirectManager(server.DynamicRedirectConfig{
+		StatePath:    globalConfig.DynamicRedirectsStatePath(),
+		RefreshToken: os.Getenv("KAMAL_PROXY_REFRESH_TOKEN"),
+		SourceToken:  os.Getenv("KAMAL_PROXY_REDIRECTS_TOKEN"),
+	}, router)
+	router.SetDynamicRedirectManager(dynamicRedirects)
+	defer dynamicRedirects.Stop()
+
 	s := server.NewServer(&globalConfig, router)
 	if err := s.Start(); err != nil {
 		return err

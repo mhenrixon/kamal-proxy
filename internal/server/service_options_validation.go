@@ -16,6 +16,25 @@ func (so ServiceOptions) validateInterceptErrorStatuses() error {
 	return nil
 }
 
+func (so ServiceOptions) validateDynamicRedirects() error {
+	if so.RedirectsSource == "" {
+		if so.RedirectsInterval != 0 {
+			return fmt.Errorf("%w: redirects-interval requires redirects-source", ErrServiceOptionsInvalid)
+		}
+		return nil
+	}
+
+	if !validDomainSource(so.RedirectsSource) {
+		return fmt.Errorf("%w: redirects-source must be a path or an http(s) URL: %q", ErrServiceOptionsInvalid, so.RedirectsSource)
+	}
+
+	if so.RedirectsInterval != 0 && so.RedirectsInterval < MinRedirectsInterval {
+		return fmt.Errorf("%w: redirects-interval must be at least %s", ErrServiceOptionsInvalid, MinRedirectsInterval)
+	}
+
+	return nil
+}
+
 func (so ServiceOptions) validateDynamicDomains() error {
 	if so.TLSDomainsSource == "" {
 		if so.TLSDomainsBatchSize != 0 {
