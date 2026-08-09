@@ -150,6 +150,11 @@ func (imp *traefikImport) importEntry(resolver string, entry traefikCertificate,
 		return nil
 	}
 
+	// Only certificates outside their validity window are refused. A nearly
+	// expired one (inside the manager's 24-hour replacement window) still
+	// imports: a deploy-registered domain re-orders on its first handshake
+	// either way, so importing loses nothing, while a dynamic domain keeps
+	// serving the certificate while its renewal runs.
 	if imp.now.After(leaf.NotAfter) || imp.now.Before(leaf.NotBefore) {
 		summary.SkippedExpired++
 		return nil
@@ -246,46 +251,62 @@ func parseTraefikEntry(entry traefikCertificate) (*x509.Certificate, []byte, []b
 }
 
 // writeCertificateFiles stores a certificate in the SAN manager's layout, the
-// same paths saveCertificate uses.
+// same paths saveCertificate uses. Each file goes through tmp+rename so a
+// replacement never leaves a torn file behind; if the pair is interrupted
+// between renames, loadState simply fails to load the mismatched pair and the
+// domain re-orders, so the state file stays trustworthy.
 func writeCertificateFiles(certsPath, certID string, certPEM, keyPEM []byte) error {
 	certDir := filepath.Join(certsPath, sanitizeFilename(certID))
 	if err := os.MkdirAll(certDir, 0700); err != nil {
 		return err
 	}
 
-	if err := os.WriteFile(filepath.Join(certDir, "cert.pem"), certPEM, 0600); err != nil {
-		return err
+	files := []struct {
+		name string
+		data []byte
+	}{
+		{"cert.pem", certPEM},
+		{"key.pem", keyPEM},
 	}
 
-	return os.WriteFile(filepath.Join(certDir, "key.pem"), keyPEM, 0600)
+	for _, file := range files {
+		path := filepath.Join(certDir, file.name)
+		tmpPath := path + ".tmp"
+		if err := os.WriteFile(tmpPath, file.data, 0600); err != nil {
+			return err
+		}
+		if err := os.Rename(tmpPath, path); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // loadStateForImport reads an existing state file so the import merges rather
-// than clobbers. A state file that exists but cannot be parsed aborts the
-// import -- overwriting it could orphan live certificates.
+// than clobbers. A state file that exists but cannot be parsed -- or parses
+// but does not look like manager state -- aborts the import: overwriting it
+// could orphan live certificates. writeManagerStateFile always emits both
+// maps, so requiring them rejects nothing legitimate.
 func loadStateForImport(path string) (managerState, error) {
-	state := managerState{
-		Certificates: map[string]*ManagedCert{},
-		DomainMap:    map[string]string{},
-	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return state, nil
+			return managerState{
+				Certificates: map[string]*ManagedCert{},
+				DomainMap:    map[string]string{},
+			}, nil
 		}
-		return state, fmt.Errorf("failed to read the existing certificate state: %w", err)
+		return managerState{}, fmt.Errorf("failed to read the existing certificate state: %w", err)
 	}
 
+	var state managerState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return state, fmt.Errorf("refusing to overwrite the unreadable certificate state %s: %w", path, err)
+		return managerState{}, fmt.Errorf("refusing to overwrite the unreadable certificate state %s: %w", path, err)
 	}
 
-	if state.Certificates == nil {
-		state.Certificates = map[string]*ManagedCert{}
-	}
-	if state.DomainMap == nil {
-		state.DomainMap = map[string]string{}
+	if state.Certificates == nil || state.DomainMap == nil {
+		return managerState{}, fmt.Errorf("refusing to overwrite %s: it does not look like a certificate state file", path)
 	}
 
 	return state, nil

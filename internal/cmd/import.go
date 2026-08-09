@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -56,6 +57,14 @@ func newImportCertsCommand() *importCertsCommand {
 }
 
 func (c *importCertsCommand) run(cmd *cobra.Command, args []string) error {
+	// Mirror `run`: a fresh --data-dir must exist before the state file is
+	// written into it, and an import with zero certificates still writes state.
+	if globalConfig.AlternateConfigDir != "" {
+		if err := os.MkdirAll(globalConfig.AlternateConfigDir, 0700); err != nil {
+			return fmt.Errorf("failed to create data directory %q: %w", globalConfig.AlternateConfigDir, err)
+		}
+	}
+
 	summary, err := server.ImportTraefikCertificates(server.TraefikImportOptions{
 		ACMEPath:  c.traefikAcmePath,
 		Resolver:  c.resolver,

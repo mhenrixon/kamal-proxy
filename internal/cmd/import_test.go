@@ -17,6 +17,10 @@ import (
 func runImportCerts(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 
+	previousConfig := globalConfig
+	t.Cleanup(func() {
+		globalConfig = previousConfig
+	})
 	globalConfig = server.Config{}
 	cmd := newImportCommand().cmd
 
@@ -47,6 +51,20 @@ func TestImportCertsCommand_ImportsIntoTheDataDir(t *testing.T) {
 	// The summary is printed, and the state landed in the given data dir.
 	assert.Contains(t, out, "Imported: 0")
 	assert.FileExists(t, filepath.Join(dir, "acme.state"))
+}
+
+func TestImportCertsCommand_CreatesAMissingDataDir(t *testing.T) {
+	dir := t.TempDir()
+	acmePath := filepath.Join(dir, "acme.json")
+	require.NoError(t, os.WriteFile(acmePath, []byte(`{}`), 0600))
+
+	// A first-boot import writes state even when nothing qualifies, so the
+	// data dir must be created up front, as `run` does.
+	dataDir := filepath.Join(dir, "brand", "new")
+	_, err := runImportCerts(t, "--traefik-acme", acmePath, "--data-dir", dataDir)
+	require.NoError(t, err)
+
+	assert.FileExists(t, filepath.Join(dataDir, "acme.state"))
 }
 
 func TestImportCertsCommand_FailsOnUnparseableInput(t *testing.T) {

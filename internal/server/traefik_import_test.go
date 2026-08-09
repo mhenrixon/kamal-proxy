@@ -167,10 +167,11 @@ func TestImportTraefikCertificates_SkipsExpiredAndNotYetValid(t *testing.T) {
 	assert.Empty(t, state.Certificates)
 }
 
-func TestImportTraefikCertificates_KeepsLongerLivedExistingMapping(t *testing.T) {
-	opts := testTraefikImportOptions(t)
+// adoptExistingCert seeds the store at opts' paths with a certificate the
+// proxy already holds, via a manager pointed at the same files.
+func adoptExistingCert(t testing.TB, opts TraefikImportOptions, domains []string, notAfter time.Time) *ManagedCert {
+	t.Helper()
 
-	// A cert the proxy already holds, outliving the one Traefik has.
 	manager, err := NewSANCertManager(SANCertManagerConfig{
 		Email:     "test@example.com",
 		Directory: LetsEncryptStaging,
@@ -178,10 +179,18 @@ func TestImportTraefikCertificates_KeepsLongerLivedExistingMapping(t *testing.T)
 		StatePath: opts.StatePath,
 	})
 	require.NoError(t, err)
+
 	existing, err := manager.adoptCertificate(
-		testCertResource(t, []string{"app.example.com"}, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)),
-		[]string{"app.example.com"})
+		testCertResource(t, domains, time.Now().Add(-time.Hour), notAfter), sortedCopy(domains))
 	require.NoError(t, err)
+	return existing
+}
+
+func TestImportTraefikCertificates_KeepsLongerLivedExistingMapping(t *testing.T) {
+	opts := testTraefikImportOptions(t)
+
+	// A cert the proxy already holds, outliving the one Traefik has.
+	existing := adoptExistingCert(t, opts, []string{"app.example.com"}, time.Now().Add(90*24*time.Hour))
 
 	writeTraefikAcme(t, opts.ACMEPath, map[string][]map[string]any{
 		"letsencrypt": {
@@ -202,17 +211,7 @@ func TestImportTraefikCertificates_KeepsLongerLivedExistingMapping(t *testing.T)
 func TestImportTraefikCertificates_ReplacesShorterLivedExistingMapping(t *testing.T) {
 	opts := testTraefikImportOptions(t)
 
-	manager, err := NewSANCertManager(SANCertManagerConfig{
-		Email:     "test@example.com",
-		Directory: LetsEncryptStaging,
-		CachePath: opts.CertsPath,
-		StatePath: opts.StatePath,
-	})
-	require.NoError(t, err)
-	existing, err := manager.adoptCertificate(
-		testCertResource(t, []string{"app.example.com"}, time.Now().Add(-time.Hour), time.Now().Add(10*24*time.Hour)),
-		[]string{"app.example.com"})
-	require.NoError(t, err)
+	existing := adoptExistingCert(t, opts, []string{"app.example.com"}, time.Now().Add(10*24*time.Hour))
 
 	writeTraefikAcme(t, opts.ACMEPath, map[string][]map[string]any{
 		"letsencrypt": {
@@ -241,6 +240,42 @@ func TestImportTraefikCertificates_ReplacesShorterLivedExistingMapping(t *testin
 	leaf, err := x509.ParseCertificate(loaded.Certificate[0])
 	require.NoError(t, err)
 	assert.WithinDuration(t, time.Now().Add(60*24*time.Hour), leaf.NotAfter, 2*time.Second)
+}
+
+// A two-domain entry overlapping a longer-lived incumbent on ONE domain still
+// imports for the other. The incumbent keeps its mapping; the imported
+// certificate's Domains list its actual SAN coverage, and the renewer's
+// renewableDomains filter (domains still mapped to the certificate) is what
+// keeps an unowned listing from being renewed through it.
+func TestImportTraefikCertificates_PartialOverlapKeepsIncumbentMapping(t *testing.T) {
+	opts := testTraefikImportOptions(t)
+
+	existing := adoptExistingCert(t, opts, []string{"app.example.com"}, time.Now().Add(90*24*time.Hour))
+
+	writeTraefikAcme(t, opts.ACMEPath, map[string][]map[string]any{
+		"letsencrypt": {
+			traefikCertEntry(t, []string{"app.example.com", "www.example.com"},
+				time.Now().Add(-time.Hour), time.Now().Add(45*24*time.Hour)),
+		},
+	})
+
+	summary, err := ImportTraefikCertificates(opts)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, summary.Imported)
+	assert.Zero(t, summary.SkippedDuplicate)
+
+	state := readImportedState(t, opts.StatePath)
+
+	// The contested domain stays with the longer-lived incumbent.
+	assert.Equal(t, existing.Identifier, state.DomainMap["app.example.com"])
+
+	// The uncontested domain maps to the imported certificate, whose Domains
+	// record the certificate's real coverage.
+	importedID := state.DomainMap["www.example.com"]
+	require.NotEmpty(t, importedID)
+	assert.NotEqual(t, existing.Identifier, importedID)
+	assert.ElementsMatch(t, []string{"app.example.com", "www.example.com"}, state.Certificates[importedID].Domains)
 }
 
 func TestImportTraefikCertificates_ResolverSelection(t *testing.T) {
@@ -376,6 +411,21 @@ func TestImportTraefikCertificates_ErrorsOnBadInput(t *testing.T) {
 
 		_, err := ImportTraefikCertificates(opts)
 		require.Error(t, err)
+	})
+
+	t.Run("a state file that is valid JSON but not manager state is refused", func(t *testing.T) {
+		opts := testTraefikImportOptions(t)
+		writeTraefikAcme(t, opts.ACMEPath, map[string][]map[string]any{
+			"letsencrypt": {traefikCertEntry(t, []string{"app.example.com"}, time.Now().Add(-time.Hour), time.Now().Add(45*24*time.Hour))},
+		})
+		require.NoError(t, os.WriteFile(opts.StatePath, []byte(`null`), 0600))
+
+		_, err := ImportTraefikCertificates(opts)
+		require.Error(t, err)
+
+		data, readErr := os.ReadFile(opts.StatePath)
+		require.NoError(t, readErr)
+		assert.Equal(t, "null", string(data))
 	})
 
 	t.Run("a corrupt existing state file is an error, not clobbered", func(t *testing.T) {
