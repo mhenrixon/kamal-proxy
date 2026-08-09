@@ -227,9 +227,44 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 		}
 	}
 
+	// A certificate issued before zone mappings existed can span DNS
+	// providers; its renewal splits along provider boundaries, one order per
+	// partition. A certificate can only be "replaced" once, so the ARI marker
+	// rides the first order.
+	renewedAll := true
+	newIdentifiers := []string{}
+	for i, partition := range r.manager.splitByProviderZone(domains) {
+		partitionReplaces := ""
+		if i == 0 {
+			partitionReplaces = replaces
+		}
+
+		renewed, ok := r.renewPartition(cert, partition, partitionReplaces)
+		if !ok {
+			renewedAll = false
+			continue
+		}
+		newIdentifiers = append(newIdentifiers, renewed.Identifier)
+	}
+
+	// The old certificate goes only when every partition has a successor: a
+	// failed partition's domains keep serving it until the next reconcile.
+	if renewedAll && !slices.Contains(newIdentifiers, cert.Identifier) {
+		r.manager.removeCertificate(cert.Identifier)
+	}
+
+	if len(newIdentifiers) > 0 {
+		r.notifyChange()
+	}
+}
+
+// renewPartition runs one renewal order and adopts its certificate. It
+// reports success; failures quarantine or log exactly as a whole-certificate
+// renewal did.
+func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replaces string) (*ManagedCert, bool) {
 	if r.config.Bucket != nil {
 		if err := r.config.Bucket.Take(r.ctx); err != nil {
-			return
+			return nil, false
 		}
 	}
 
@@ -242,17 +277,13 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	})
 	if err != nil {
 		r.handleRenewalFailure(cert, domains, err)
-		return
+		return nil, false
 	}
 
 	renewed, err := r.manager.adoptCertificate(resource, domains)
 	if err != nil {
 		slog.Error("Failed to adopt renewed certificate", "certificate", cert.Identifier, "error", err)
-		return
-	}
-
-	if renewed.Identifier != cert.Identifier {
-		r.manager.removeCertificate(cert.Identifier)
+		return nil, false
 	}
 
 	for _, domain := range domains {
@@ -260,7 +291,7 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 		metrics.Tracker.IncCertificateRenewals(domain, true)
 	}
 
-	r.notifyChange()
+	return renewed, true
 }
 
 // renewableDomains filters a certificate's set down to domains that are still

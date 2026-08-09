@@ -1078,10 +1078,33 @@ rate limits (50 certificates per registered domain per week).
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
 | `--acme-email` | `ACME_EMAIL` | (required) | Contact email for Let's Encrypt |
-| `--acme-dns-provider` | `ACME_DNS_PROVIDER` | `auto` | DNS provider (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto) |
+| `--acme-dns-provider` | `ACME_DNS_PROVIDER` | `auto` | DNS provider (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto). Repeatable; `zone=provider` entries pin a zone to its DNS host |
 | `--acme-directory` | `ACME_DIRECTORY` | Let's Encrypt production | ACME directory URL |
 | `--acme-prefer-wildcard` | `ACME_PREFER_WILDCARD` | `true` | Prefer wildcard certificates when DNS provider available |
 | `--acme-http-fallback` | `ACME_HTTP_FALLBACK` | `true` | Fall back to HTTP-01 challenge if DNS-01 fails |
+
+**Zones at different DNS hosts:**
+
+A fleet that terminates TLS for several zones often has them registered at
+different DNS providers. `--acme-dns-provider` is repeatable: `zone=provider`
+entries pin a zone to the DNS host that serves it, and one bare entry is the
+default for anything no zone matches.
+
+```bash
+export CF_API_TOKEN=your-cloudflare-token
+export HETZNER_API_KEY=your-hetzner-key
+kamal-proxy run --acme-email admin@example.com \
+  --acme-dns-provider platform.example=cloudflare \
+  --acme-dns-provider legacy.example=hetzner
+```
+
+The provider for each certificate order is chosen by longest matching zone
+suffix, and one order never spans providers — a batch that would is split
+along provider boundaries. Every mapped provider validates its credentials at
+startup, so a mapping naming a provider whose credentials are absent fails the
+boot rather than the first issuance. Mappings are always explicit: `auto` can
+only be the bare default. The same syntax works in the environment variable,
+comma-separated: `ACME_DNS_PROVIDER=platform.example=cloudflare,hetzner`.
 
 **Using Let's Encrypt staging environment:**
 
