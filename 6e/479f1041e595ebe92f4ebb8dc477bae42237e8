@@ -1,0 +1,50 @@
+internal/server/cert_store_archive.go
+  s_2cfb131a81bb01::t_11ba930b5ecaf9 318-322,328,333-348,352-353,356-357
+  s_2cfb131a81bb01::t_f0f97471a3e64f 33-56
+  s_2cfb131a81bb01::t_14d72ff1c5f8c8 103-108,110,117-119,134,136,138-140,149-151
+  s_2cfb131a81bb01::t_c48e7a781e7191 301-309,311-314
+  s_2cfb131a81bb01::t_c42a52bee4c047 6
+internal/server/cert_store_export.go
+  s_2cfb131a81bb01::t_ebee70c3f03f10 15
+  s_2cfb131a81bb01::t_bc12035a1b0e0e 234-236,238,244,249-250,258-279
+  s_2cfb131a81bb01::t_d4c7091d569be9 384-392,398-408
+  s_2cfb131a81bb01::t_6a85e19cfdbcd4 102-107
+README.md
+  s_2cfb131a81bb01::t_39c0cb3871a264 1218-1224
+internal/server/san_cert_manager_test.go
+  s_2cfb131a81bb01::t_d79a5127d23b68 397-398,400,413-417
+  s_2cfb131a81bb01::t_594bf0dea6760a 388-396,399,401-412,418-458
+  s_2cfb131a81bb01::t_60350db2296a20 4-7,9,13,18-19
+  s_2cfb131a81bb01::t_bd748e36d36c7c 10
+internal/server/cert_store_export_test.go
+  s_2cfb131a81bb01::t_22531d081ac6e5 374-411
+internal/server/san_cert_manager.go
+  s_2cfb131a81bb01::t_4bc3071ea7fb98 219-245
+internal/cmd/export.go
+  s_2cfb131a81bb01::t_16c3a7a24f3343 90
+internal/server/cert_store_restore.go
+  s_2cfb131a81bb01::t_9a342398660a59 111-121
+  s_2cfb131a81bb01::t_e364f760d50096 176-182
+internal/server/cert_store_restore_test.go
+  s_2cfb131a81bb01::t_cd7ecf13f97711 7
+  s_2cfb131a81bb01::t_22531d081ac6e5 509-599
+  s_2cfb131a81bb01::t_dd8add7fb75e72 5,8,12,18
+  s_2cfb131a81bb01::t_9116fef7d997fd 600-612
+  s_2cfb131a81bb01::t_aded69d54b6e15 435
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6e479f1041e595ebe92f4ebb8dc477bae42237e8",
+  "prompts": {},
+  "sessions": {
+    "s_2cfb131a81bb01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb804ed8-d7ee-4afc-95f5-a5f5a59ec0e1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
