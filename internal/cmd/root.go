@@ -31,6 +31,7 @@ func Execute() {
 	rootCmd.AddCommand(newDomainsCommand().cmd)
 	rootCmd.AddCommand(newCacheCommand().cmd)
 	rootCmd.AddCommand(newDrainCommand().cmd)
+	rootCmd.AddCommand(newImportCommand().cmd)
 	rootCmd.AddCommand(newHoldCommand().cmd)
 
 	err := rootCmd.Execute()
