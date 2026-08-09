@@ -409,3 +409,24 @@ func TestExportCertificateStore_RejectsSymlinkedOutputIntoTheStore(t *testing.T)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refusing")
 }
+
+func TestExportCertificateStore_SurfacesUnrestorableAccountKeyWarning(t *testing.T) {
+	// Valid JSON passes the collection pass, but the staged-archive
+	// verification knows the reader would refuse to restore it -- the export
+	// summary must say so, or the operator learns about the lost ACME
+	// identity during a disaster instead of when the backup was taken.
+	paths := testCertStorePaths(t)
+	populateCertStore(t, paths, []string{"example.com"})
+	require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, "acme_user.json"),
+		[]byte(`{"email":"ops@example.com"}`), 0600))
+
+	summary, err := ExportCertificateStore(paths, filepath.Join(t.TempDir(), "backup.tar.gz"))
+	require.NoError(t, err)
+
+	require.NotEmpty(t, summary.Warnings)
+	joined := ""
+	for _, warning := range summary.Warnings {
+		joined += warning + "\n"
+	}
+	assert.Contains(t, joined, "account key")
+}

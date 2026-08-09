@@ -188,15 +188,43 @@ func removeStaleCertDirs(certsPath string, archive certStoreArchive) error {
 	return nil
 }
 
-// writeFileStaged writes a file through a same-directory temp file and a
-// rename, so an interrupted restore never leaves the target truncated.
+// writeFileStaged writes a file through a uniquely named same-directory temp
+// file and a rename, so an interrupted restore never leaves the target
+// truncated, a pre-planted path cannot redirect the write, and a pre-existing
+// temp file cannot lend the private key its old permissions.
 func writeFileStaged(path string, data []byte) error {
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := file.Name()
+
+	err = func() error {
+		if err := file.Chmod(0600); err != nil {
+			return err
+		}
+		if _, err := file.Write(data); err != nil {
+			return err
+		}
+		return file.Sync()
+	}()
+	if err != nil {
+		file.Close()
+		os.Remove(tmpPath)
 		return err
 	}
 
-	return os.Rename(tmpPath, path)
+	if err := file.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	return nil
 }
 
 // certStoreOccupant names the first thing found occupying the target store, or

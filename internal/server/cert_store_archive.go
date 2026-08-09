@@ -28,6 +28,13 @@ import (
 const (
 	maxCertArchiveBytes   = 512 << 20
 	maxCertArchiveEntries = 100_000
+
+	// maxCertArchiveHeaderBytes bounds the decompressed bytes spent on tar
+	// headers and their PAX/GNU metadata records, which archive/tar consumes
+	// inside Next() before the entry counter can run. 100k plain headers cost
+	// ~51MB, so the cap leaves legitimate archives room while a hostile chain
+	// of metadata records runs out of budget.
+	maxCertArchiveHeaderBytes = 64 << 20
 )
 
 // errCertArchiveTooLarge marks the decompressed-size cap being hit mid-read.
@@ -108,7 +115,9 @@ func readCertStoreArchive(archivePath string) (certStoreArchive, error) {
 	capped := &cappedReader{reader: gz, remaining: maxCertArchiveBytes}
 
 	tr := tar.NewReader(capped)
+	var headerBytes int64
 	for {
+		beforeHeader := capped.remaining
 		header, err := tr.Next()
 		if err == io.EOF {
 			break
@@ -118,6 +127,13 @@ func readCertStoreArchive(archivePath string) (certStoreArchive, error) {
 				return archive, fmt.Errorf("refusing the archive %s: it decompresses beyond %d bytes", archivePath, int64(maxCertArchiveBytes))
 			}
 			return archive, fmt.Errorf("failed to read the archive %s: %w", archivePath, err)
+		}
+
+		// Everything Next() consumed is header work -- including PAX/GNU
+		// metadata records the entry counter below never sees.
+		headerBytes += beforeHeader - capped.remaining
+		if headerBytes > maxCertArchiveHeaderBytes {
+			return archive, fmt.Errorf("refusing the archive %s: more than %d bytes of tar headers", archivePath, int64(maxCertArchiveHeaderBytes))
 		}
 
 		entryCount++
@@ -262,13 +278,13 @@ func (a *certStoreArchive) validate() error {
 		}
 
 		// The certificate must actually be what the state record says it is:
-		// restoring a record whose leaf names other hosts or expired earlier
-		// would have the manager serving the wrong certificate, or keeping it
-		// past its real expiry.
-		for _, domain := range record.Domains {
-			if !slices.Contains(pair.leaf.DNSNames, domain) {
-				return fmt.Errorf("the archived certificate %s does not cover %q, which its state record claims", id, domain)
-			}
+		// restoring a record whose leaf names disagree -- in either direction
+		// -- would have the manager serving the wrong certificate, and every
+		// writer of state records copies the leaf's DNS names exactly, so the
+		// sets must match, not merely overlap.
+		if !slices.Equal(sortedCopy(record.Domains), sortedCopy(pair.leaf.DNSNames)) {
+			return fmt.Errorf("the archived certificate %s names %v, but its state record claims %v",
+				id, pair.leaf.DNSNames, record.Domains)
 		}
 		// Compared at second precision: x509 validity has no sub-second field,
 		// while state metadata written from other sources may.

@@ -81,7 +81,11 @@ func (m *SANCertManager) ExportStore(paths CertStorePaths, outputPath string) (C
 func ExportCertificateStore(paths CertStorePaths, outputPath string) (CertsExportSummary, error) {
 	summary := CertsExportSummary{}
 
-	if err := rejectOutputInsideStore(paths, outputPath); err != nil {
+	// The write below uses this same resolved path, so the validated path and
+	// the written path cannot diverge through a parent symlink swapped after
+	// the check.
+	outputPath, err := safeOutputPath(paths, outputPath)
+	if err != nil {
 		return summary, err
 	}
 
@@ -121,8 +125,19 @@ func ExportCertificateStore(paths CertStorePaths, outputPath string) (CertsExpor
 		return strings.Compare(a.name, b.name)
 	})
 
-	if err := writeCertArchive(outputPath, files); err != nil {
+	readerWarnings, err := writeCertArchive(outputPath, files)
+	if err != nil {
 		return summary, err
+	}
+
+	// The staged-archive verification sees things the collection pass cannot
+	// -- an account key the reader would refuse to restore, for one. Its
+	// missing-certificate warnings are skipped: each of those was already
+	// reported above from the disk side.
+	for _, warning := range readerWarnings {
+		if !strings.Contains(warning, "missing from the archive") {
+			summary.Warnings = append(summary.Warnings, warning)
+		}
 	}
 
 	return summary, nil
@@ -229,30 +244,61 @@ func collectCertPair(certsPath, dir string, summary *CertsExportSummary) ([]arch
 	return pair, true
 }
 
-// rejectOutputInsideStore refuses an output path that would overwrite part of
-// the store being exported -- writing the archive over acme.state completes
-// the export and then destroys the live state it archived. Paths are compared
-// after resolving symlinks, so a link into the store cannot slip past the
-// guard.
-func rejectOutputInsideStore(paths CertStorePaths, outputPath string) error {
+// safeOutputPath refuses an output path that would overwrite part of the
+// store being exported -- writing the archive over acme.state completes the
+// export and then destroys the live state it archived -- and returns the
+// symlink-resolved path the caller must write to, so the validated path and
+// the written path are one and the same.
+//
+// Two layers: string comparison on resolved paths, then filesystem identity
+// (os.SameFile) against the output's existing ancestors, which also holds on
+// case-insensitive filesystems where two spellings name one file.
+func safeOutputPath(paths CertStorePaths, outputPath string) (string, error) {
 	output, err := resolveForComparison(outputPath)
 	if err != nil {
-		return fmt.Errorf("failed to resolve the output path: %w", err)
+		return "", fmt.Errorf("failed to resolve the output path: %w", err)
 	}
 
 	for _, statePath := range []string{paths.ACMEStatePath, paths.DynamicDomainsStatePath} {
 		if resolved, err := resolveForComparison(statePath); err == nil && resolved == output {
-			return fmt.Errorf("refusing to write the archive over the store's own %s", filepath.Base(statePath))
+			return "", fmt.Errorf("refusing to write the archive over the store's own %s", filepath.Base(statePath))
+		}
+		if sameExistingFile(statePath, output) {
+			return "", fmt.Errorf("refusing to write the archive over the store's own %s", filepath.Base(statePath))
 		}
 	}
 
-	if certsResolved, err := resolveForComparison(paths.CertsPath); err == nil {
-		if output == certsResolved || strings.HasPrefix(output, certsResolved+string(filepath.Separator)) {
-			return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
+	certsResolved, err := resolveForComparison(paths.CertsPath)
+	if err == nil && (output == certsResolved || strings.HasPrefix(output, certsResolved+string(filepath.Separator))) {
+		return "", fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
+	}
+	if certsInfo, err := os.Stat(paths.CertsPath); err == nil {
+		for current := output; ; {
+			if info, err := os.Stat(current); err == nil && os.SameFile(certsInfo, info) {
+				return "", fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
+			}
+			parent := filepath.Dir(current)
+			if parent == current {
+				break
+			}
+			current = parent
 		}
 	}
 
-	return nil
+	return output, nil
+}
+
+// sameExistingFile reports whether two paths name the same existing file.
+func sameExistingFile(a, b string) bool {
+	infoA, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	infoB, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(infoA, infoB)
 }
 
 // resolveForComparison absolutizes a path and resolves the symlinks in every
@@ -332,10 +378,11 @@ func readFileWithModTime(path string) ([]byte, time.Time, error) {
 // the write. The archive holds private keys: the temp file is created 0600 by
 // CreateTemp and chmodded to be certain. It is fsynced before the rename --
 // this is a disaster-recovery artifact, "written" has to mean "on disk".
-func writeCertArchive(outputPath string, files []archiveFile) error {
+// It returns the warnings the staged-archive verification produced.
+func writeCertArchive(outputPath string, files []archiveFile) ([]string, error) {
 	file, err := os.CreateTemp(filepath.Dir(outputPath), filepath.Base(outputPath)+".*.tmp")
 	if err != nil {
-		return fmt.Errorf("failed to create the archive: %w", err)
+		return nil, fmt.Errorf("failed to create the archive: %w", err)
 	}
 	tmpPath := file.Name()
 
@@ -373,26 +420,27 @@ func writeCertArchive(outputPath string, files []archiveFile) error {
 	if err != nil {
 		file.Close()
 		os.Remove(tmpPath)
-		return fmt.Errorf("failed to write the archive: %w", err)
+		return nil, fmt.Errorf("failed to write the archive: %w", err)
 	}
 
 	if err := file.Close(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("failed to write the archive: %w", err)
+		return nil, fmt.Errorf("failed to write the archive: %w", err)
 	}
 
 	// Read the staged archive back through the same strict reader verify and
 	// restore use, so a published export is restorable by construction -- any
 	// disagreement between what was collected and what the reader accepts
 	// fails the backup here, not in a disaster.
-	if _, err := readCertStoreArchive(tmpPath); err != nil {
+	staged, err := readCertStoreArchive(tmpPath)
+	if err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("the staged archive failed verification: %w", err)
+		return nil, fmt.Errorf("the staged archive failed verification: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, outputPath); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("failed to finalize the archive: %w", err)
+		return nil, fmt.Errorf("failed to finalize the archive: %w", err)
 	}
 
 	// Sync the directory so the rename itself survives power loss. Only a
@@ -401,12 +449,12 @@ func writeCertArchive(outputPath string, files []archiveFile) error {
 	// which a disaster-recovery artifact cannot shrug off.
 	dir, err := os.Open(filepath.Dir(outputPath))
 	if err != nil {
-		return fmt.Errorf("failed to sync the archive's directory: %w", err)
+		return nil, fmt.Errorf("failed to sync the archive's directory: %w", err)
 	}
 	defer dir.Close()
 	if err := dir.Sync(); err != nil && !errors.Is(err, syscall.ENOTSUP) && !errors.Is(err, syscall.EINVAL) {
-		return fmt.Errorf("failed to sync the archive's directory: %w", err)
+		return nil, fmt.Errorf("failed to sync the archive's directory: %w", err)
 	}
 
-	return nil
+	return staged.warnings, nil
 }

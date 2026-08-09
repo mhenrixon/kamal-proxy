@@ -430,7 +430,7 @@ func TestVerifyCertificateArchive_DropsInvalidAccountKey(t *testing.T) {
 		name string
 		key  []byte
 	}{
-		{name: "not JSON at all is rejected at export time, valid JSON without key material is not", key: []byte(`{"email":"ops@example.com"}`)},
+		{name: "valid JSON without key material", key: []byte(`{"email":"ops@example.com"}`)},
 		{name: "garbage key material", key: []byte(`{"email":"ops@example.com","key_pem":"bm90IGEga2V5"}`)},
 		{name: "non-ECDSA key, which loadOrCreateUser would silently discard", key: testRSAAccountKeyJSON(t)},
 	}
