@@ -1,0 +1,52 @@
+internal/server/san_cert_zones_test.go
+  s_bdd4e959015d5f::t_023755b5df3e36 1-341
+README.md
+  s_bdd4e959015d5f::t_5d7b6c0dcb073c 1086-1108
+  s_bdd4e959015d5f::t_a638b63f956d67 1081
+internal/server/config.go
+  s_bdd4e959015d5f::t_bdfec8209e49a2 118-122
+  s_bdd4e959015d5f::t_76c4dde18cebd4 165-172
+internal/server/san_cert_issuance.go
+  s_bdd4e959015d5f::t_10172e99a66c69 151-161
+  s_bdd4e959015d5f::t_4c4257fcf761a5 82,91-100
+  s_bdd4e959015d5f::t_16af2a509f8ab1 20-24,29-33
+internal/server/san_cert_manager.go
+  s_bdd4e959015d5f::t_1e3607c5a8df36 94,96-98,103-108
+  s_bdd4e959015d5f::t_2be6fbb8c74fd9 66-68,71-75
+  s_bdd4e959015d5f::t_7b351837352a34 187-192
+  s_bdd4e959015d5f::t_01b7babfa62b3a 261-263
+  s_bdd4e959015d5f::t_41c1f1c6cb2d3e 496-521
+internal/server/acme/mapping_test.go
+  s_bdd4e959015d5f::t_a9c343e14c2dd0 1-161
+internal/server/acme/mapping.go
+  s_bdd4e959015d5f::t_7866d22e923ff2 1-109
+internal/server/domain_issuer.go
+  s_bdd4e959015d5f::t_361e09a450ca1e 248-252,255-256
+internal/server/san_cert_zones.go
+  s_bdd4e959015d5f::t_14d9aa9a772cff 1-178
+internal/server/domain_renewal.go
+  s_bdd4e959015d5f::t_16b4233433ecd6 230-264,267,280,286,294
+internal/cmd/run.go
+  s_bdd4e959015d5f::t_2c40fbda6b8f5f 8,20
+  s_bdd4e959015d5f::t_2fce1c519d977e 69
+  s_bdd4e959015d5f::t_eb8604b7d0a13c 93-102
+internal/cmd/run_test.go
+  s_bdd4e959015d5f::t_a8dcc2205d7a32 12
+  s_bdd4e959015d5f::t_df3782fcc1afa5 312-398
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "36d8002eb743874962c008e4efa441c0f00e87d3",
+  "prompts": {},
+  "sessions": {
+    "s_bdd4e959015d5f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43f23d5b-047e-4449-8a45-e3caeaef22dc",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
