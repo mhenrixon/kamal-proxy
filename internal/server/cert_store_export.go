@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -98,7 +99,12 @@ func ExportCertificateStore(paths CertStorePaths, outputPath string) (CertsExpor
 	// Certificates without a state file cannot restore into a working store
 	// (the state is the estate's index), and the archive reader rejects that
 	// shape -- fail the backup now rather than hand over an unrestorable one.
-	if !hasState && len(certFiles) > 0 {
+	// The account key alone is not a certificate: a fresh estate that has only
+	// registered an account still gets its backup.
+	certsWithoutState := slices.ContainsFunc(certFiles, func(file archiveFile) bool {
+		return file.name != archiveAccountKeyEntry
+	})
+	if !hasState && certsWithoutState {
 		return summary, fmt.Errorf("the certificate store has certificates but no state file at %s; refusing to export an unrestorable archive", paths.ACMEStatePath)
 	}
 	files = append(files, certFiles...)
@@ -225,26 +231,52 @@ func collectCertPair(certsPath, dir string, summary *CertsExportSummary) ([]arch
 
 // rejectOutputInsideStore refuses an output path that would overwrite part of
 // the store being exported -- writing the archive over acme.state completes
-// the export and then destroys the live state it archived.
+// the export and then destroys the live state it archived. Paths are compared
+// after resolving symlinks, so a link into the store cannot slip past the
+// guard.
 func rejectOutputInsideStore(paths CertStorePaths, outputPath string) error {
-	output, err := filepath.Abs(outputPath)
+	output, err := resolveForComparison(outputPath)
 	if err != nil {
 		return fmt.Errorf("failed to resolve the output path: %w", err)
 	}
 
 	for _, statePath := range []string{paths.ACMEStatePath, paths.DynamicDomainsStatePath} {
-		if abs, err := filepath.Abs(statePath); err == nil && abs == output {
+		if resolved, err := resolveForComparison(statePath); err == nil && resolved == output {
 			return fmt.Errorf("refusing to write the archive over the store's own %s", filepath.Base(statePath))
 		}
 	}
 
-	if certsAbs, err := filepath.Abs(paths.CertsPath); err == nil {
-		if output == certsAbs || strings.HasPrefix(output, certsAbs+string(filepath.Separator)) {
+	if certsResolved, err := resolveForComparison(paths.CertsPath); err == nil {
+		if output == certsResolved || strings.HasPrefix(output, certsResolved+string(filepath.Separator)) {
 			return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
 		}
 	}
 
 	return nil
+}
+
+// resolveForComparison absolutizes a path and resolves the symlinks in every
+// component that exists: the path itself when it does, otherwise its deepest
+// existing ancestor, with the non-existing remainder rejoined.
+func resolveForComparison(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	remainder := ""
+	for current := abs; ; {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(resolved, remainder), nil
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return abs, nil
+		}
+		remainder = filepath.Join(filepath.Base(current), remainder)
+		current = parent
+	}
 }
 
 // warnMissingStateCerts flags certificates the state file references that have
@@ -349,16 +381,31 @@ func writeCertArchive(outputPath string, files []archiveFile) error {
 		return fmt.Errorf("failed to write the archive: %w", err)
 	}
 
+	// Read the staged archive back through the same strict reader verify and
+	// restore use, so a published export is restorable by construction -- any
+	// disagreement between what was collected and what the reader accepts
+	// fails the backup here, not in a disaster.
+	if _, err := readCertStoreArchive(tmpPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("the staged archive failed verification: %w", err)
+	}
+
 	if err := os.Rename(tmpPath, outputPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to finalize the archive: %w", err)
 	}
 
-	// Best-effort directory sync so the rename itself survives power loss;
-	// not every filesystem supports it, and the archive is already durable.
-	if dir, err := os.Open(filepath.Dir(outputPath)); err == nil {
-		_ = dir.Sync()
-		dir.Close()
+	// Sync the directory so the rename itself survives power loss. Only a
+	// filesystem that genuinely does not support syncing a directory is
+	// excused; a real failure means the backup's existence is not durable,
+	// which a disaster-recovery artifact cannot shrug off.
+	dir, err := os.Open(filepath.Dir(outputPath))
+	if err != nil {
+		return fmt.Errorf("failed to sync the archive's directory: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil && !errors.Is(err, syscall.ENOTSUP) && !errors.Is(err, syscall.EINVAL) {
+		return fmt.Errorf("failed to sync the archive's directory: %w", err)
 	}
 
 	return nil

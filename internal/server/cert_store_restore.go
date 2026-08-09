@@ -83,14 +83,6 @@ func RestoreCertificateStore(opts CertStoreRestoreOptions) (CertsRestoreSummary,
 		}
 	}
 
-	// A forced restore over an existing store must not let a leftover target
-	// directory answer for a state-referenced certificate the archive itself
-	// does not hold -- the "will re-order" warning would instead silently
-	// revive whatever pair the old store had under that identifier.
-	if err := removeStaleCertDirs(opts.Paths.CertsPath, archive); err != nil {
-		return summary, err
-	}
-
 	if archive.accountKey != nil {
 		if err := os.MkdirAll(opts.Paths.CertsPath, 0700); err != nil {
 			return summary, fmt.Errorf("failed to create the certificate directory: %w", err)
@@ -114,6 +106,17 @@ func RestoreCertificateStore(opts CertStoreRestoreOptions) (CertsRestoreSummary,
 		}
 		summary.Certificates = len(archive.state.Certificates)
 		summary.Domains = len(archive.state.DomainMap)
+	}
+
+	// A forced restore over an existing store must not let a leftover target
+	// directory answer for a state-referenced certificate the archive itself
+	// does not hold -- the "will re-order" warning would instead silently
+	// revive whatever pair the old store had under that identifier. This runs
+	// after the state commit on purpose: a restore that fails mid-way leaves
+	// the OLD store's files intact rather than an old state file pointing at
+	// deleted directories.
+	if err := removeStaleCertDirs(opts.Paths.CertsPath, archive); err != nil {
+		return summary, err
 	}
 
 	return summary, nil
@@ -168,6 +171,13 @@ func removeStaleCertDirs(certsPath string, archive certStoreArchive) error {
 		dir := sanitizeFilename(id)
 		if _, ok := archive.certs[dir]; ok {
 			continue
+		}
+
+		// validateManagerState already rejects identifiers that do not name a
+		// safe directory; this is the last line of defense in front of an
+		// os.RemoveAll that must never resolve outside certsPath.
+		if dir == "" || dir == "." || dir == ".." {
+			return fmt.Errorf("refusing to remove the unsafe certificate directory for %q", id)
 		}
 
 		if err := os.RemoveAll(filepath.Join(certsPath, dir)); err != nil {

@@ -87,7 +87,7 @@ func (c *exportCertsCommand) export(cmd *cobra.Command, outputPath string) (serv
 	if dialErr == nil {
 		defer client.Close()
 		err := client.Call("kamal-proxy.CertsExport", server.CertsExportArgs{Path: outputPath}, &summary)
-		if err != nil && strings.Contains(err.Error(), "can't find method") {
+		if err != nil && strings.HasPrefix(err.Error(), "rpc: can't find method kamal-proxy.CertsExport") {
 			// A proxy is answering the socket but predates this command. Do
 			// NOT fall back to reading the data dir -- that proxy is live and
 			// writing, which is exactly the torn-snapshot case the RPC path

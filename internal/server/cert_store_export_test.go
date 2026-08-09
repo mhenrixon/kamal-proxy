@@ -371,3 +371,41 @@ func TestCertsExportSummary_RoundTrips(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &back))
 	assert.Equal(t, summary, back)
 }
+
+func TestExportCertificateStore_AccountKeyOnlyStoreExports(t *testing.T) {
+	// A fresh estate that has only registered its ACME account is still worth
+	// backing up, and must not trip the certificates-without-state refusal.
+	paths := testCertStorePaths(t)
+	require.NoError(t, os.MkdirAll(paths.CertsPath, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, "acme_user.json"), testAccountKeyJSON(t), 0600))
+
+	outputPath := filepath.Join(t.TempDir(), "backup.tar.gz")
+	summary, err := ExportCertificateStore(paths, outputPath)
+	require.NoError(t, err)
+	assert.Equal(t, 0, summary.Certificates)
+
+	report, err := VerifyCertificateArchive(outputPath)
+	require.NoError(t, err)
+	assert.True(t, report.HasAccountKey)
+}
+
+func TestExportCertificateStore_RejectsSymlinkedOutputIntoTheStore(t *testing.T) {
+	paths := testCertStorePaths(t)
+	populateCertStore(t, paths, []string{"example.com"})
+
+	// A symlink pointing at the live state file must not slip past the guard.
+	linkPath := filepath.Join(t.TempDir(), "innocent.tar.gz")
+	require.NoError(t, os.Symlink(paths.ACMEStatePath, linkPath))
+
+	_, err := ExportCertificateStore(paths, linkPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing")
+
+	// A symlinked directory into the store is refused too.
+	linkDir := filepath.Join(t.TempDir(), "linkdir")
+	require.NoError(t, os.Symlink(paths.CertsPath, linkDir))
+
+	_, err = ExportCertificateStore(paths, filepath.Join(linkDir, "backup.tar.gz"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing")
+}

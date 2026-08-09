@@ -216,6 +216,33 @@ func NewSANCertManager(config SANCertManagerConfig) (*SANCertManager, error) {
 
 // Initialize sets up the ACME client and loads persisted state
 func (m *SANCertManager) Initialize(ctx context.Context) error {
+	if err := m.initializeClients(); err != nil {
+		return err
+	}
+
+	// Runs with no locks held: adoption takes the store's own locks, and
+	// calling it from inside the initialization critical section would
+	// deadlock on m.mu the moment the legacy cache holds a certificate.
+	m.importLegacyHTTP01Cache()
+
+	m.mu.Lock()
+	m.ready = true
+	m.mu.Unlock()
+
+	slog.Info("SAN certificate manager initialized",
+		"email", m.config.Email,
+		"directory", m.config.Directory,
+		"dns_provider", m.config.DNSProvider,
+		"prefer_wildcard", m.config.PreferWildcard,
+		"http_fallback", m.config.HTTPFallback,
+	)
+
+	return nil
+}
+
+// initializeClients builds the ACME clients and loads persisted state, under
+// the manager lock.
+func (m *SANCertManager) initializeClients() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -272,19 +299,6 @@ func (m *SANCertManager) Initialize(ctx context.Context) error {
 	if err := m.loadState(); err != nil {
 		slog.Warn("Failed to load certificate state", "error", err)
 	}
-
-	// Adopt anything the deleted certificate registry left behind, so an
-	// upgrade does not re-order certificates the proxy already holds.
-	m.importLegacyHTTP01Cache()
-
-	m.ready = true
-	slog.Info("SAN certificate manager initialized",
-		"email", m.config.Email,
-		"directory", m.config.Directory,
-		"dns_provider", m.config.DNSProvider,
-		"prefer_wildcard", m.config.PreferWildcard,
-		"http_fallback", m.config.HTTPFallback,
-	)
 
 	return nil
 }

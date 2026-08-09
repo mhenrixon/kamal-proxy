@@ -3,6 +3,7 @@ package server
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -28,6 +29,30 @@ const (
 	maxCertArchiveBytes   = 512 << 20
 	maxCertArchiveEntries = 100_000
 )
+
+// errCertArchiveTooLarge marks the decompressed-size cap being hit mid-read.
+var errCertArchiveTooLarge = errors.New("certificate archive decompresses beyond the size limit")
+
+// cappedReader bounds how many bytes may be read through it, failing with
+// errCertArchiveTooLarge instead of a bare EOF so the caller can tell a
+// too-large archive from a truncated one.
+type cappedReader struct {
+	reader    io.Reader
+	remaining int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if c.remaining <= 0 {
+		return 0, errCertArchiveTooLarge
+	}
+	if int64(len(p)) > c.remaining {
+		p = p[:c.remaining]
+	}
+
+	n, err := c.reader.Read(p)
+	c.remaining -= int64(n)
+	return n, err
+}
 
 // archiveCertPair is one certificate directory from an archive, parsed and
 // validated.
@@ -75,16 +100,23 @@ func readCertStoreArchive(archivePath string) (certStoreArchive, error) {
 	defer gz.Close()
 
 	rawCerts := map[string]map[string][]byte{}
-	entryCount := 0
-	var totalBytes int64
+	entryCount, fileCount := 0, 0
 
-	tr := tar.NewReader(gz)
+	// The cap sits around the whole decompressed gzip stream, not just entry
+	// payloads: PAX and GNU metadata records are consumed inside Next() and
+	// would otherwise be free decompression work for a hostile archive.
+	capped := &cappedReader{reader: gz, remaining: maxCertArchiveBytes}
+
+	tr := tar.NewReader(capped)
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			if errors.Is(err, errCertArchiveTooLarge) || capped.remaining <= 0 {
+				return archive, fmt.Errorf("refusing the archive %s: it decompresses beyond %d bytes", archivePath, int64(maxCertArchiveBytes))
+			}
 			return archive, fmt.Errorf("failed to read the archive %s: %w", archivePath, err)
 		}
 
@@ -99,14 +131,13 @@ func readCertStoreArchive(archivePath string) (certStoreArchive, error) {
 		if header.Typeflag != tar.TypeReg {
 			return archive, fmt.Errorf("refusing archive entry %q: only regular files belong in a certificate archive", header.Name)
 		}
+		fileCount++
 
-		totalBytes += header.Size
-		if totalBytes > maxCertArchiveBytes {
-			return archive, fmt.Errorf("refusing the archive %s: it decompresses beyond %d bytes", archivePath, int64(maxCertArchiveBytes))
-		}
-
-		data, err := io.ReadAll(io.LimitReader(tr, maxCertArchiveBytes))
+		data, err := io.ReadAll(tr)
 		if err != nil {
+			if errors.Is(err, errCertArchiveTooLarge) {
+				return archive, fmt.Errorf("refusing the archive %s: it decompresses beyond %d bytes", archivePath, int64(maxCertArchiveBytes))
+			}
 			return archive, fmt.Errorf("failed to read the archive entry %q: %w", header.Name, err)
 		}
 
@@ -115,7 +146,9 @@ func readCertStoreArchive(archivePath string) (certStoreArchive, error) {
 		}
 	}
 
-	if entryCount == 0 {
+	// Directory headers alone do not make an archive: emptiness is decided by
+	// regular files, while the entry cap above counts every header.
+	if fileCount == 0 {
 		return archive, fmt.Errorf("the archive %s is empty", archivePath)
 	}
 
@@ -265,31 +298,63 @@ func (a *certStoreArchive) checkAccountKey() {
 		return
 	}
 
-	if _, err := certcrypto.ParsePEMPrivateKey(user.KeyPEM); err != nil {
-		a.warnings = append(a.warnings,
-			fmt.Sprintf("the archived ACME account key holds no usable private key and will not be restored; the next boot will register a fresh account: %v", err))
-		a.accountKey = nil
+	// Mirror loadOrCreateUser exactly: it only accepts an ECDSA key, so any
+	// other key type would be silently discarded at boot and a fresh account
+	// registered -- the very outcome this check exists to make loud.
+	key, err := certcrypto.ParsePEMPrivateKey(user.KeyPEM)
+	if err == nil {
+		if _, ok := key.(*ecdsa.PrivateKey); ok {
+			return
+		}
+		err = errors.New("the key is not an ECDSA key")
 	}
+
+	a.warnings = append(a.warnings,
+		fmt.Sprintf("the archived ACME account key holds no usable private key and will not be restored; the next boot will register a fresh account: %v", err))
+	a.accountKey = nil
 }
 
 // validateManagerState checks the invariants a healthy manager always
-// maintains: both maps present, no null certificate records, no domain mapped
-// to a certificate that is not there. Shared by the Traefik importer (before
-// merging into an existing state file) and the archive reader.
+// maintains: both maps present; no null certificate records; identifiers that
+// are safe as directory names, unique after sanitization, and consistent with
+// their map key; and every domain mapped to a certificate that exists and
+// actually covers it. Shared by the Traefik importer (before merging into an
+// existing state file) and the archive reader.
 func validateManagerState(state managerState) error {
 	if state.Certificates == nil || state.DomainMap == nil {
 		return errors.New("it does not look like a certificate state file")
 	}
 
+	dirs := map[string]string{}
 	for id, cert := range state.Certificates {
 		if cert == nil {
 			return fmt.Errorf("certificate %q is null", id)
 		}
+		if cert.Identifier != id {
+			return fmt.Errorf("certificate %q carries the mismatched identifier %q", id, cert.Identifier)
+		}
+
+		// The sanitized identifier becomes an on-disk directory under the
+		// certificate path: path-special names would escape it, and two
+		// identifiers sharing one sanitized form would overwrite (or delete)
+		// each other's files.
+		dir := sanitizeFilename(id)
+		if dir == "" || dir == "." || dir == ".." {
+			return fmt.Errorf("certificate %q does not name a safe storage directory", id)
+		}
+		if earlier, ok := dirs[dir]; ok {
+			return fmt.Errorf("certificates %q and %q collide on the storage directory %q", earlier, id, dir)
+		}
+		dirs[dir] = id
 	}
 
 	for domain, id := range state.DomainMap {
-		if _, ok := state.Certificates[id]; !ok {
+		cert, ok := state.Certificates[id]
+		if !ok {
 			return fmt.Errorf("domain %q references a missing certificate %q", domain, id)
+		}
+		if !identifiersCover(cert.Domains, domain) {
+			return fmt.Errorf("domain %q is mapped to certificate %q, which does not cover it", domain, id)
 		}
 	}
 

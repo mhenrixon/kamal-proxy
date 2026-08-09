@@ -2,14 +2,20 @@ package server
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/go-acme/lego/v4/certcrypto"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -426,6 +432,7 @@ func TestVerifyCertificateArchive_DropsInvalidAccountKey(t *testing.T) {
 	}{
 		{name: "not JSON at all is rejected at export time, valid JSON without key material is not", key: []byte(`{"email":"ops@example.com"}`)},
 		{name: "garbage key material", key: []byte(`{"email":"ops@example.com","key_pem":"bm90IGEga2V5"}`)},
+		{name: "non-ECDSA key, which loadOrCreateUser would silently discard", key: testRSAAccountKeyJSON(t)},
 	}
 
 	for _, tt := range tests {
@@ -498,4 +505,108 @@ func TestVerifyCertificateArchive_RejectsLeafDisagreeingWithState(t *testing.T) 
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestVerifyCertificateArchive_RejectsCorruptStateRecords(t *testing.T) {
+	tests := []struct {
+		name    string
+		state   managerState
+		errPart string
+	}{
+		{
+			name: "path-special identifier",
+			state: managerState{
+				Certificates: map[string]*ManagedCert{
+					"..": {Identifier: "..", Domains: []string{"a.test"}, NotAfter: time.Now()},
+				},
+				DomainMap: map[string]string{"a.test": ".."},
+			},
+			errPart: "safe storage directory",
+		},
+		{
+			name: "identifier disagrees with its map key",
+			state: managerState{
+				Certificates: map[string]*ManagedCert{
+					"san:a": {Identifier: "san:b", Domains: []string{"a.test"}, NotAfter: time.Now()},
+				},
+				DomainMap: map[string]string{"a.test": "san:a"},
+			},
+			errPart: "mismatched identifier",
+		},
+		{
+			name: "identifiers colliding after sanitization",
+			state: managerState{
+				Certificates: map[string]*ManagedCert{
+					"san:x": {Identifier: "san:x", Domains: []string{"a.test"}, NotAfter: time.Now()},
+					"san_x": {Identifier: "san_x", Domains: []string{"b.test"}, NotAfter: time.Now()},
+				},
+				DomainMap: map[string]string{"a.test": "san:x", "b.test": "san_x"},
+			},
+			errPart: "collide",
+		},
+		{
+			name: "domain mapped to a certificate that does not cover it",
+			state: managerState{
+				Certificates: map[string]*ManagedCert{
+					"san:a": {Identifier: "san:a", Domains: []string{"bar.test"}, NotAfter: time.Now()},
+				},
+				DomainMap: map[string]string{"foo.test": "san:a"},
+			},
+			errPart: "does not cover",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+			writeTestArchive(t, archivePath, map[string][]byte{
+				"acme.state": stateJSON(t, tt.state),
+			})
+
+			_, err := VerifyCertificateArchive(archivePath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errPart)
+
+			// The same archive must never reach a restore's RemoveAll.
+			_, err = RestoreCertificateStore(CertStoreRestoreOptions{ArchivePath: archivePath, Paths: testCertStorePaths(t)})
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestVerifyCertificateArchive_DirectoryOnlyArchiveIsEmpty(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+
+	file, err := os.Create(archivePath)
+	require.NoError(t, err)
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "certs/", Typeflag: tar.TypeDir, Mode: 0700}))
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+	require.NoError(t, file.Close())
+
+	_, err = VerifyCertificateArchive(archivePath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty")
+}
+
+func TestCappedReader_FailsBeyondTheLimit(t *testing.T) {
+	capped := &cappedReader{reader: bytes.NewReader(make([]byte, 100)), remaining: 10}
+
+	_, err := io.ReadAll(capped)
+	require.ErrorIs(t, err, errCertArchiveTooLarge)
+}
+
+// testRSAAccountKeyJSON builds an acme_user.json holding a valid RSA key --
+// parseable, but not the ECDSA key loadOrCreateUser requires.
+func testRSAAccountKeyJSON(t testing.TB) []byte {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	data, err := json.Marshal(acmeUser{Email: "ops@example.com", KeyPEM: certcrypto.PEMEncode(key)})
+	require.NoError(t, err)
+	return data
 }
