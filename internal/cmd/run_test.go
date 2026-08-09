@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/basecamp/kamal-proxy/internal/server"
+	"github.com/basecamp/kamal-proxy/internal/server/acme"
 )
 
 func TestRunCommand_IgnoreRestoreErrorsFlag(t *testing.T) {
@@ -307,4 +308,91 @@ func TestRunCommand_ObservabilityPreRun(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestRunCommand_ACMEDNSProviderZoneMappings(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		expectDefault acme.ProviderName
+		expectZones   map[string]acme.ProviderName
+		expectedError string
+	}{
+		{
+			name:          "single provider keeps the current form working",
+			args:          []string{"--acme-dns-provider=cloudflare"},
+			expectDefault: acme.ProviderCloudflare,
+		},
+		{
+			name: "zone mappings with a bare default",
+			args: []string{
+				"--acme-dns-provider=platform.example=cloudflare",
+				"--acme-dns-provider=legacy.example=hetzner",
+				"--acme-dns-provider=vultr",
+			},
+			expectDefault: acme.ProviderVultr,
+			expectZones: map[string]acme.ProviderName{
+				"platform.example": acme.ProviderCloudflare,
+				"legacy.example":   acme.ProviderHetzner,
+			},
+		},
+		{
+			name:          "mappings without a default leave unmatched zones on HTTP-01",
+			args:          []string{"--acme-dns-provider=platform.example=cloudflare"},
+			expectDefault: "",
+			expectZones: map[string]acme.ProviderName{
+				"platform.example": acme.ProviderCloudflare,
+			},
+		},
+		{
+			name:          "auto cannot be mapped to a zone",
+			args:          []string{"--acme-dns-provider=platform.example=auto"},
+			expectedError: "auto",
+		},
+		{
+			name:          "an invalid provider fails at startup, not at first issuance",
+			args:          []string{"--acme-dns-provider=clodflare"},
+			expectedError: "clodflare",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testClearEnv(t, "ACME_DNS_PROVIDER")
+
+			globalConfig = server.Config{}
+
+			runCommand := newRunCommand()
+			require.NoError(t, runCommand.cmd.Flags().Parse(tt.args))
+
+			err := runCommand.preRun(runCommand.cmd, nil)
+
+			if tt.expectedError != "" {
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectDefault, globalConfig.ACMEDNSProvider)
+			if tt.expectZones == nil {
+				assert.Empty(t, globalConfig.ACMEDNSProviderZones)
+			} else {
+				assert.Equal(t, tt.expectZones, globalConfig.ACMEDNSProviderZones)
+			}
+		})
+	}
+}
+
+func TestRunCommand_ACMEDNSProviderEnvSupportsMappings(t *testing.T) {
+	t.Setenv("ACME_DNS_PROVIDER", "platform.example=cloudflare,hetzner")
+
+	globalConfig = server.Config{}
+
+	runCommand := newRunCommand()
+	require.NoError(t, runCommand.cmd.Flags().Parse(nil))
+	require.NoError(t, runCommand.preRun(runCommand.cmd, nil))
+
+	assert.Equal(t, acme.ProviderHetzner, globalConfig.ACMEDNSProvider)
+	assert.Equal(t, map[string]acme.ProviderName{"platform.example": acme.ProviderCloudflare},
+		globalConfig.ACMEDNSProviderZones)
 }

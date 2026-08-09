@@ -115,6 +115,11 @@ type Config struct {
 	ACMEDNSProvider    acme.ProviderName
 	ACMEPreferWildcard bool
 	ACMEHTTPFallback   bool
+
+	// ACMEDNSProviderZones maps DNS zones to the provider answering DNS-01
+	// for them, for fleets whose zones live at different DNS hosts.
+	// ACMEDNSProvider stays the default for unmatched zones.
+	ACMEDNSProviderZones map[string]acme.ProviderName
 }
 
 func (c Config) SocketPath() string {
@@ -157,13 +162,14 @@ func (c Config) SANCertManagerConfig() SANCertManagerConfig {
 	}
 
 	return SANCertManagerConfig{
-		Email:          c.ACMEEmail,
-		Directory:      directory,
-		DNSProvider:    c.ACMEDNSProvider,
-		PreferWildcard: c.ACMEPreferWildcard,
-		HTTPFallback:   c.ACMEHTTPFallback,
-		CachePath:      c.CertificatePath(),
-		StatePath:      c.ACMEStatePath(),
+		Email:            c.ACMEEmail,
+		Directory:        directory,
+		DNSProvider:      c.ACMEDNSProvider,
+		DNSProviderZones: c.ACMEDNSProviderZones,
+		PreferWildcard:   c.ACMEPreferWildcard,
+		HTTPFallback:     c.ACMEHTTPFallback,
+		CachePath:        c.CertificatePath(),
+		StatePath:        c.ACMEStatePath(),
 	}
 }
 

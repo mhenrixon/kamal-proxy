@@ -29,7 +29,6 @@ import (
 	"github.com/go-acme/lego/v4/registration"
 
 	"github.com/basecamp/kamal-proxy/internal/server/acme"
-	"github.com/basecamp/kamal-proxy/internal/server/acme/providers"
 )
 
 const (
@@ -64,9 +63,16 @@ type SANCertManagerConfig struct {
 	// StatePath is where manager state is persisted
 	StatePath string
 
-	// DNSProvider names the DNS-01 challenge provider. Empty (or "none") leaves
-	// issuance on HTTP-01, which cannot answer for a wildcard.
+	// DNSProvider names the default DNS-01 challenge provider, answering for
+	// every domain no zone mapping matches. Empty (or "none") leaves those
+	// domains on HTTP-01, which cannot answer for a wildcard.
 	DNSProvider acme.ProviderName
+
+	// DNSProviderZones maps DNS zones to the provider that can answer DNS-01
+	// for them, for fleets whose zones live at different DNS hosts. Selection
+	// is by longest matching zone suffix; one ACME order never spans
+	// providers.
+	DNSProviderZones map[string]acme.ProviderName
 
 	// PreferWildcard collapses a batch of sibling subdomains into a single
 	// wildcard certificate when a DNS provider can validate one.
@@ -85,17 +91,21 @@ type SANCertManager struct {
 	stateMu sync.Mutex // serializes state-file snapshots and writes
 	config  SANCertManagerConfig
 
-	// ACME clients. Both are built on the SAME account (`acme_user.json`), so
+	// ACME clients. All are built on the SAME account (`acme_user.json`), so
 	// the whole proxy has exactly one ACME identity no matter which challenge
-	// type answers an order.
-	client    *lego.Client // HTTP-01
-	dnsClient *lego.Client // DNS-01, only when a provider is configured
-	user      *acmeUser
+	// type or DNS provider answers an order.
+	client *lego.Client // HTTP-01
+	user   *acmeUser
 
 	// Issuance seams, so the strategy can be exercised without a live
 	// directory. Initialize points them at the clients above.
 	httpObtainer certObtainer
-	dnsObtainer  certObtainer
+	dnsObtainer  certObtainer // default DNS provider, when one is configured
+
+	// Per-provider DNS-01 obtainers for mapped zones, plus the parsed
+	// selection that routes a domain to one of them.
+	dnsObtainers map[acme.ProviderName]certObtainer
+	selection    acme.ProviderSelection
 
 	// grouper decides when a batch is better served by a wildcard.
 	grouper *DomainGrouper
@@ -174,8 +184,12 @@ func NewSANCertManager(config SANCertManagerConfig) (*SANCertManager, error) {
 	grouper.PreferWildcard = config.PreferWildcard
 
 	manager := &SANCertManager{
-		config:            config,
-		grouper:           grouper,
+		config:  config,
+		grouper: grouper,
+		selection: acme.ProviderSelection{
+			Default: config.DNSProvider,
+			Zones:   config.DNSProviderZones,
+		},
 		bucket:            newTokenBucket(DefaultIssuanceBurst, DefaultIssuanceRefillInterval),
 		certificates:      make(map[string]*ManagedCert),
 		domainToCert:      make(map[string]string),
@@ -244,9 +258,9 @@ func (m *SANCertManager) Initialize(ctx context.Context) error {
 		}
 	}
 
-	// The DNS-01 client rides the same registered account, so a proxy with a
-	// provider configured still has exactly one ACME identity.
-	if err := m.initDNSClient(); err != nil {
+	// The DNS-01 clients ride the same registered account, so a proxy with
+	// providers configured still has exactly one ACME identity.
+	if err := m.initDNSClients(); err != nil {
 		return err
 	}
 
@@ -268,45 +282,6 @@ func (m *SANCertManager) Initialize(ctx context.Context) error {
 		"http_fallback", m.config.HTTPFallback,
 	)
 
-	return nil
-}
-
-// initDNSClient builds the DNS-01 client when a provider is configured. A
-// provider that cannot be constructed is fatal unless HTTP-01 is allowed to
-// stand in for it. Must be called with m.mu held.
-func (m *SANCertManager) initDNSClient() error {
-	if m.config.DNSProvider == "" || m.config.DNSProvider == "none" {
-		return nil
-	}
-
-	dnsProvider, err := providers.NewProvider(m.config.DNSProvider)
-	if err != nil {
-		if !m.config.HTTPFallback {
-			return fmt.Errorf("failed to create DNS provider %q: %w", m.config.DNSProvider, err)
-		}
-		slog.Warn("DNS provider not available, staying on HTTP-01",
-			"provider", m.config.DNSProvider, "error", err)
-		return nil
-	}
-
-	legoConfig := lego.NewConfig(m.user)
-	legoConfig.CADirURL = m.config.Directory
-	legoConfig.Certificate.KeyType = certcrypto.EC256
-
-	client, err := lego.NewClient(legoConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create DNS-01 ACME client: %w", err)
-	}
-
-	if err := client.Challenge.SetDNS01Provider(dnsProvider); err != nil {
-		return fmt.Errorf("failed to set DNS-01 provider: %w", err)
-	}
-
-	m.dnsClient = client
-	m.dnsObtainer = client.Certificate
-	m.grouper.DNSProviderAvailable = true
-
-	slog.Info("DNS-01 challenge solver initialized", "provider", m.config.DNSProvider)
 	return nil
 }
 
@@ -517,6 +492,32 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 	// Sort the planned identifier set for consistent certificate identifiers
 	sortedDomains := m.planIssuanceDomains(domainsToProvision)
 	slices.Sort(sortedDomains)
+
+	// One order never spans DNS providers, and the handshake is waiting: issue
+	// only the requested domain's partition. The rest were pending already and
+	// return to pending for their own handshake or poll, instead of being
+	// ordered serially on this handshake's clock.
+	if partitions := m.splitByProviderZone(sortedDomains); len(partitions) > 1 {
+		chosen := partitions[0]
+		for _, partition := range partitions {
+			if identifiersCover(partition, domain) {
+				chosen = partition
+				break
+			}
+		}
+
+		deferred := []string{}
+		for _, d := range domainsToProvision {
+			if !identifiersCover(chosen, d) {
+				deferred = append(deferred, d)
+			}
+		}
+		m.restorePending(deferred)
+
+		slog.Info("Narrowing certificate batch to one DNS provider partition",
+			"domains", chosen, "deferred", deferred)
+		sortedDomains = chosen
+	}
 
 	slog.Info("Provisioning SAN certificate",
 		"requested", domainsToProvision,

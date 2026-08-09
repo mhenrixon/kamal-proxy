@@ -17,16 +17,21 @@ import (
 // the same allowlist and the same rate limit before it reaches a solver.
 
 // obtainCertificate runs one ACME order under the configured strategy: DNS-01
-// when a provider is configured, HTTP-01 otherwise, and HTTP-01 as a retry when
-// DNS-01 fails and --acme-http-fallback allows it. A wildcard is DNS-01 only --
-// no fallback can validate one -- so it is refused outright without a provider
-// rather than handed to a solver that cannot answer.
+// when a provider covers the order's domains -- the mapped zone's provider, or
+// the default -- HTTP-01 otherwise, and HTTP-01 as a retry when DNS-01 fails
+// and --acme-http-fallback allows it. A wildcard is DNS-01 only -- no fallback
+// can validate one -- so it is refused outright without a provider rather than
+// handed to a solver that cannot answer.
 //
 // It deliberately does NOT take a rate limit token: callers hold one already,
 // so that a queued order waits before it is assembled rather than after.
 func (m *SANCertManager) obtainCertificate(request certificate.ObtainRequest) (*certificate.Resource, error) {
+	dnsObtainer, err := m.orderObtainer(request.Domains)
+	if err != nil {
+		return nil, err
+	}
+
 	m.mu.RLock()
-	dnsObtainer := m.dnsObtainer
 	httpObtainer := m.httpObtainer
 	httpFallback := m.config.HTTPFallback
 	m.mu.RUnlock()
@@ -74,7 +79,7 @@ func (m *SANCertManager) obtainCertificate(request certificate.ObtainRequest) (*
 func (m *SANCertManager) planIssuanceDomains(domains []string) []string {
 	m.mu.RLock()
 	grouper := m.grouper
-	dnsAvailable := m.dnsObtainer != nil
+	dnsAvailable := m.dnsObtainer != nil || len(m.dnsObtainers) > 0
 	m.mu.RUnlock()
 
 	if !dnsAvailable || grouper == nil {
@@ -83,6 +88,16 @@ func (m *SANCertManager) planIssuanceDomains(domains []string) []string {
 
 	planned := []string{}
 	for _, group := range grouper.AnalyzeDomains(domains).Groups {
+		// Auto-collapsing a group into a wildcard only helps when some DNS
+		// provider can validate that wildcard; a zone left to HTTP-01 keeps
+		// its concrete names. An explicitly requested wildcard passes through
+		// and is refused with a clear error at order time instead.
+		if group.Strategy == StrategyWildcard &&
+			!slices.Contains(domains, group.WildcardDomain) &&
+			!m.hasDNSProviderFor(group.WildcardDomain) {
+			planned = append(planned, group.FullDomains...)
+			continue
+		}
 		planned = append(planned, group.GetDomainsForCert()...)
 	}
 
@@ -131,6 +146,17 @@ func wildcardParent(domain string) (string, bool) {
 	}
 
 	return "*." + domain[dot+1:], true
+}
+
+// identifiersCover reports whether an identifier set covers a domain, either
+// literally or via a wildcard member.
+func identifiersCover(identifiers []string, domain string) bool {
+	for _, identifier := range identifiers {
+		if identifier == domain || matchesWildcard(identifier, domain) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesWildcard reports whether a wildcard pattern covers a domain. ACME

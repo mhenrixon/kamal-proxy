@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -16,7 +17,7 @@ import (
 type runCommand struct {
 	cmd                     *cobra.Command
 	debugLogsEnabled        bool
-	acmeDNSProvider         string
+	acmeDNSProviders        []string
 	ignoreRestoreErrors     bool
 	recheckTargetsOnRestore bool
 }
@@ -65,7 +66,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().StringVar(&globalConfig.MinTLS, "min-tls", getEnvString("MIN_TLS", server.DefaultMinTLSVersion), "Lowest TLS version the HTTPS listener will negotiate: 1.2 or 1.3 (TLS 1.0 and 1.1 cannot be enabled; HTTP/3 is always 1.3)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEEmail, "acme-email", getEnvString("ACME_EMAIL", ""), "Email address for ACME account registration (required for automatic TLS)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEDirectory, "acme-directory", getEnvString("ACME_DIRECTORY", server.LetsEncryptProduction), "ACME directory URL")
-	runCommand.cmd.Flags().StringVar(&runCommand.acmeDNSProvider, "acme-dns-provider", getEnvString("ACME_DNS_PROVIDER", "auto"), "DNS provider for DNS-01 challenges (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto)")
+	runCommand.cmd.Flags().StringSliceVar(&runCommand.acmeDNSProviders, "acme-dns-provider", strings.Split(getEnvString("ACME_DNS_PROVIDER", "auto"), ","), "DNS provider for DNS-01 challenges (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto). Repeatable: zone=provider entries pin a zone to the DNS host that serves it, and one bare entry is the default for unmatched zones")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEPreferWildcard, "acme-prefer-wildcard", getEnvBool("ACME_PREFER_WILDCARD", true), "Prefer wildcard certificates when DNS provider available")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEHTTPFallback, "acme-http-fallback", getEnvBool("ACME_HTTP_FALLBACK", true), "Fall back to HTTP-01 challenge if DNS-01 fails")
 
@@ -89,22 +90,22 @@ func (c *runCommand) preRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// A DNS provider mapping is explicit intent, and a typo'd provider name
+	// used to be a warning that silently left issuance on HTTP-01. Both fail
+	// here instead, before any ACME registration.
+	selection, err := acme.ParseProviderEntries(c.acmeDNSProviders)
+	if err != nil {
+		return fmt.Errorf("invalid --acme-dns-provider: %w", err)
+	}
+	globalConfig.ACMEDNSProvider = selection.Default
+	globalConfig.ACMEDNSProviderZones = selection.Zones
+
 	return server.ParseCacheStoreURL(globalConfig.CacheStore)
 }
 
 func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	if err := c.setLogger(); err != nil {
 		return err
-	}
-
-	// Parse DNS provider if specified
-	if c.acmeDNSProvider != "" {
-		providerName, err := acme.ParseProviderName(c.acmeDNSProvider)
-		if err != nil {
-			slog.Warn("Invalid DNS provider specified", "provider", c.acmeDNSProvider, "error", err)
-		} else {
-			globalConfig.ACMEDNSProvider = providerName
-		}
 	}
 
 	if err := ensureDataDir(); err != nil {

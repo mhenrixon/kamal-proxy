@@ -245,9 +245,15 @@ func (i *domainIssuer) nextBatch() []*issueRequest {
 		batch := []*issueRequest{head}
 		size := i.batchSizeFor(head.service)
 
+		// One ACME order never spans DNS providers, so a batch only takes
+		// domains from the head's provider partition; the rest stay queued
+		// for a batch of their own.
+		headKey := i.manager.providerPartitionKey(head.domain)
+
 		remaining := i.queue[:0]
 		for _, request := range i.queue {
-			if len(batch) < size && request.service == head.service && i.issuable(request.domain) {
+			if len(batch) < size && request.service == head.service && i.issuable(request.domain) &&
+				i.manager.providerPartitionKey(request.domain) == headKey {
 				batch = append(batch, request)
 				delete(i.queued, request.domain)
 			} else {
