@@ -1,0 +1,60 @@
+internal/server/san_cert_dynamic.go
+  s_2cfb131a81bb01::t_d54e2e5385ad54 168-173
+internal/server/san_cert_manager.go
+  s_2cfb131a81bb01::t_f10a3d3853b756 585-590
+internal/server/cert_store_restore_test.go
+  s_2cfb131a81bb01::t_4cd50be6233888 355-411,415-434,437-501
+  s_2cfb131a81bb01::t_1745aca73df4dd 6-8
+  s_2cfb131a81bb01::t_6700577ea036ef 92-94
+  s_2cfb131a81bb01::t_0956a777241d78 59
+  s_2cfb131a81bb01::t_7ce4f3a7cfc0df 412-414,435-436
+  s_2cfb131a81bb01::t_07bab006bff121 19,21-25,35
+internal/cmd/import.go
+  s_2cfb131a81bb01::t_1e275e533155d2 74-75
+  s_2cfb131a81bb01::t_069f90d73475c0 65-68
+README.md
+  s_2cfb131a81bb01::t_c355009aecedc8 1218-1224
+internal/server/cert_store_restore.go
+  s_2cfb131a81bb01::t_04186ad54708d2 163-191
+  s_2cfb131a81bb01::t_d5e750a7a0f1d9 86-93,98,105
+internal/server/cert_store_export_test.go
+  s_2cfb131a81bb01::t_63ef24a625dcff 306
+  s_2cfb131a81bb01::t_32ac25167f9cbb 270-294,296-305,307-330,332-343
+  s_2cfb131a81bb01::t_6090450ffc7fcf 6-8,16
+  s_2cfb131a81bb01::t_50cf9f0ef80248 62,69-79
+internal/server/cert_store_export.go
+  s_2cfb131a81bb01::t_6b98b1094081c6 6
+  s_2cfb131a81bb01::t_1518bd484e3fe2 83-86,91,97-102
+  s_2cfb131a81bb01::t_9dbc8960f57e03 143-149
+  s_2cfb131a81bb01::t_6a594e00349096 200-203,217-222,226-247
+  s_2cfb131a81bb01::t_d2bf6fb7a937d4 298-302,304,308,311-314,336-339,357-361
+internal/cmd/export.go
+  s_2cfb131a81bb01::t_78a27d8490dd75 42
+  s_2cfb131a81bb01::t_24f017af9c07b4 7
+  s_2cfb131a81bb01::t_3542e2092541c6 90-96
+internal/server/commands_test.go
+  s_2cfb131a81bb01::t_d5b39f866577aa 136-145
+internal/server/cert_store_archive.go
+  s_2cfb131a81bb01::t_353410a3012f04 202-203,205-206,219-225,228-239,243-244,251-272
+  s_2cfb131a81bb01::t_aa2d2233b83959 240-242
+  s_2cfb131a81bb01::t_f520845f3d7e3e 158-162
+  s_2cfb131a81bb01::t_4307a6d2da49f1 22-30
+  s_2cfb131a81bb01::t_532b82ed4c6122 17-19
+  s_2cfb131a81bb01::t_94e6f64815f184 91-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9b705e60baa68718ba9f674f3df27aeec7dbe0d8",
+  "prompts": {},
+  "sessions": {
+    "s_2cfb131a81bb01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb804ed8-d7ee-4afc-95f5-a5f5a59ec0e1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
