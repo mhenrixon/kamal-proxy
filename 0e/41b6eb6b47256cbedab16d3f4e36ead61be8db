@@ -1,0 +1,23 @@
+internal/server/acme/providers/registry.go
+  s_bdd4e959015d5f::t_bc0848b41ab75b 1-142
+internal/server/acme/providers/registry_test.go
+  s_bdd4e959015d5f::t_feca15bc6abe49 1-134
+internal/server/acme/providers/factory.go
+  s_bdd4e959015d5f::t_d722331d0bcf29 6,23-31,33,38,42-44,47-49,52,57,69-72,75-92,95-96,98-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0e41b6eb6b47256cbedab16d3f4e36ead61be8db",
+  "prompts": {},
+  "sessions": {
+    "s_bdd4e959015d5f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43f23d5b-047e-4449-8a45-e3caeaef22dc",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
