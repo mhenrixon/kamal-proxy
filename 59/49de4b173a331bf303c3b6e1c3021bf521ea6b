@@ -1,0 +1,60 @@
+internal/server/cert_store_export_test.go
+  s_2cfb131a81bb01::t_563e2c9a3acd6f 1-290
+internal/server/traefik_import.go
+  s_2cfb131a81bb01::t_c1ee494b07b9f2 318-319
+internal/server/san_cert_manager.go
+  s_2cfb131a81bb01::t_b5af5d1122c1b9 819-827
+  s_2cfb131a81bb01::t_3b08049e0bc3f2 90-95
+  s_2cfb131a81bb01::t_43856db8529464 748
+  s_2cfb131a81bb01::t_1ba1c7fb85fc98 752-754,760
+  s_2cfb131a81bb01::t_91ae70a13843ef 704
+  s_2cfb131a81bb01::t_02d917b4f9ed24 592-595,599,602
+internal/cmd/root.go
+  s_2cfb131a81bb01::t_6c9c902b8133f9 35
+internal/server/cert_store_restore.go
+  s_2cfb131a81bb01::t_e57d58d70fe38f 1-172
+internal/server/san_cert_dynamic.go
+  s_2cfb131a81bb01::t_85013d1f6c9e7b 177-182,189
+internal/server/cert_store_restore_test.go
+  s_2cfb131a81bb01::t_46c1c6affcc0c1 1-344
+internal/cmd/import.go
+  s_2cfb131a81bb01::t_126a180be8243f 4,6-7,22,30-34,40-43,50,55-61,63-66,72-86,113-177
+README.md
+  s_2cfb131a81bb01::t_b5fb8fb791fc54 1182-1230
+internal/server/cert_store_archive.go
+  s_2cfb131a81bb01::t_427a6fb73f06a8 1-234
+internal/server/cert_store_export.go
+  s_2cfb131a81bb01::t_548c474be6a7fb 202
+  s_2cfb131a81bb01::t_90adfaf50f18ff 9,13
+  s_2cfb131a81bb01::t_5348ed052273e8 1-8,10-12,14-101,103-201,203-297
+  s_2cfb131a81bb01::t_a03541989fa26b 102
+internal/server/commands_test.go
+  s_2cfb131a81bb01::t_cac89c81b0425f 129
+  s_2cfb131a81bb01::t_a6707ab3544414 5
+  s_2cfb131a81bb01::t_58820cd4fed2ad 115-128,130-142
+internal/server/commands.go
+  s_2cfb131a81bb01::t_d97a2f466e53dd 70-76
+  s_2cfb131a81bb01::t_55b94c19fddf96 233-258
+internal/server/config.go
+  s_2cfb131a81bb01::t_729cb505e235f6 151-160
+internal/cmd/export.go
+  s_2cfb131a81bb01::t_6665da5e4afc7c 1-94
+internal/cmd/export_test.go
+  s_2cfb131a81bb01::t_363dc89b07f3e7 1-129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5949de4b173a331bf303c3b6e1c3021bf521ea6b",
+  "prompts": {},
+  "sessions": {
+    "s_2cfb131a81bb01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb804ed8-d7ee-4afc-95f5-a5f5a59ec0e1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
