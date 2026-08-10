@@ -489,12 +489,18 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 	done := make(chan struct{})
 	m.provisioning[provisioningKey] = done
 
-	// Collect ALL pending domains (up to MaxSANsPerCertificate)
+	// Collect ALL pending domains (up to MaxSANsPerCertificate). Quarantined
+	// domains do not consume batch slots: with more quarantined hosts than a
+	// batch holds, the eligible ones must still fit.
 	candidates := []string{domain}
 	for pendingDomain := range m.pendingDomains {
-		if pendingDomain != domain {
-			candidates = append(candidates, pendingDomain)
+		if pendingDomain == domain {
+			continue
 		}
+		if m.guard.quarantine != nil && m.guard.quarantine.IsQuarantined(pendingDomain) {
+			continue
+		}
+		candidates = append(candidates, pendingDomain)
 		if len(candidates) >= MaxSANsPerCertificate {
 			break
 		}
@@ -577,6 +583,10 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 	if err != nil {
 		return nil, err
 	}
+
+	// A successful order wipes the batch's failure history, as the dynamic
+	// issuer does — the next failure must not start high on the ladder.
+	m.clearBatchQuarantine(domainsToProvision)
 
 	return managed.Certificate, nil
 }

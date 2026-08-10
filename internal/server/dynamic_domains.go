@@ -138,7 +138,7 @@ func NewDynamicDomainManager(config DynamicDomainConfig, manager *SANCertManager
 	})
 
 	manager.SetDynamicCertRequester(dm.issuer.Request)
-	manager.SetIssuanceGuard(dm.preflightProbe, dm.quarantine)
+	manager.SetIssuanceGuard(dm.preflightProbe, dm.quarantine, dm.saveState)
 
 	dm.loadState()
 
@@ -193,6 +193,10 @@ func (dm *DynamicDomainManager) ServiceDeployed(name string, options ServiceOpti
 		batchSize: options.TLSDomainsBatchSize,
 		host:      host,
 	}
+
+	// Confirmations counted against the old source must not carry over to the
+	// new one: a redeploy's first shrunken poll starts the count fresh.
+	delete(dm.holds, name)
 
 	state := dm.states[name]
 	if state == nil {
@@ -370,6 +374,13 @@ func (dm *DynamicDomainManager) applyDomains(service string, domains []string) {
 		// Keep the previous set alive alongside whatever the poll added; the
 		// polled set replaces it only once the shrink is confirmed.
 		applying = append(append([]string{}, previous...), added...)
+
+		// A held response must not park behind its own ETag: an unchanged
+		// source would answer 304 forever, the body would never be re-fetched,
+		// and the confirmation count could never advance.
+		if source := dm.sources[service]; source != nil {
+			source.SeedETag("")
+		}
 	}
 
 	etag := ""

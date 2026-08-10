@@ -320,6 +320,50 @@ func TestDynamicDomainManager_ShrinkGuardConfirmsAfterConsecutivePolls(t *testin
 	assert.Empty(t, dm.Status().Services["service1"].HeldRemovals)
 }
 
+func TestDynamicDomainManager_ShrinkGuardClearsETagWhileHolding(t *testing.T) {
+	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
+	full := testTenantDomains(10)
+	deployWithDomains(t, dm, manager, "service1", full)
+
+	// An ETag-answering source would 304 every poll after the held response,
+	// and the confirmation count could never advance. Holding must drop the
+	// ETag so the body keeps being refetched until the shrink resolves.
+	dm.mu.Lock()
+	dm.sources["service1"].SeedETag(`"v2"`)
+	dm.mu.Unlock()
+
+	dm.applyDomains("service1", full[:4])
+
+	dm.mu.Lock()
+	etag := dm.sources["service1"].ETag()
+	stored := dm.states["service1"].ETag
+	dm.mu.Unlock()
+	assert.Empty(t, etag)
+	assert.Empty(t, stored)
+}
+
+func TestDynamicDomainManager_ShrinkGuardResetsOnRedeploy(t *testing.T) {
+	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
+	full := testTenantDomains(10)
+	deployWithDomains(t, dm, manager, "service1", full)
+
+	dm.applyDomains("service1", full[:4])
+	dm.mu.Lock()
+	_, held := dm.holds["service1"]
+	dm.mu.Unlock()
+	require.True(t, held)
+
+	// A redeploy replaces the source; confirmations counted against the old
+	// source must not carry over to the new one.
+	backend, _ := testDomainsBackend(t, full...)
+	dm.ServiceDeployed("service1", ServiceOptions{TLSEnabled: true, TLSDomainsSource: backend.URL})
+
+	dm.mu.Lock()
+	_, held = dm.holds["service1"]
+	dm.mu.Unlock()
+	assert.False(t, held)
+}
+
 func TestDynamicDomainManager_ShrinkGuardCancelsOnRecovery(t *testing.T) {
 	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
 	full := testTenantDomains(10)

@@ -400,7 +400,7 @@ func (r *certRenewer) preflightMembers(domains []string) []string {
 		return nil
 	}
 
-	unreachable := []string{}
+	probeable := []string{}
 	for _, domain := range domains {
 		if strings.HasPrefix(domain, "*.") {
 			continue
@@ -408,12 +408,14 @@ func (r *certRenewer) preflightMembers(domains []string) []string {
 		if _, dynamic := r.manager.dynamicOwner(domain); !dynamic {
 			continue
 		}
-		if err := r.config.Preflight(domain); err != nil {
-			backoff := r.quarantine.RecordFailure(domain, quarantinePreflight)
-			slog.Warn("Renewal member failed pre-flight probe; holding back",
-				"domain", domain, "backoff", backoff, "error", err)
-			unreachable = append(unreachable, domain)
-		}
+		probeable = append(probeable, domain)
+	}
+
+	unreachable, failures := probeDomains(probeable, r.config.Preflight)
+	for _, domain := range unreachable {
+		backoff := r.quarantine.RecordFailure(domain, quarantinePreflight)
+		slog.Warn("Renewal member failed pre-flight probe; holding back",
+			"domain", domain, "backoff", backoff, "error", failures[domain])
 	}
 	return unreachable
 }

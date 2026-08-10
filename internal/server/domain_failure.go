@@ -1,9 +1,18 @@
 package server
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
 
 // Attribution of failed ACME orders to the domains that caused them, shared by
 // the dynamic issuer and the background renewer.
+
+// maxConcurrentProbes bounds parallel pre-flight probes. Each probe can take
+// up to preflightTimeout, so a serial sweep over a large batch would block an
+// issuance slot (or a waiting handshake) for minutes; concurrency keeps the
+// worst case to a few probe timeouts.
+const maxConcurrentProbes = 16
 
 // identifyFailedDomains names the domains responsible for a failed order:
 // lego's per-domain error lines when present, a pre-flight probe of each
@@ -15,22 +24,48 @@ func identifyFailedDomains(err error, domains []string, preflight func(string) e
 		return failed
 	}
 
-	if preflight != nil {
-		failed := []string{}
-		for _, domain := range domains {
-			if strings.HasPrefix(domain, "*.") {
-				continue
-			}
-			if probeErr := preflight(domain); probeErr != nil {
-				failed = append(failed, domain)
-			}
-		}
-		if len(failed) > 0 {
-			return failed
-		}
+	if failed, _ := probeDomains(domains, preflight); len(failed) > 0 {
+		return failed
 	}
 
 	return domains
+}
+
+// probeDomains runs the pre-flight probe over a set of domains with bounded
+// concurrency and returns the ones that failed, in input order, with each
+// failure's error. Wildcards are skipped — there is no name to answer on one.
+// A nil probe reports nothing.
+func probeDomains(domains []string, preflight func(string) error) ([]string, map[string]error) {
+	if preflight == nil {
+		return nil, nil
+	}
+
+	errs := make([]error, len(domains))
+	sem := make(chan struct{}, maxConcurrentProbes)
+	var wg sync.WaitGroup
+	for idx, domain := range domains {
+		if strings.HasPrefix(domain, "*.") {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, domain string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			errs[idx] = preflight(domain)
+		}(idx, domain)
+	}
+	wg.Wait()
+
+	failed := []string{}
+	failures := map[string]error{}
+	for idx, domain := range domains {
+		if errs[idx] != nil {
+			failed = append(failed, domain)
+			failures[domain] = errs[idx]
+		}
+	}
+	return failed, failures
 }
 
 // failedDomainsFromError matches lego's per-domain error lines

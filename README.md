@@ -1053,12 +1053,13 @@ domain, the members are probed to find the culprit before anyone is blamed.
 from the source itself. A poll that removes more than 30% of the applied
 domain set has its removals *held*: the previous set stays allowed (additions
 still apply), and only three consecutive shrunken polls confirm and apply the
-removal — an empty or truncated response from the app evicts nothing. Held
-removals are visible in `kamal-proxy domains list` (Removal held column) and
-logged at Warn on every held poll. Independently, a certificate whose domains
-were all evicted is never deleted before its own expiry: it stops renewing,
-keeps serving, and if the domains return before it expires, recovery costs
-zero new ACME orders.
+removal — a single (or transient) empty or truncated response from the app
+evicts nothing. Held removals are visible in `kamal-proxy domains list`
+(Removal held column) and logged at Warn on every held poll. Independently, a
+certificate whose domains were all evicted is never deleted before its own
+expiry: it stops renewing but keeps serving, and can be reused immediately if
+the domains return before it expires — normal replacement and renewal rules
+still apply.
 
 `--tls-domains-batch-size` (max 25) opts into stable SAN batching for dynamic
 domains: batches fill append-only, and membership only changes at renewal

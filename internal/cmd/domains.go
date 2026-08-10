@@ -72,6 +72,11 @@ func (c *domainsListCommand) run(cmd *cobra.Command, args []string) error {
 				return strings.Compare(a.Domain, b.Domain)
 			})
 
+			heldRemovals := make(map[string]struct{}, len(service.HeldRemovals))
+			for _, domain := range service.HeldRemovals {
+				heldRemovals[domain] = struct{}{}
+			}
+
 			for _, domain := range domains {
 				certified := "no"
 				if domain.Certified {
@@ -84,7 +89,7 @@ func (c *domainsListCommand) run(cmd *cobra.Command, args []string) error {
 				}
 
 				held := ""
-				if slices.Contains(service.HeldRemovals, domain.Domain) {
+				if _, ok := heldRemovals[domain.Domain]; ok {
 					held = "yes"
 				}
 
