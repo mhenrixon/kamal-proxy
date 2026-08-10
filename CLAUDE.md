@@ -1,6 +1,6 @@
-# kamal-proxy (mhenrixon fork)
+# kamal-proxy (zoolutions fork)
 
-**dash-proxy.** Started as a fork of [basecamp/kamal-proxy](https://github.com/basecamp/kamal-proxy) and still merges their fixes forward via `main`, but the product is ours — their conventions are not constraints on ours. Carries the cert features they don't ship: SAN certificate batching and wildcard certs via DNS-01. Published as `ghcr.io/mhenrixon/kamal-proxy`; the Go module, binary, RPC service, and socket all stay `kamal-proxy` on purpose. Consumed by the `dash` gem fork in `../kamal`.
+**dash-proxy.** Started as a fork of [basecamp/kamal-proxy](https://github.com/basecamp/kamal-proxy) and still merges their fixes forward via `main`, but the product is ours — their conventions are not constraints on ours. Carries the cert features they don't ship: SAN certificate batching and wildcard certs via DNS-01. Published as `ghcr.io/zoolutions/kamal-proxy`; the Go module, binary, RPC service, and socket all stay `kamal-proxy` on purpose. Consumed by the `dash` gem fork in `../kamal`.
 
 ## Tech Stack
 
@@ -34,7 +34,7 @@ make build                                  # Build bin/kamal-proxy
 make test                                   # go test ./...
 make docker                                 # Local image build (smoke test)
 script/release-dash v1.0.0.0                # Tag + push; CI publishes to ghcr
-docker buildx imagetools inspect ghcr.io/mhenrixon/kamal-proxy:v1.0.0.0   # Verify multi-arch
+docker buildx imagetools inspect ghcr.io/zoolutions/kamal-proxy:v1.0.0.0   # Verify multi-arch
 git fetch upstream --tags --prune           # Start of every sync
 ```
 
@@ -71,7 +71,7 @@ The two cert branches deliberately overlap in run.go/config.go/router.go — the
 
 ## Release & image
 
-Tag push (`vX.Y.Z.N`) → `.github/workflows/docker-publish.yml` → multi-arch build → `ghcr.io/mhenrixon/kamal-proxy:vX.Y.Z.N` + `:latest`. `GITHUB_TOKEN` authenticates; the ghcr package must stay PUBLIC (kamal deploys and integration tests pull anonymously). The kamal fork's `MINIMUM_VERSION` must always name a published tag — release here FIRST, then the gem.
+Tag push (`vX.Y.Z.N`) → `.github/workflows/docker-publish.yml` → multi-arch build → `ghcr.io/zoolutions/kamal-proxy:vX.Y.Z.N` + `:latest`. `GITHUB_TOKEN` authenticates; the ghcr package must stay PUBLIC (kamal deploys and integration tests pull anonymously). The kamal fork's `MINIMUM_VERSION` must always name a published tag — release here FIRST, then the gem.
 
 ## Testing
 

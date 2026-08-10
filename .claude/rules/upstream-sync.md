@@ -39,8 +39,8 @@ git push origin dash
 ```bash
 git checkout dash
 script/release-dash v1.0.0.0     # validates vX.Y.Z.N grammar, make test, tags, pushes the tag
-# CI publishes ghcr.io/mhenrixon/kamal-proxy:v1.0.0.0 (+ :latest)
-docker buildx imagetools inspect ghcr.io/mhenrixon/kamal-proxy:v1.0.0.0   # verify amd64+arm64
+# CI publishes ghcr.io/zoolutions/kamal-proxy:v1.0.0.0 (+ :latest)
+docker buildx imagetools inspect ghcr.io/zoolutions/kamal-proxy:v1.0.0.0   # verify amd64+arm64
 ```
 
 Pick the next number yourself — it reflects what shipped here, not what basecamp happened to tag. Then update `MINIMUM_VERSION` in the `dash` gem and release it (see that repo's `.claude/rules/upstream-sync.md`); the proxy image must be published first, because `MINIMUM_VERSION` has to name a tag that exists.
