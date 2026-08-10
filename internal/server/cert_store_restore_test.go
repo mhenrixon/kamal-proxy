@@ -625,3 +625,34 @@ func TestVerifyCertificateArchive_RejectsCorruptGzipTrailer(t *testing.T) {
 	_, err = VerifyCertificateArchive(archivePath)
 	require.Error(t, err)
 }
+
+func TestCappedReader_ExactlyAtTheLimitIsNotOversized(t *testing.T) {
+	capped := &cappedReader{reader: bytes.NewReader(make([]byte, 10)), remaining: 10}
+
+	data, err := io.ReadAll(capped)
+	require.NoError(t, err, "a stream ending exactly at the limit is within it")
+	assert.Len(t, data, 10)
+}
+
+func TestRestoreCertificateStore_DegenerateArchiveIntoFreshStore(t *testing.T) {
+	// A state referencing certificates the archive does not hold (tolerated
+	// with a re-order warning) restored into a store with no certificate
+	// directory at all: nothing to remove, nothing to sync, no error.
+	archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+	writeTestArchive(t, archivePath, map[string][]byte{
+		"acme.state": []byte(`{
+			"certificates":{"san:gone":{"identifier":"san:gone","domains":["gone.test"],"not_after":"2027-01-01T00:00:00Z"}},
+			"domain_map":{"gone.test":"san:gone"},
+			"saved_at":"2026-08-09T00:00:00Z"}`),
+	})
+
+	paths := testCertStorePaths(t)
+	summary, err := RestoreCertificateStore(CertStoreRestoreOptions{ArchivePath: archivePath, Paths: paths})
+	require.NoError(t, err)
+	require.NotEmpty(t, summary.Warnings)
+	assert.Equal(t, 1, summary.Certificates)
+
+	// The state landed even though the certificate directory never existed.
+	state := readImportedState(t, paths.ACMEStatePath)
+	assert.Contains(t, state.Certificates, "san:gone")
+}

@@ -42,7 +42,9 @@ var errCertArchiveTooLarge = errors.New("certificate archive decompresses beyond
 
 // cappedReader bounds how many bytes may be read through it, failing with
 // errCertArchiveTooLarge instead of a bare EOF so the caller can tell a
-// too-large archive from a truncated one.
+// too-large archive from a truncated one. A stream that ends exactly at the
+// limit is not over it: at the boundary the underlying reader is probed, and
+// only actual further data trips the cap.
 type cappedReader struct {
 	reader    io.Reader
 	remaining int64
@@ -50,6 +52,19 @@ type cappedReader struct {
 
 func (c *cappedReader) Read(p []byte) (int, error) {
 	if c.remaining <= 0 {
+		var probe [1]byte
+		for range 3 {
+			n, err := c.reader.Read(probe[:])
+			if n > 0 {
+				return 0, errCertArchiveTooLarge
+			}
+			if err == io.EOF {
+				return 0, io.EOF
+			}
+			if err != nil {
+				return 0, err
+			}
+		}
 		return 0, errCertArchiveTooLarge
 	}
 	if int64(len(p)) > c.remaining {

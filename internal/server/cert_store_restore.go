@@ -182,7 +182,15 @@ func removeStaleCertDirs(certsPath string, archive certStoreArchive) error {
 			return fmt.Errorf("refusing to remove the unsafe certificate directory for %q", id)
 		}
 
-		if err := os.RemoveAll(filepath.Join(certsPath, dir)); err != nil {
+		// Only a directory that actually existed counts as a removal: RemoveAll
+		// succeeds silently on a missing path, and a restore into a store with
+		// no certificate directory at all must not then try to sync it.
+		stalePath := filepath.Join(certsPath, dir)
+		if _, err := os.Lstat(stalePath); err != nil {
+			continue
+		}
+
+		if err := os.RemoveAll(stalePath); err != nil {
 			return fmt.Errorf("failed to remove the stale certificate directory for %s: %w", id, err)
 		}
 		removed++
@@ -201,7 +209,7 @@ func removeStaleCertDirs(certsPath string, archive certStoreArchive) error {
 }
 
 // syncDir fsyncs a directory so renames and unlinks inside it survive power
-// loss; only a filesystem that cannot sync a directory is excused.
+// loss.
 func syncDir(path string) error {
 	dir, err := os.Open(path)
 	if err != nil {
@@ -209,6 +217,14 @@ func syncDir(path string) error {
 	}
 	defer dir.Close()
 
+	return syncOpenDir(dir)
+}
+
+// syncOpenDir fsyncs an already-opened directory; only a filesystem that
+// cannot sync a directory is excused. The one place the excusable errnos are
+// decided, shared by the pathname-opening restore paths and the pinned-root
+// export path.
+func syncOpenDir(dir *os.File) error {
 	if err := dir.Sync(); err != nil && !errors.Is(err, syscall.ENOTSUP) && !errors.Is(err, syscall.EINVAL) {
 		return err
 	}

@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -393,7 +392,7 @@ func writeCertArchive(outputPath string, paths CertStorePaths, files []archiveFi
 	defer root.Close()
 
 	base := filepath.Base(outputPath)
-	if err := rejectPinnedRootInsideStore(root, base, paths); err != nil {
+	if err := rejectPinnedRootInsideStore(root, filepath.Dir(outputPath), base, paths); err != nil {
 		return nil, err
 	}
 
@@ -472,9 +471,12 @@ func writeCertArchive(outputPath string, paths CertStorePaths, files []archiveFi
 }
 
 // rejectPinnedRootInsideStore re-validates the already-opened output directory
-// by filesystem identity: the handle, not a pathname, is what the writes go
-// through, so this check cannot be raced by swapping path components.
-func rejectPinnedRootInsideStore(root *os.Root, base string, paths CertStorePaths) error {
+// by filesystem identity -- the handle, not a pathname, is what the writes go
+// through. The pinned directory itself is compared against the certificate
+// directory, and so is every existing ancestor of its path, so a swap that
+// lands the root on a subdirectory inside the store is caught too, not just
+// the store directory itself.
+func rejectPinnedRootInsideStore(root *os.Root, rootDir, base string, paths CertStorePaths) error {
 	dir, err := root.Open(".")
 	if err != nil {
 		return fmt.Errorf("failed to inspect the output directory: %w", err)
@@ -486,8 +488,21 @@ func rejectPinnedRootInsideStore(root *os.Root, base string, paths CertStorePath
 		return fmt.Errorf("failed to inspect the output directory: %w", err)
 	}
 
-	if certsInfo, err := os.Stat(paths.CertsPath); err == nil && os.SameFile(certsInfo, rootInfo) {
-		return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
+	if certsInfo, err := os.Stat(paths.CertsPath); err == nil {
+		if os.SameFile(certsInfo, rootInfo) {
+			return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
+		}
+
+		for current := rootDir; ; {
+			if info, err := os.Stat(current); err == nil && os.SameFile(certsInfo, info) {
+				return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
+			}
+			parent := filepath.Dir(current)
+			if parent == current {
+				break
+			}
+			current = parent
+		}
 	}
 
 	if targetInfo, err := root.Stat(base); err == nil {
@@ -538,8 +553,8 @@ func verifyStagedArchive(root *os.Root, tmpName string) (certStoreArchive, error
 	return readCertStoreArchiveFrom(staged, "staged archive")
 }
 
-// syncRootDir fsyncs the pinned directory; only a filesystem that cannot sync
-// a directory is excused.
+// syncRootDir fsyncs the pinned directory, with syncOpenDir deciding which
+// failures are excusable.
 func syncRootDir(root *os.Root) error {
 	dir, err := root.Open(".")
 	if err != nil {
@@ -547,8 +562,5 @@ func syncRootDir(root *os.Root) error {
 	}
 	defer dir.Close()
 
-	if err := dir.Sync(); err != nil && !errors.Is(err, syscall.ENOTSUP) && !errors.Is(err, syscall.EINVAL) {
-		return err
-	}
-	return nil
+	return syncOpenDir(dir)
 }
