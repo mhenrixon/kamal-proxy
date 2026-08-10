@@ -130,13 +130,30 @@ func TestCertRenewer_DropsEvictedDomainsAtRenewal(t *testing.T) {
 	assert.NotEqual(t, old.Identifier, certs[0].Identifier)
 }
 
-func TestCertRenewer_DropsCertificateWhenAllDomainsEvicted(t *testing.T) {
+func TestCertRenewer_KeepsFullyEvictedCertificateUntilExpiry(t *testing.T) {
 	obtainer := successfulObtainer(t)
 	manager := testSANCertManager(t)
 
 	adoptTestCert(t, manager, []string{"gone.example.com"},
 		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
-	// Not registered, not dynamic: fully evicted
+	// Not registered, not dynamic: fully evicted. Eviction can be a lying
+	// domain source — the certificate must survive until its own expiry, not
+	// be renewed, and not be deleted.
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	assert.Empty(t, obtainer.Calls())
+	require.Len(t, manager.ManagedCertificates(), 1)
+	assert.True(t, manager.HasValidCertificate("gone.example.com"))
+}
+
+func TestCertRenewer_RemovesFullyEvictedCertificateAfterExpiry(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	adoptTestCert(t, manager, []string{"gone.example.com"},
+		time.Now().Add(-91*24*time.Hour), time.Now().Add(-time.Hour))
 
 	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
 	renewer.reconcile()
@@ -144,6 +161,49 @@ func TestCertRenewer_DropsCertificateWhenAllDomainsEvicted(t *testing.T) {
 	assert.Empty(t, obtainer.Calls())
 	assert.Empty(t, manager.ManagedCertificates())
 	assert.False(t, manager.HasCertificate("gone.example.com"))
+}
+
+func TestCertRenewer_EvictedCertificateSurvivesSourceRecovery(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	adoptTestCert(t, manager, []string{"tenant.example.com"},
+		time.Now().Add(-time.Hour), time.Now().Add(89*24*time.Hour))
+
+	// A bad poll evicts everything; the reconcile in between must not delete
+	// the certificate, so recovery costs zero new orders.
+	manager.SetDynamicDomains("service1", nil)
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+	renewer.reconcile()
+
+	assert.Empty(t, obtainer.Calls())
+	assert.True(t, manager.HasValidCertificate("tenant.example.com"))
+}
+
+func TestCertRenewer_RemovesSupersededCertificateImmediately(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	manager.SetDynamicDomains("service1", []string{"a.example.com", "b.example.com", "c.example.com"})
+
+	old := adoptTestCert(t, manager, []string{"a.example.com", "b.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+	// Every domain of the old certificate now maps to the newer, wider one:
+	// nothing serves through the old cert, so it goes immediately, unexpired.
+	current := adoptTestCert(t, manager, []string{"a.example.com", "b.example.com", "c.example.com"},
+		time.Now().Add(-time.Hour), time.Now().Add(89*24*time.Hour))
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	assert.Empty(t, obtainer.Calls())
+	certs := manager.ManagedCertificates()
+	require.Len(t, certs, 1)
+	assert.Equal(t, current.Identifier, certs[0].Identifier)
+	assert.NotEqual(t, old.Identifier, certs[0].Identifier)
 }
 
 func TestCertRenewer_DefersPartiallyQuarantinedBatchWhenTimeAllows(t *testing.T) {
@@ -254,8 +314,9 @@ func TestCertRenewer_SkipsCertificatesNoLongerReferenced(t *testing.T) {
 
 	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
 
-	// An older, superseded certificate still covers the domain, but the
-	// domain now maps to a newer one: the old cert must be GC'd, not renewed.
+	// tenant.example.com moved to a newer certificate, but the evicted
+	// gone.example.com still maps to (and is served by) the old one: the old
+	// cert must not be renewed, and must survive until its own expiry.
 	old := adoptTestCert(t, manager, []string{"gone.example.com", "tenant.example.com"},
 		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
 	current := adoptTestCert(t, manager, []string{"tenant.example.com"},
@@ -267,9 +328,9 @@ func TestCertRenewer_SkipsCertificatesNoLongerReferenced(t *testing.T) {
 	assert.Empty(t, obtainer.Calls())
 
 	certs := manager.ManagedCertificates()
-	require.Len(t, certs, 1)
-	assert.Equal(t, current.Identifier, certs[0].Identifier)
-	assert.NotEqual(t, old.Identifier, certs[0].Identifier)
+	require.Len(t, certs, 2)
+	assert.Equal(t, current.Identifier, manager.certIDForDomain("tenant.example.com"))
+	assert.Equal(t, old.Identifier, manager.certIDForDomain("gone.example.com"))
 }
 
 func TestCertRenewer_SkipsRenewalWhenAllDomainsQuarantined(t *testing.T) {

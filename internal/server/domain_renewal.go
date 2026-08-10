@@ -140,12 +140,10 @@ func (r *certRenewer) reconcile() {
 		}
 
 		// A certificate with no domain that is both still allowed and still
-		// mapped to it has been superseded or fully evicted: garbage-collect
-		// it instead of renewing it forever.
+		// mapped to it has been superseded or fully evicted: retire it
+		// instead of renewing it forever.
 		if len(r.renewableDomains(cert)) == 0 {
-			slog.Info("Removing certificate with no remaining domains", "certificate", cert.Identifier)
-			r.manager.removeCertificate(cert.Identifier)
-			r.notifyChange()
+			r.retireCertificate(cert)
 			continue
 		}
 
@@ -185,13 +183,8 @@ func (r *certRenewer) shouldRenew(cert *ManagedCert) bool {
 // exemption; ARI `replaces` exempts the order entirely where supported.
 func (r *certRenewer) renew(cert *ManagedCert) {
 	allowed := r.renewableDomains(cert)
-
-	// Only eviction drops a certificate. Quarantine just defers renewal: the
-	// certificate keeps serving until the quarantine lifts or it expires.
 	if len(allowed) == 0 {
-		slog.Info("Dropping certificate with no remaining domains", "certificate", cert.Identifier)
-		r.manager.removeCertificate(cert.Identifier)
-		r.notifyChange()
+		// reconcile retires zero-renewable certificates before calling renew.
 		return
 	}
 
@@ -292,6 +285,34 @@ func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replac
 	}
 
 	return renewed, true
+}
+
+// retireCertificate disposes of a certificate with no renewable domains. A
+// superseded certificate — nothing maps through it anymore — goes immediately.
+// An evicted certificate that still serves a mapped domain is kept until its
+// own expiry: eviction can be a lying domain source, and deleting the key
+// would turn one bad poll into a certificate outage for every member.
+func (r *certRenewer) retireCertificate(cert *ManagedCert) {
+	if r.certStillServes(cert) && r.now().Before(cert.NotAfter) {
+		slog.Debug("Keeping evicted certificate until expiry",
+			"certificate", cert.Identifier, "expires", cert.NotAfter)
+		return
+	}
+
+	slog.Info("Removing certificate with no remaining domains", "certificate", cert.Identifier)
+	r.manager.removeCertificate(cert.Identifier)
+	r.notifyChange()
+}
+
+// certStillServes reports whether any of a certificate's domains still map to
+// it — i.e. a handshake for that name would be answered with this certificate.
+func (r *certRenewer) certStillServes(cert *ManagedCert) bool {
+	for _, domain := range cert.Domains {
+		if r.manager.certIDForDomain(domain) == cert.Identifier {
+			return true
+		}
+	}
+	return false
 }
 
 // renewableDomains filters a certificate's set down to domains that are still
@@ -398,6 +419,12 @@ func (r *certRenewer) reportMetrics() {
 	for _, cert := range certs {
 		isWildcard := containsWildcard(cert.Domains)
 		for _, domain := range cert.Domains {
+			// Evicted certificates linger until expiry; only the certificate a
+			// domain currently maps to may report that domain's expiry, or the
+			// zombie would clobber the gauge of its successor.
+			if r.manager.certIDForDomain(domain) != cert.Identifier {
+				continue
+			}
 			metrics.Tracker.SetCertificateExpiry(domain, isWildcard, cert.NotAfter)
 		}
 	}
