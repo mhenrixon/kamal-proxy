@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -205,6 +206,27 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 		return
 	}
 
+	// Probe the remaining members before spending an order: a tenant whose
+	// DNS moved away would fail validation and could sink the whole batch —
+	// or worse, fail in a way ACME does not attribute to any one domain.
+	// Unreachable members follow the same policy as quarantined ones.
+	if unreachable := r.preflightMembers(domains); len(unreachable) > 0 {
+		if time.Until(cert.NotAfter) > quarantineCompactionWindow {
+			slog.Info("Deferring renewal until unreachable members recover",
+				"certificate", cert.Identifier, "unreachable", unreachable)
+			return
+		}
+
+		domains = slices.DeleteFunc(domains, func(domain string) bool {
+			return slices.Contains(unreachable, domain)
+		})
+		if len(domains) == 0 {
+			slog.Info("Deferring renewal; every member failed the pre-flight probe",
+				"certificate", cert.Identifier)
+			return
+		}
+	}
+
 	domains, toppedUp := r.topUpBatch(domains)
 	defer func() {
 		if r.config.ReleasePending != nil && len(toppedUp) > 0 {
@@ -366,6 +388,34 @@ func (r *certRenewer) topUpBatch(domains []string) (batch, taken []string) {
 	}
 
 	return append(domains, kept...), kept
+}
+
+// preflightMembers probes a renewal batch's dynamic members and quarantines
+// the unreachable ones. Only dynamic (tenant-supplied) domains are probed:
+// they must route back to this proxy to be validated or served at all. A
+// deploy-registered host may be reachable over DNS-01 only, and a wildcard
+// has no name to answer on, so neither is probed.
+func (r *certRenewer) preflightMembers(domains []string) []string {
+	if r.config.Preflight == nil {
+		return nil
+	}
+
+	unreachable := []string{}
+	for _, domain := range domains {
+		if strings.HasPrefix(domain, "*.") {
+			continue
+		}
+		if _, dynamic := r.manager.dynamicOwner(domain); !dynamic {
+			continue
+		}
+		if err := r.config.Preflight(domain); err != nil {
+			backoff := r.quarantine.RecordFailure(domain, quarantinePreflight)
+			slog.Warn("Renewal member failed pre-flight probe; holding back",
+				"domain", domain, "backoff", backoff, "error", err)
+			unreachable = append(unreachable, domain)
+		}
+	}
+	return unreachable
 }
 
 func (r *certRenewer) dynamicServiceFor(domains []string) (string, bool) {

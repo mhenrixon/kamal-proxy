@@ -297,7 +297,12 @@ func TestCertRenewer_TopUpPreflightsNewDomains(t *testing.T) {
 		BatchSize:      func(service string) int { return 3 },
 		TakePending:    issuer.takePending,
 		ReleasePending: issuer.releasePending,
-		Preflight:      func(domain string) error { return errors.New("does not route here") },
+		Preflight: func(domain string) error {
+			if domain == "unreachable.example.com" {
+				return errors.New("does not route here")
+			}
+			return nil
+		},
 	})
 	renewer.reconcile()
 
@@ -306,6 +311,103 @@ func TestCertRenewer_TopUpPreflightsNewDomains(t *testing.T) {
 	require.Len(t, calls, 1)
 	assert.Equal(t, []string{"a.example.com"}, calls[0].Domains)
 	assert.True(t, quarantine.IsQuarantined("unreachable.example.com"))
+}
+
+func TestCertRenewer_ProbesDynamicMembersBeforeRenewal(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	manager.SetDynamicDomains("service1", []string{"ok.example.com", "dead.example.com"})
+	// Within the compaction window: the unreachable member is dropped from
+	// the order instead of sinking it at the ACME server.
+	adoptTestCert(t, manager, []string{"dead.example.com", "ok.example.com"},
+		time.Now().Add(-87*24*time.Hour), time.Now().Add(3*24*time.Hour))
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{
+		Obtainer: obtainer,
+		Preflight: func(domain string) error {
+			if domain == "dead.example.com" {
+				return errors.New("does not route here")
+			}
+			return nil
+		},
+	})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, []string{"ok.example.com"}, calls[0].Domains)
+	assert.True(t, quarantine.IsQuarantined("dead.example.com"))
+}
+
+func TestCertRenewer_DefersRenewalWhenMemberFailsProbeFarFromExpiry(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	manager.SetDynamicDomains("service1", []string{"ok.example.com", "dead.example.com"})
+	// 20 days left: wait for the unreachable member rather than unmapping it
+	// from a still-valid certificate.
+	adoptTestCert(t, manager, []string{"dead.example.com", "ok.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{
+		Obtainer: obtainer,
+		Preflight: func(domain string) error {
+			if domain == "dead.example.com" {
+				return errors.New("does not route here")
+			}
+			return nil
+		},
+	})
+	renewer.reconcile()
+
+	assert.Empty(t, obtainer.Calls())
+	assert.True(t, quarantine.IsQuarantined("dead.example.com"))
+	require.Len(t, manager.ManagedCertificates(), 1)
+}
+
+func TestCertRenewer_DefersRenewalWhenAllMembersFailProbe(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	manager.SetDynamicDomains("service1", []string{"dead.example.com"})
+	adoptTestCert(t, manager, []string{"dead.example.com"},
+		time.Now().Add(-87*24*time.Hour), time.Now().Add(3*24*time.Hour))
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{
+		Obtainer:  obtainer,
+		Preflight: func(domain string) error { return errors.New("does not route here") },
+	})
+	renewer.reconcile()
+
+	assert.Empty(t, obtainer.Calls())
+	require.Len(t, manager.ManagedCertificates(), 1)
+}
+
+func TestCertRenewer_SkipsProbeForRegisteredMembers(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	// Deploy-registered hosts are not probed: a DNS-01-only deployment may
+	// be unreachable over HTTP by design, and must still renew.
+	require.NoError(t, manager.RegisterDomain("app.example.com", "service1"))
+	adoptTestCert(t, manager, []string{"app.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{
+		Obtainer:  obtainer,
+		Preflight: func(domain string) error { return errors.New("unreachable over HTTP") },
+	})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, []string{"app.example.com"}, calls[0].Domains)
+	assert.False(t, quarantine.IsQuarantined("app.example.com"))
 }
 
 func TestCertRenewer_SkipsCertificatesNoLongerReferenced(t *testing.T) {
