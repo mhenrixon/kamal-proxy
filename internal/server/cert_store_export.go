@@ -521,13 +521,19 @@ func dirInsidePinnedTree(treePath string, target os.FileInfo) (bool, error) {
 
 	inside := false
 	walkErr := fs.WalkDir(treeRoot.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || !entry.IsDir() {
+		// Fail closed: a subtree that cannot be read or statted is a subtree
+		// that was not compared, and containment must not silently pass over
+		// it.
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
 			return nil
 		}
 
 		info, err := entry.Info()
 		if err != nil {
-			return nil
+			return err
 		}
 		if os.SameFile(info, target) {
 			inside = true

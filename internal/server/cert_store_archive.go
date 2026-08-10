@@ -51,14 +51,16 @@ type cappedReader struct {
 }
 
 func (c *cappedReader) Read(p []byte) (int, error) {
+	// A zero-length read is a no-op regardless of the budget, so its
+	// behavior cannot differ on either side of the boundary.
+	if len(p) == 0 {
+		return 0, nil
+	}
+
 	if c.remaining <= 0 {
-		// Preserve the io.Reader contract at the boundary: zero-length reads
-		// stay (0, nil), and the cap error is reserved for actual excess data
-		// -- a legal (0, nil) from the underlying reader passes through for
-		// the caller to retry.
-		if len(p) == 0 {
-			return 0, nil
-		}
+		// Preserve the io.Reader contract at the boundary: the cap error is
+		// reserved for actual excess data -- a legal (0, nil) from the
+		// underlying reader passes through for the caller to retry.
 		var probe [1]byte
 		n, err := c.reader.Read(probe[:])
 		if n > 0 {
