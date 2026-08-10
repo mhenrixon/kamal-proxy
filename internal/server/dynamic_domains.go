@@ -138,6 +138,7 @@ func NewDynamicDomainManager(config DynamicDomainConfig, manager *SANCertManager
 	})
 
 	manager.SetDynamicCertRequester(dm.issuer.Request)
+	manager.SetIssuanceGuard(dm.preflightProbe, dm.quarantine)
 
 	dm.loadState()
 
