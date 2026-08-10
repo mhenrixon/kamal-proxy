@@ -27,6 +27,16 @@ const (
 
 	// preflightTimeout bounds the pre-issuance self-probe.
 	preflightTimeout = 5 * time.Second
+
+	// shrinkGuardThreshold is the fraction of a service's applied domain set
+	// that must disappear in a single poll before the removals are held for
+	// confirmation instead of applied. One truncated or empty response from
+	// the app must not evict the certificate estate.
+	shrinkGuardThreshold = 0.30
+
+	// shrinkGuardConfirmations is how many consecutive over-threshold polls
+	// it takes before a held mass-removal is trusted and applied.
+	shrinkGuardConfirmations = 3
 )
 
 // validDomainSource reports whether a tls-domains-source value is usable: a
@@ -82,6 +92,7 @@ type DynamicDomainManager struct {
 	sources     map[string]*domainSource
 	settings    map[string]serviceSettings
 	states      map[string]*serviceDomainState
+	holds       map[string]*shrinkHold
 	lastRefresh time.Time
 
 	preflightNonce string
@@ -97,6 +108,7 @@ func NewDynamicDomainManager(config DynamicDomainConfig, manager *SANCertManager
 		sources:        make(map[string]*domainSource),
 		settings:       make(map[string]serviceSettings),
 		states:         make(map[string]*serviceDomainState),
+		holds:          make(map[string]*shrinkHold),
 		preflightNonce: generateNonce(),
 		probeClient: &http.Client{
 			Timeout: preflightTimeout,
@@ -227,6 +239,7 @@ func (dm *DynamicDomainManager) ServiceRemoved(name string) {
 	delete(dm.sources, name)
 	delete(dm.settings, name)
 	delete(dm.states, name)
+	delete(dm.holds, name)
 	dm.mu.Unlock()
 
 	if source == nil && state == nil {
@@ -278,9 +291,13 @@ func (dm *DynamicDomainManager) Status() DomainsStatusResponse {
 	dm.mu.Lock()
 	states := make(map[string]*serviceDomainState, len(dm.states))
 	settings := make(map[string]serviceSettings, len(dm.settings))
+	heldRemovals := make(map[string][]string, len(dm.holds))
 	for name, state := range dm.states {
 		states[name] = state
 		settings[name] = dm.settings[name]
+		if hold := dm.holds[name]; hold != nil {
+			heldRemovals[name] = append([]string{}, hold.removals...)
+		}
 	}
 	dm.mu.Unlock()
 
@@ -295,9 +312,10 @@ func (dm *DynamicDomainManager) Status() DomainsStatusResponse {
 		}
 
 		services[name] = DomainsServiceStatus{
-			Source:    settings[name].source,
-			Domains:   domains,
-			FetchedAt: state.FetchedAt,
+			Source:       settings[name].source,
+			Domains:      domains,
+			FetchedAt:    state.FetchedAt,
+			HeldRemovals: heldRemovals[name],
 		}
 	}
 
@@ -318,7 +336,9 @@ func (dm *DynamicDomainManager) Status() DomainsStatusResponse {
 
 // applyDomains installs a freshly fetched domain set for a service: updates
 // the allowlist, clears quarantine history for removed domains, requests
-// issuance for uncovered ones, and persists.
+// issuance for uncovered ones, and persists. A poll that removes more than
+// shrinkGuardThreshold of the applied set has its removals held until
+// consecutive polls confirm them; its additions still apply.
 func (dm *DynamicDomainManager) applyDomains(service string, domains []string) {
 	// A deploy/remove race can leave an orphaned poller behind; never apply
 	// domains for a service the router no longer knows.
@@ -341,38 +361,85 @@ func (dm *DynamicDomainManager) applyDomains(service string, domains []string) {
 		previous = state.Domains
 	}
 
+	added, removed := diffDomains(previous, domains)
+
+	applying := domains
+	held := dm.evaluateShrinkHold(service, previous, removed)
+	if held {
+		// Keep the previous set alive alongside whatever the poll added; the
+		// polled set replaces it only once the shrink is confirmed.
+		applying = append(append([]string{}, previous...), added...)
+	}
+
 	etag := ""
 	if source := dm.sources[service]; source != nil {
 		etag = source.ETag()
 	}
 
 	dm.states[service] = &serviceDomainState{
-		Domains:   domains,
+		Domains:   applying,
 		ETag:      etag,
 		FetchedAt: time.Now(),
 	}
 	dm.mu.Unlock()
 
-	added, removed := diffDomains(previous, domains)
+	dm.manager.SetDynamicDomains(service, applying)
 
-	dm.manager.SetDynamicDomains(service, domains)
-
-	for _, domain := range removed {
-		dm.quarantine.Clear(domain)
+	if held {
+		slog.Warn("Holding suspicious mass-removal from domain source",
+			"service", service, "previous", len(previous), "polled", len(domains),
+			"held_removals", len(removed), "confirmations_needed", shrinkGuardConfirmations)
+	} else {
+		for _, domain := range removed {
+			dm.quarantine.Clear(domain)
+		}
 	}
 
+	// Issuance follows the polled list, not the held union: a name the source
+	// stopped reporting keeps its allowlist entry and any live certificate,
+	// but earns no new ACME orders while its removal is in question.
 	for _, domain := range domains {
 		if !dm.manager.HasValidCertificate(domain) {
 			dm.issuer.Request(domain, service)
 		}
 	}
 
-	if len(added) > 0 || len(removed) > 0 {
+	if !held && (len(added) > 0 || len(removed) > 0) {
 		slog.Info("Domain source updated", "service", service,
 			"domains", len(domains), "added", len(added), "removed", len(removed))
 	}
 
 	dm.saveState()
+}
+
+// shrinkHold tracks a suspicious mass-removal awaiting confirmation.
+type shrinkHold struct {
+	removals []string
+	polls    int
+}
+
+// evaluateShrinkHold decides whether a poll's removals are applied or held.
+// It must be called with dm.mu held. A poll below the threshold — including
+// one that brings the domains back — clears any hold and applies normally.
+func (dm *DynamicDomainManager) evaluateShrinkHold(service string, previous, removed []string) bool {
+	if float64(len(removed)) <= shrinkGuardThreshold*float64(len(previous)) {
+		delete(dm.holds, service)
+		return false
+	}
+
+	hold := dm.holds[service]
+	if hold == nil {
+		hold = &shrinkHold{}
+		dm.holds[service] = hold
+	}
+	hold.polls++
+	hold.removals = removed
+
+	if hold.polls >= shrinkGuardConfirmations {
+		delete(dm.holds, service)
+		return false
+	}
+	return true
 }
 
 // endpointFor resolves a healthy target for path-mode sources at poll time.
