@@ -32,6 +32,7 @@ func Execute() {
 	rootCmd.AddCommand(newCacheCommand().cmd)
 	rootCmd.AddCommand(newDrainCommand().cmd)
 	rootCmd.AddCommand(newImportCommand().cmd)
+	rootCmd.AddCommand(newExportCommand().cmd)
 	rootCmd.AddCommand(newHoldCommand().cmd)
 
 	err := rootCmd.Execute()

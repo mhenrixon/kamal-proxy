@@ -148,6 +148,16 @@ func (c Config) DynamicDomainsStatePath() string {
 	return path.Join(c.dataDirectory(), "dynamic-domains.state")
 }
 
+// CertStorePaths names the pieces of the certificate estate for export and
+// restore.
+func (c Config) CertStorePaths() CertStorePaths {
+	return CertStorePaths{
+		CertsPath:               c.CertificatePath(),
+		ACMEStatePath:           c.ACMEStatePath(),
+		DynamicDomainsStatePath: c.DynamicDomainsStatePath(),
+	}
+}
+
 func (c Config) DynamicRedirectsStatePath() string {
 	return path.Join(c.dataDirectory(), "dynamic-redirects.state")
 }

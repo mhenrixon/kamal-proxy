@@ -1,13 +1,22 @@
 package server
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/go-acme/lego/v4/certcrypto"
+	"github.com/go-acme/lego/v4/registration"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -375,4 +384,79 @@ func TestSanitizeFilename(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestSANCertManager_InitializeAdoptsLegacyCacheWithoutDeadlock is the
+// regression test for Initialize holding the manager lock across the legacy
+// cache import: adoption takes the store's locks itself, so calling it from
+// inside the initialization critical section deadlocked the first boot after
+// an upgrade whenever the legacy cache held a certificate.
+func TestSANCertManager_InitializeAdoptsLegacyCacheWithoutDeadlock(t *testing.T) {
+	// A stub ACME directory: Initialize fetches it when building the lego
+	// client, and with a pre-registered account on disk that is the only
+	// network round trip. lego insists on HTTPS, so the stub serves TLS and
+	// its certificate is trusted via LEGO_CA_CERTIFICATES.
+	var directory *httptest.Server
+	directory = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// t.Error, not require: this runs on the server's goroutine, where
+		// FailNow would kill the handler instead of failing the test.
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"newNonce":   directory.URL + "/nonce",
+			"newAccount": directory.URL + "/account",
+			"newOrder":   directory.URL + "/order",
+			"revokeCert": directory.URL + "/revoke",
+			"keyChange":  directory.URL + "/keychange",
+		}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer directory.Close()
+
+	dir := t.TempDir()
+
+	caPath := filepath.Join(dir, "stub-ca.pem")
+	require.NoError(t, os.WriteFile(caPath,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: directory.Certificate().Raw}), 0600))
+	t.Setenv("LEGO_CA_CERTIFICATES", caPath)
+	cachePath := filepath.Join(dir, "certs")
+
+	// A registered account on disk, so Initialize skips ACME registration.
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	user, err := json.Marshal(acmeUser{
+		Email:        "ops@example.com",
+		KeyPEM:       certcrypto.PEMEncode(key),
+		Registration: &registration.Resource{URI: directory.URL + "/account/1"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(cachePath, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, acmeUserFile), user, 0600))
+
+	// A legacy autocert cache entry: key PEM followed by the chain.
+	resource := testCertResource(t, []string{"legacy.test"}, time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour))
+	legacyDir := filepath.Join(cachePath, legacyHTTP01CacheDir)
+	require.NoError(t, os.MkdirAll(legacyDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(legacyDir, "legacy.test"),
+		append(append([]byte{}, resource.PrivateKey...), resource.Certificate...), 0600))
+
+	manager, err := NewSANCertManager(SANCertManagerConfig{
+		Email:     "ops@example.com",
+		Directory: directory.URL,
+		CachePath: cachePath,
+		StatePath: filepath.Join(dir, "acme.state"),
+	})
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- manager.Initialize(context.Background()) }()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("Initialize deadlocked while adopting the legacy certificate cache")
+	}
+
+	assert.True(t, manager.HasCertificate("legacy.test"), "the legacy certificate was not adopted")
 }

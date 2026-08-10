@@ -1179,6 +1179,61 @@ If you want a name approved at handshake time by your own application rather
 than at deploy time, that is what [on-demand TLS](#on-demand-tls) is for. Your
 endpoint answers `2xx` to approve, anything else to deny.
 
+### Backing up and restoring certificates
+
+All certificate state lives on the proxy node's disk: the ACME account key,
+every issued certificate with its private key, the domain-to-certificate
+mappings, and the dynamic domain list. Losing that disk means re-issuing the
+whole estate under the issuance rate limit (about 250 orders per 3 hours) —
+for a large estate, hours of hard TLS failures. Export makes node loss a
+restore instead of an outage:
+
+```bash
+kamal-proxy export certs /backup/certs-$(date +%F).tar.gz
+```
+
+With the proxy running, the snapshot is taken through the proxy, under the
+same lock the certificate managers use for writes, so a backup taken
+mid-renewal is never torn. With no proxy reachable on its socket, the data
+directory is read directly — only do that when the proxy is actually stopped.
+
+**The archive contains private keys** — every certificate key and the ACME
+account key. It is written with mode `0600`; store and transfer it as the
+secret it is.
+
+Backups are only as good as their last verification. `--verify` parses every
+certificate in an archive and reports domains and expiries without touching
+the store, so a cron job or CI can check each backup as it is taken:
+
+```bash
+kamal-proxy import certs --archive /backup/certs-2026-08-09.tar.gz --verify
+```
+
+**Restore runbook** (new node, rebuilt host, or a volume mistake):
+
+1. Stop the proxy.
+2. Restore the estate: `kamal-proxy import certs --archive /backup/certs-2026-08-09.tar.gz`
+   (add `--data-dir` if the proxy runs with one). The import refuses to
+   overwrite a non-empty certificate store unless you pass `--force`.
+3. If you keep a backup of the routing state (`kamal-proxy.state`), restore
+   it now, while the proxy is still stopped — the proxy saves routing state
+   on changes, so a copy restored after startup would be overwritten.
+4. Start the proxy. If no routing state was restored, redeploy your TLS
+   services — the archive holds certificates, not routes, and the proxy
+   refuses a TLS handshake for a host no service is deployed for.
+5. Verify a restored static host with a TLS handshake; the certificate expiry
+   metrics should show the restored estate, with no new ACME orders.
+   (`kamal-proxy domains list` covers only dynamic `--tls-domains-source`
+   domains.)
+
+Restores run offline against the data directory, sharing their writing path
+with the Traefik `acme.json` importer (`import certs --traefik-acme`), so
+there is one code path that knows how to populate the store correctly.
+
+A multi-node shared certificate store is deliberately not what this is: with
+single-node TLS termination plus backups, losing the node is a restore, not
+an outage.
+
 
 ## Specifying `run` options with environment variables
 

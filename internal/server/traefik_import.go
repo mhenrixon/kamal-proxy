@@ -312,22 +312,11 @@ func loadStateForImport(path string) (managerState, error) {
 		return managerState{}, fmt.Errorf("refusing to overwrite the unreadable certificate state %s: %w", path, err)
 	}
 
-	if state.Certificates == nil || state.DomainMap == nil {
-		return managerState{}, fmt.Errorf("refusing to overwrite %s: it does not look like a certificate state file", path)
-	}
-
 	// A healthy manager never persists null records or dangling mappings
 	// (removeCertificate unmaps domains in the same critical section), so
 	// either one means the file is not trustworthy enough to merge into.
-	for id, cert := range state.Certificates {
-		if cert == nil {
-			return managerState{}, fmt.Errorf("refusing to overwrite %s: certificate %q is null", path, id)
-		}
-	}
-	for domain, id := range state.DomainMap {
-		if _, ok := state.Certificates[id]; !ok {
-			return managerState{}, fmt.Errorf("refusing to overwrite %s: domain %q references a missing certificate %q", path, domain, id)
-		}
+	if err := validateManagerState(state); err != nil {
+		return managerState{}, fmt.Errorf("refusing to overwrite %s: %w", path, err)
 	}
 
 	return state, nil

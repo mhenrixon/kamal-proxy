@@ -87,8 +87,12 @@ type SANCertManagerConfig struct {
 // It batches up to 100 domains into a single certificate,
 // reducing the number of certificates and avoiding rate limits.
 type SANCertManager struct {
-	mu      sync.RWMutex
-	stateMu sync.Mutex // serializes state-file snapshots and writes
+	mu sync.RWMutex
+	// stateMu serializes every disk write to the certificate store: state-file
+	// snapshots, certificate file writes, and certificate removals. Holding it
+	// yields a consistent on-disk snapshot, which is what the store exporter
+	// relies on.
+	stateMu sync.Mutex
 	config  SANCertManagerConfig
 
 	// ACME clients. All are built on the SAME account (`acme_user.json`), so
@@ -212,6 +216,33 @@ func NewSANCertManager(config SANCertManagerConfig) (*SANCertManager, error) {
 
 // Initialize sets up the ACME client and loads persisted state
 func (m *SANCertManager) Initialize(ctx context.Context) error {
+	if err := m.initializeClients(); err != nil {
+		return err
+	}
+
+	// Runs with no locks held: adoption takes the store's own locks, and
+	// calling it from inside the initialization critical section would
+	// deadlock on m.mu the moment the legacy cache holds a certificate.
+	m.importLegacyHTTP01Cache()
+
+	m.mu.Lock()
+	m.ready = true
+	m.mu.Unlock()
+
+	slog.Info("SAN certificate manager initialized",
+		"email", m.config.Email,
+		"directory", m.config.Directory,
+		"dns_provider", m.config.DNSProvider,
+		"prefer_wildcard", m.config.PreferWildcard,
+		"http_fallback", m.config.HTTPFallback,
+	)
+
+	return nil
+}
+
+// initializeClients builds the ACME clients and loads persisted state, under
+// the manager lock.
+func (m *SANCertManager) initializeClients() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -268,19 +299,6 @@ func (m *SANCertManager) Initialize(ctx context.Context) error {
 	if err := m.loadState(); err != nil {
 		slog.Warn("Failed to load certificate state", "error", err)
 	}
-
-	// Adopt anything the deleted certificate registry left behind, so an
-	// upgrade does not re-order certificates the proxy already holds.
-	m.importLegacyHTTP01Cache()
-
-	m.ready = true
-	slog.Info("SAN certificate manager initialized",
-		"email", m.config.Email,
-		"directory", m.config.Directory,
-		"dns_provider", m.config.DNSProvider,
-		"prefer_wildcard", m.config.PreferWildcard,
-		"http_fallback", m.config.HTTPFallback,
-	)
 
 	return nil
 }
@@ -578,6 +596,12 @@ func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sorted
 		Certificate: &tlsCert,
 	}
 
+	// The maps are published and the files written under one hold of the
+	// store's disk-write lock: if the in-memory maps changed hands first,
+	// another goroutine's persist could snapshot a state file naming this
+	// certificate before its files exist, and an export taken at that moment
+	// would archive the incomplete pair.
+	m.stateMu.Lock()
 	m.mu.Lock()
 	m.certificates[certID] = managed
 	for _, d := range sortedDomains {
@@ -585,15 +609,13 @@ func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sorted
 	}
 	m.mu.Unlock()
 
-	// Save certificate to disk
 	if err := m.saveCertificate(certID, resource); err != nil {
 		slog.Warn("Failed to save certificate", "error", err)
 	}
-
-	// Persist state (called without lock held)
-	if err := m.persistState(); err != nil {
+	if err := m.persistStateLocked(); err != nil {
 		slog.Warn("Failed to save state", "error", err)
 	}
+	m.stateMu.Unlock()
 
 	slog.Info("Certificate provisioned successfully",
 		"identifier", certID,
@@ -695,7 +717,7 @@ func (m *SANCertManager) GetStats() map[string]interface{} {
 // Persistence methods
 
 func (m *SANCertManager) loadOrCreateUser() (*acmeUser, error) {
-	userPath := filepath.Join(m.config.CachePath, "acme_user.json")
+	userPath := filepath.Join(m.config.CachePath, acmeUserFile)
 
 	data, err := os.ReadFile(userPath)
 	if err == nil {
@@ -739,31 +761,19 @@ func (m *SANCertManager) saveUser() error {
 		return err
 	}
 
-	userPath := filepath.Join(m.config.CachePath, "acme_user.json")
+	userPath := filepath.Join(m.config.CachePath, acmeUserFile)
 	return os.WriteFile(userPath, data, 0600)
 }
 
+// saveCertificate stores a certificate pair via the same staged-write path the
+// offline importers use, so a crash or concurrent reader never sees a torn
+// pair. Callers must hold stateMu.
 func (m *SANCertManager) saveCertificate(certID string, resource *certificate.Resource) error {
 	if m.config.CachePath == "" {
 		return nil
 	}
 
-	certDir := filepath.Join(m.config.CachePath, sanitizeFilename(certID))
-	if err := os.MkdirAll(certDir, 0700); err != nil {
-		return err
-	}
-
-	// Save certificate
-	if err := os.WriteFile(filepath.Join(certDir, "cert.pem"), resource.Certificate, 0600); err != nil {
-		return err
-	}
-
-	// Save private key
-	if err := os.WriteFile(filepath.Join(certDir, "key.pem"), resource.PrivateKey, 0600); err != nil {
-		return err
-	}
-
-	return nil
+	return writeCertificateFiles(m.config.CachePath, certID, resource.Certificate, resource.PrivateKey)
 }
 
 type managerState struct {
@@ -816,15 +826,21 @@ func (m *SANCertManager) loadState() error {
 }
 
 func (m *SANCertManager) persistState() error {
-	if m.config.StatePath == "" {
-		return nil
-	}
-
 	// Serialize snapshot+write: issuer goroutines, the renewer, and
 	// handshake-driven provisioning all persist concurrently, and interleaved
 	// writes to the shared .tmp file would corrupt it.
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
+
+	return m.persistStateLocked()
+}
+
+// persistStateLocked snapshots and writes the state file. Callers must hold
+// stateMu (and not m.mu, which it takes itself).
+func (m *SANCertManager) persistStateLocked() error {
+	if m.config.StatePath == "" {
+		return nil
+	}
 
 	m.mu.RLock()
 	certs := make(map[string]*ManagedCert, len(m.certificates))
