@@ -1,0 +1,20 @@
+README.md
+  s_bdf64bb7f33c03::t_1dfbf23569326a 1076-1077
+  s_bdf64bb7f33c03::t_6557979a05aa48 1047-1061
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c42a426a50799ac87616c5f6bceb4f3a39eafdef",
+  "prompts": {},
+  "sessions": {
+    "s_bdf64bb7f33c03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a8c8eb5-f8f8-4206-b83b-e25bba898674",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
