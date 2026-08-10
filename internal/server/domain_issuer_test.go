@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,6 +157,41 @@ func TestDomainIssuer_Issue_UnidentifiableFailureQuarantinesWholeBatch(t *testin
 	assert.True(t, quarantine.IsQuarantined("b.example.com"))
 	assert.Empty(t, issuer.nextBatch())
 	require.Len(t, obtainer.Calls(), 1)
+}
+
+func TestDomainIssuer_Issue_ProbesForCulpritsOnUnattributableFailure(t *testing.T) {
+	var ordered atomic.Bool
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		ordered.Store(true)
+		return nil, errors.New("acme: internal error")
+	}}
+
+	issuer, manager, quarantine := testIssuer(t, obtainer, domainIssuerConfig{
+		BatchSize: func(service string) int { return 2 },
+		// Both domains route here when the order is placed; gone.example.com
+		// stops routing by the time the failure is investigated.
+		Preflight: func(domain string) error {
+			if ordered.Load() && domain == "gone.example.com" {
+				return errors.New("no longer routes here")
+			}
+			return nil
+		},
+	})
+	manager.SetDynamicDomains("service1", []string{"good.example.com", "gone.example.com"})
+
+	issuer.Request("good.example.com", "service1")
+	issuer.Request("gone.example.com", "service1")
+	issuer.issue(issuer.nextBatch())
+
+	// The probe identified the culprit: quarantined, while the survivor is
+	// re-enqueued for its retry instead of being quarantined with it.
+	assert.True(t, quarantine.IsQuarantined("gone.example.com"))
+	assert.False(t, quarantine.IsQuarantined("good.example.com"))
+
+	batch := issuer.nextBatch()
+	require.Len(t, batch, 1)
+	assert.Equal(t, "good.example.com", batch[0].domain)
+	assert.True(t, batch[0].retried)
 }
 
 func TestDomainIssuer_Issue_RetriedSurvivorsAreNotReenqueuedAgain(t *testing.T) {

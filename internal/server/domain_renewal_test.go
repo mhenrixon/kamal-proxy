@@ -410,6 +410,31 @@ func TestCertRenewer_SkipsProbeForRegisteredMembers(t *testing.T) {
 	assert.False(t, quarantine.IsQuarantined("app.example.com"))
 }
 
+func TestCertRenewer_QuarantinesWholeBatchOnUnattributableFailure(t *testing.T) {
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, errors.New("acme: internal error")
+	}}
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	manager.SetDynamicDomains("service1", []string{"a.example.com", "b.example.com"})
+	adoptTestCert(t, manager, []string{"a.example.com", "b.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{
+		Obtainer:  obtainer,
+		Preflight: func(domain string) error { return nil },
+	})
+	renewer.reconcile()
+
+	// The failure names no domain and every member probes clean: hold the
+	// whole batch on the quarantine ladder so retries back off instead of
+	// looping hourly until the certificate expires.
+	assert.True(t, quarantine.IsQuarantined("a.example.com"))
+	assert.True(t, quarantine.IsQuarantined("b.example.com"))
+	require.Len(t, manager.ManagedCertificates(), 1)
+}
+
 func TestCertRenewer_SkipsCertificatesNoLongerReferenced(t *testing.T) {
 	obtainer := successfulObtainer(t)
 	manager := testSANCertManager(t)

@@ -434,7 +434,20 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 		return
 	}
 
-	failed := failedDomainsFromError(err, domains)
+	// Probe only dynamic members when attributing the failure: a registered
+	// host may be DNS-01-only and unreachable over HTTP by design.
+	probe := r.config.Preflight
+	if probe != nil {
+		preflight := probe
+		probe = func(domain string) error {
+			if _, dynamic := r.manager.dynamicOwner(domain); !dynamic {
+				return nil
+			}
+			return preflight(domain)
+		}
+	}
+
+	failed := identifyFailedDomains(err, domains, probe)
 
 	slog.Warn("Certificate renewal failed", "certificate", cert.Identifier,
 		"domains", domains, "failed", failed, "error", err)
