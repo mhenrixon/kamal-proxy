@@ -1,0 +1,28 @@
+internal/server/cert_store_restore_test.go
+  ai_agent 628-658
+internal/server/cert_store_restore.go
+  s_2cfb131a81bb01::t_d5063f37b4cb9b 185-193
+  s_2cfb131a81bb01::t_9ed06249f2c814 212,220-227
+internal/server/cert_store_export.go
+  s_2cfb131a81bb01::t_d61bdaa10ed012 395
+  s_2cfb131a81bb01::t_db686e984102e0 556-557,565
+  s_2cfb131a81bb01::t_f9f0b4af10b3c7 474-479,491-505
+internal/server/cert_store_archive.go
+  s_2cfb131a81bb01::t_6a388454eae9f2 45-47,55-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "fad9ce77f99ad41bf63cfb902600b088e210c645",
+  "prompts": {},
+  "sessions": {
+    "s_2cfb131a81bb01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb804ed8-d7ee-4afc-95f5-a5f5a59ec0e1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
