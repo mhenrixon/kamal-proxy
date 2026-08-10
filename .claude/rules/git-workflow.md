@@ -92,7 +92,7 @@ script/release-dash v1.0.0.0     # validates tag grammar, runs make test, tags, 
 
 - **NEVER** `git push --tags` — single-tag pushes only, `git push origin tag v1.0.0.0`
 - **NEVER** hand-craft the tag — let `script/release-dash` validate the grammar and run the tests first
-- Release the proxy image **before** the gem — the `dash` gem's `MINIMUM_VERSION` must name an already-published `ghcr.io/mhenrixon/kamal-proxy` tag. See `../kamal/CLAUDE.md` for gem-side ordering.
+- Release the proxy image **before** the gem — the `dash` gem's `MINIMUM_VERSION` must name an already-published `ghcr.io/zoolutions/kamal-proxy` tag. See `../kamal/CLAUDE.md` for gem-side ordering.
 
 Sync mechanics (fetching upstream, merging into feature branches, the conflict playbook) live entirely in `.claude/rules/upstream-sync.md` — don't duplicate them here.
 

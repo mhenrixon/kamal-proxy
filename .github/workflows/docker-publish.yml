@@ -61,5 +61,5 @@ jobs:
           labels: |
             org.opencontainers.image.title=kamal-proxy
           tags: |
-            ghcr.io/mhenrixon/kamal-proxy:latest
-            ghcr.io/mhenrixon/kamal-proxy:${{ steps.version-tag.outputs.value }}
+            ghcr.io/zoolutions/kamal-proxy:latest
+            ghcr.io/zoolutions/kamal-proxy:${{ steps.version-tag.outputs.value }}
