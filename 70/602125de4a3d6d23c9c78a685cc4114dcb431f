@@ -1,0 +1,25 @@
+internal/server/domain_renewal_test.go
+  s_bdf64bb7f33c03::t_593dfc5d35f513 133,139-156,166-206
+  s_bdf64bb7f33c03::t_19fc508252f08a 317-319,331-333
+internal/server/domain_renewal.go
+  s_bdf64bb7f33c03::t_49d711886936e8 187
+  s_bdf64bb7f33c03::t_0c31d5a48daef5 290-317
+  s_bdf64bb7f33c03::t_86c946fabd2826 422-427
+  s_bdf64bb7f33c03::t_f36325f91a28fd 143-144,146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "70602125de4a3d6d23c9c78a685cc4114dcb431f",
+  "prompts": {},
+  "sessions": {
+    "s_bdf64bb7f33c03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a8c8eb5-f8f8-4206-b83b-e25bba898674",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
