@@ -446,3 +446,29 @@ func TestExportCertificateStore_LongOutputBasename(t *testing.T) {
 	require.NoError(t, err)
 	assert.FileExists(t, outputPath)
 }
+
+func TestDirInsidePinnedTree(t *testing.T) {
+	paths := testCertStorePaths(t)
+	populateCertStore(t, paths, []string{"example.com"})
+	subDir := filepath.Join(paths.CertsPath, sanitizeFilename(sanCertID([]string{"example.com"})))
+
+	for _, target := range []string{paths.CertsPath, subDir} {
+		info, err := os.Stat(target)
+		require.NoError(t, err)
+
+		inside, err := dirInsidePinnedTree(paths.CertsPath, info)
+		require.NoError(t, err)
+		assert.True(t, inside, "%s is inside the certificate tree", target)
+	}
+
+	outsideInfo, err := os.Stat(t.TempDir())
+	require.NoError(t, err)
+	inside, err := dirInsidePinnedTree(paths.CertsPath, outsideInfo)
+	require.NoError(t, err)
+	assert.False(t, inside)
+
+	// A tree that does not exist contains nothing.
+	inside, err = dirInsidePinnedTree(filepath.Join(t.TempDir(), "nope"), outsideInfo)
+	require.NoError(t, err)
+	assert.False(t, inside)
+}

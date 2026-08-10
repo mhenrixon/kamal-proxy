@@ -392,7 +392,7 @@ func writeCertArchive(outputPath string, paths CertStorePaths, files []archiveFi
 	defer root.Close()
 
 	base := filepath.Base(outputPath)
-	if err := rejectPinnedRootInsideStore(root, filepath.Dir(outputPath), base, paths); err != nil {
+	if err := rejectPinnedRootInsideStore(root, base, paths); err != nil {
 		return nil, err
 	}
 
@@ -472,11 +472,11 @@ func writeCertArchive(outputPath string, paths CertStorePaths, files []archiveFi
 
 // rejectPinnedRootInsideStore re-validates the already-opened output directory
 // by filesystem identity -- the handle, not a pathname, is what the writes go
-// through. The pinned directory itself is compared against the certificate
-// directory, and so is every existing ancestor of its path, so a swap that
-// lands the root on a subdirectory inside the store is caught too, not just
-// the store directory itself.
-func rejectPinnedRootInsideStore(root *os.Root, rootDir, base string, paths CertStorePaths) error {
+// through. Containment is decided by walking the certificate tree through its
+// own pinned root and comparing every directory's identity against the output
+// handle, so neither side of the comparison can be swapped out from under the
+// check by re-resolving a pathname.
+func rejectPinnedRootInsideStore(root *os.Root, base string, paths CertStorePaths) error {
 	dir, err := root.Open(".")
 	if err != nil {
 		return fmt.Errorf("failed to inspect the output directory: %w", err)
@@ -488,21 +488,10 @@ func rejectPinnedRootInsideStore(root *os.Root, rootDir, base string, paths Cert
 		return fmt.Errorf("failed to inspect the output directory: %w", err)
 	}
 
-	if certsInfo, err := os.Stat(paths.CertsPath); err == nil {
-		if os.SameFile(certsInfo, rootInfo) {
-			return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
-		}
-
-		for current := rootDir; ; {
-			if info, err := os.Stat(current); err == nil && os.SameFile(certsInfo, info) {
-				return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
-			}
-			parent := filepath.Dir(current)
-			if parent == current {
-				break
-			}
-			current = parent
-		}
+	if inside, err := dirInsidePinnedTree(paths.CertsPath, rootInfo); err != nil {
+		return err
+	} else if inside {
+		return fmt.Errorf("refusing to write the archive inside the certificate directory %s", paths.CertsPath)
 	}
 
 	if targetInfo, err := root.Stat(base); err == nil {
@@ -514,6 +503,43 @@ func rejectPinnedRootInsideStore(root *os.Root, rootDir, base string, paths Cert
 	}
 
 	return nil
+}
+
+// dirInsidePinnedTree reports whether target names the given tree's own
+// directory or any directory inside it, comparing identities collected
+// through the tree's pinned root. A tree that does not exist contains
+// nothing.
+func dirInsidePinnedTree(treePath string, target os.FileInfo) (bool, error) {
+	treeRoot, err := os.OpenRoot(treePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to inspect the certificate directory: %w", err)
+	}
+	defer treeRoot.Close()
+
+	inside := false
+	walkErr := fs.WalkDir(treeRoot.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || !entry.IsDir() {
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		if os.SameFile(info, target) {
+			inside = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return false, fmt.Errorf("failed to inspect the certificate directory: %w", walkErr)
+	}
+
+	return inside, nil
 }
 
 // createTempInRoot is os.CreateTemp confined to an os.Root: a uniquely named

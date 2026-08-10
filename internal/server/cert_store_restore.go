@@ -184,10 +184,15 @@ func removeStaleCertDirs(certsPath string, archive certStoreArchive) error {
 
 		// Only a directory that actually existed counts as a removal: RemoveAll
 		// succeeds silently on a missing path, and a restore into a store with
-		// no certificate directory at all must not then try to sync it.
+		// no certificate directory at all must not then try to sync it. Only
+		// a genuinely missing path is skippable -- any other inspection
+		// failure could silently retain a stale pair.
 		stalePath := filepath.Join(certsPath, dir)
 		if _, err := os.Lstat(stalePath); err != nil {
-			continue
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("failed to inspect the stale certificate directory for %s: %w", id, err)
 		}
 
 		if err := os.RemoveAll(stalePath); err != nil {

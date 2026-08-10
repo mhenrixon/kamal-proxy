@@ -52,20 +52,19 @@ type cappedReader struct {
 
 func (c *cappedReader) Read(p []byte) (int, error) {
 	if c.remaining <= 0 {
-		var probe [1]byte
-		for range 3 {
-			n, err := c.reader.Read(probe[:])
-			if n > 0 {
-				return 0, errCertArchiveTooLarge
-			}
-			if err == io.EOF {
-				return 0, io.EOF
-			}
-			if err != nil {
-				return 0, err
-			}
+		// Preserve the io.Reader contract at the boundary: zero-length reads
+		// stay (0, nil), and the cap error is reserved for actual excess data
+		// -- a legal (0, nil) from the underlying reader passes through for
+		// the caller to retry.
+		if len(p) == 0 {
+			return 0, nil
 		}
-		return 0, errCertArchiveTooLarge
+		var probe [1]byte
+		n, err := c.reader.Read(probe[:])
+		if n > 0 {
+			return 0, errCertArchiveTooLarge
+		}
+		return 0, err
 	}
 	if int64(len(p)) > c.remaining {
 		p = p[:c.remaining]
