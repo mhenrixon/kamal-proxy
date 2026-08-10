@@ -1044,7 +1044,22 @@ to verify DNS actually routes here — unreachable domains are quarantined
 (5m, then 15m → 1h → 4h → 24h backoff) without burning an order. Failing
 domains quarantine alone; the rest of a batch is retried once. Renewals reuse
 the exact same identifier set (exempt from most rate limits) and pass ARI
-`replaces` where supported.
+`replaces` where supported. Every renewal re-probes its dynamic members
+first, so a tenant whose DNS moved away after issuance is quarantined out of
+the order instead of failing it — and when an order fails without naming a
+domain, the members are probed to find the culprit before anyone is blamed.
+
+**A bad poll cannot destroy certificates.** Two guards protect the estate
+from the source itself. A poll that removes more than 30% of the applied
+domain set has its removals *held*: the previous set stays allowed (additions
+still apply), and only three consecutive shrunken polls confirm and apply the
+removal — a single (or transient) empty or truncated response from the app
+evicts nothing. Held removals are visible in `kamal-proxy domains list`
+(Removal held column) and logged at Warn on every held poll. Independently, a
+certificate whose domains were all evicted is never deleted before its own
+expiry: it stops renewing but keeps serving, and can be reused immediately if
+the domains return before it expires — normal replacement and renewal rules
+still apply.
 
 `--tls-domains-batch-size` (max 25) opts into stable SAN batching for dynamic
 domains: batches fill append-only, and membership only changes at renewal
@@ -1059,8 +1074,8 @@ the app is down.
 **Inspecting:**
 
 ```bash
-kamal-proxy domains list      # every dynamic domain, cert + quarantine status
-kamal-proxy domains stats     # counters: domains, certified, queued, quarantined
+kamal-proxy domains list      # every dynamic domain, cert + quarantine + held status
+kamal-proxy domains stats     # counters: domains, certified, queued, quarantined, held
 kamal-proxy domains refresh   # trigger an immediate re-poll of all sources
 ```
 

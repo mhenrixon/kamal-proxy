@@ -239,6 +239,152 @@ func TestDynamicDomainManager_Status(t *testing.T) {
 	assert.Equal(t, 1, status.Certificates)
 }
 
+// deployWithDomains deploys a service whose source serves the given domains
+// and waits for the initial poll to land, so later applyDomains calls diff
+// against a known baseline.
+func deployWithDomains(t testing.TB, dm *DynamicDomainManager, manager *SANCertManager, service string, domains []string) {
+	t.Helper()
+
+	backend, _ := testDomainsBackend(t, domains...)
+	dm.ServiceDeployed(service, ServiceOptions{TLSEnabled: true, TLSDomainsSource: backend.URL})
+	require.Eventually(t, func() bool {
+		return len(manager.DynamicDomains(service)) == len(domains)
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func testTenantDomains(n int) []string {
+	domains := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		domains = append(domains, fmt.Sprintf("tenant-%d.example.com", i))
+	}
+	return domains
+}
+
+func TestDynamicDomainManager_ShrinkGuardHoldsMassRemovals(t *testing.T) {
+	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
+	full := testTenantDomains(10)
+	deployWithDomains(t, dm, manager, "service1", full)
+
+	// One poll drops 6 of 10 domains and adds one: the removals are held, the
+	// addition applies immediately.
+	shrunk := append(append([]string{}, full[:4]...), "new.example.com")
+	dm.applyDomains("service1", shrunk)
+
+	assert.Len(t, manager.DynamicDomains("service1"), 11)
+	assert.True(t, manager.DomainAllowed("tenant-9.example.com"))
+	assert.True(t, manager.DomainAllowed("new.example.com"))
+
+	status := dm.Status()
+	assert.Len(t, status.Services["service1"].HeldRemovals, 6)
+}
+
+func TestDynamicDomainManager_ShrinkGuardHoldsEmptyPoll(t *testing.T) {
+	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
+	full := testTenantDomains(10)
+	deployWithDomains(t, dm, manager, "service1", full)
+
+	dm.applyDomains("service1", []string{})
+
+	assert.Len(t, manager.DynamicDomains("service1"), 10)
+	assert.Len(t, dm.Status().Services["service1"].HeldRemovals, 10)
+}
+
+func TestDynamicDomainManager_ShrinkGuardAppliesSmallRemovals(t *testing.T) {
+	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
+	full := testTenantDomains(10)
+	deployWithDomains(t, dm, manager, "service1", full)
+
+	// Removing 1 of 10 is below the threshold: applied immediately.
+	dm.applyDomains("service1", full[:9])
+
+	assert.Len(t, manager.DynamicDomains("service1"), 9)
+	assert.False(t, manager.DomainAllowed("tenant-9.example.com"))
+	assert.Empty(t, dm.Status().Services["service1"].HeldRemovals)
+}
+
+func TestDynamicDomainManager_ShrinkGuardConfirmsAfterConsecutivePolls(t *testing.T) {
+	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
+	full := testTenantDomains(10)
+	deployWithDomains(t, dm, manager, "service1", full)
+
+	shrunk := full[:4]
+
+	// Two consecutive over-threshold polls are held...
+	dm.applyDomains("service1", shrunk)
+	dm.applyDomains("service1", shrunk)
+	assert.Len(t, manager.DynamicDomains("service1"), 10)
+
+	// ...the third confirms the shrink and applies it.
+	dm.applyDomains("service1", shrunk)
+	assert.ElementsMatch(t, shrunk, manager.DynamicDomains("service1"))
+	assert.Empty(t, dm.Status().Services["service1"].HeldRemovals)
+}
+
+func TestDynamicDomainManager_ShrinkGuardClearsETagWhileHolding(t *testing.T) {
+	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
+	full := testTenantDomains(10)
+	deployWithDomains(t, dm, manager, "service1", full)
+
+	// An ETag-answering source would 304 every poll after the held response,
+	// and the confirmation count could never advance. Holding must drop the
+	// ETag so the body keeps being refetched until the shrink resolves.
+	dm.mu.Lock()
+	dm.sources["service1"].SeedETag(`"v2"`)
+	dm.mu.Unlock()
+
+	dm.applyDomains("service1", full[:4])
+
+	dm.mu.Lock()
+	etag := dm.sources["service1"].ETag()
+	stored := dm.states["service1"].ETag
+	dm.mu.Unlock()
+	assert.Empty(t, etag)
+	assert.Empty(t, stored)
+}
+
+func TestDynamicDomainManager_ShrinkGuardResetsOnRedeploy(t *testing.T) {
+	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
+	full := testTenantDomains(10)
+	deployWithDomains(t, dm, manager, "service1", full)
+
+	dm.applyDomains("service1", full[:4])
+	dm.mu.Lock()
+	_, held := dm.holds["service1"]
+	dm.mu.Unlock()
+	require.True(t, held)
+
+	// A redeploy replaces the source; confirmations counted against the old
+	// source must not carry over to the new one.
+	backend, _ := testDomainsBackend(t, full...)
+	dm.ServiceDeployed("service1", ServiceOptions{TLSEnabled: true, TLSDomainsSource: backend.URL})
+
+	dm.mu.Lock()
+	_, held = dm.holds["service1"]
+	dm.mu.Unlock()
+	assert.False(t, held)
+}
+
+func TestDynamicDomainManager_ShrinkGuardCancelsOnRecovery(t *testing.T) {
+	dm, manager := testDynamicDomainManager(t, DynamicDomainConfig{})
+	full := testTenantDomains(10)
+	deployWithDomains(t, dm, manager, "service1", full)
+
+	shrunk := full[:4]
+
+	// A held shrink followed by a recovering poll clears the hold — and the
+	// confirmation count starts over for the next shrink.
+	dm.applyDomains("service1", shrunk)
+	dm.applyDomains("service1", full)
+	assert.Empty(t, dm.Status().Services["service1"].HeldRemovals)
+
+	dm.applyDomains("service1", shrunk)
+	dm.applyDomains("service1", shrunk)
+	assert.Len(t, manager.DynamicDomains("service1"), 10)
+
+	dm.applyDomains("service1", shrunk)
+	assert.ElementsMatch(t, shrunk, manager.DynamicDomains("service1"))
+}
+
 func TestDynamicDomainManager_PreflightProbe(t *testing.T) {
 	dm, _ := testDynamicDomainManager(t, DynamicDomainConfig{})
 

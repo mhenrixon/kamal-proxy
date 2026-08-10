@@ -137,6 +137,10 @@ type SANCertManager struct {
 	// Callback to request asynchronous issuance for a dynamic domain
 	dynamicCertRequester func(domain, service string)
 
+	// guard filters handshake-driven batches through preflight and quarantine
+	// (see san_cert_batch_guard.go); zero value means unguarded.
+	guard issuanceGuard
+
 	// Currently provisioning: rootDomain -> done channel
 	provisioning map[string]chan struct{}
 
@@ -479,24 +483,27 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 		}
 	}
 
-	// Collect ALL pending domains (up to MaxSANsPerCertificate)
-	domainsToProvision := []string{domain}
-	for pendingDomain := range m.pendingDomains {
-		if pendingDomain != domain {
-			domainsToProvision = append(domainsToProvision, pendingDomain)
-		}
-		if len(domainsToProvision) >= MaxSANsPerCertificate {
-			break
-		}
-	}
-
-	// Start provisioning
+	// Claim the provisioning slot before touching the batch, so concurrent
+	// handshakes wait on it instead of racing into a duplicate order while
+	// batch-mates are being probed.
 	done := make(chan struct{})
 	m.provisioning[provisioningKey] = done
 
-	// Remove domains from pending
-	for _, d := range domainsToProvision {
-		delete(m.pendingDomains, d)
+	// Collect ALL pending domains (up to MaxSANsPerCertificate). Quarantined
+	// domains do not consume batch slots: with more quarantined hosts than a
+	// batch holds, the eligible ones must still fit.
+	candidates := []string{domain}
+	for pendingDomain := range m.pendingDomains {
+		if pendingDomain == domain {
+			continue
+		}
+		if m.guard.quarantine != nil && m.guard.quarantine.IsQuarantined(pendingDomain) {
+			continue
+		}
+		candidates = append(candidates, pendingDomain)
+		if len(candidates) >= MaxSANsPerCertificate {
+			break
+		}
 	}
 	m.mu.Unlock()
 
@@ -506,6 +513,16 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 		close(done)
 		m.mu.Unlock()
 	}()
+
+	// Quarantined or unreachable batch-mates stay out of the order — and keep
+	// their pending slot for a later batch, once their quarantine lifts.
+	domainsToProvision := m.filterBatchMates(domain, candidates)
+
+	m.mu.Lock()
+	for _, d := range domainsToProvision {
+		delete(m.pendingDomains, d)
+	}
+	m.mu.Unlock()
 
 	// Sort the planned identifier set for consistent certificate identifiers
 	sortedDomains := m.planIssuanceDomains(domainsToProvision)
@@ -556,8 +573,9 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 
 	resource, err := m.obtainCertificate(request)
 	if err != nil {
-		// Re-add domains to pending so they can be retried
-		m.restorePending(domainsToProvision)
+		// Quarantine the identified culprits; survivors return to pending so
+		// they can be retried without them.
+		m.restorePending(m.attributeBatchFailure(err, sortedDomains, domainsToProvision))
 		return nil, fmt.Errorf("failed to obtain certificate: %w", err)
 	}
 
@@ -565,6 +583,10 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 	if err != nil {
 		return nil, err
 	}
+
+	// A successful order wipes the batch's failure history, as the dynamic
+	// issuer does — the next failure must not start high on the ladder.
+	m.clearBatchQuarantine(domainsToProvision)
 
 	return managed.Certificate, nil
 }

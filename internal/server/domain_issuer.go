@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -376,10 +375,7 @@ func (i *domainIssuer) issue(batch []*issueRequest) {
 // quarantined too, so a failing batch cannot loop against ACME rate limits;
 // the poller re-requests them after the backoff expires.
 func (i *domainIssuer) handleObtainFailure(batch []*issueRequest, domains []string, requests map[string]*issueRequest, err error) {
-	failed := failedDomainsFromError(err, domains)
-	if len(failed) == 0 {
-		failed = domains
-	}
+	failed := identifyFailedDomains(err, domains, i.config.Preflight)
 
 	slog.Warn("Certificate order failed", "domains", domains, "failed", failed, "error", err)
 
@@ -415,24 +411,6 @@ func (i *domainIssuer) handleObtainFailure(batch []*issueRequest, domains []stri
 	i.mu.Unlock()
 
 	i.notify()
-}
-
-// failedDomainsFromError matches lego's per-domain error lines
-// ("<domain>: <cause>") against the attempted domains.
-func failedDomainsFromError(err error, domains []string) []string {
-	lines := strings.Split(err.Error(), "\n")
-
-	failed := []string{}
-	for _, domain := range domains {
-		prefix := domain + ": "
-		for _, line := range lines {
-			if strings.HasPrefix(strings.TrimSpace(line), prefix) {
-				failed = append(failed, domain)
-				break
-			}
-		}
-	}
-	return failed
 }
 
 func (i *domainIssuer) notify() {

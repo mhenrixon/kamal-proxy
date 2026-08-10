@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,12 +141,10 @@ func (r *certRenewer) reconcile() {
 		}
 
 		// A certificate with no domain that is both still allowed and still
-		// mapped to it has been superseded or fully evicted: garbage-collect
-		// it instead of renewing it forever.
+		// mapped to it has been superseded or fully evicted: retire it
+		// instead of renewing it forever.
 		if len(r.renewableDomains(cert)) == 0 {
-			slog.Info("Removing certificate with no remaining domains", "certificate", cert.Identifier)
-			r.manager.removeCertificate(cert.Identifier)
-			r.notifyChange()
+			r.retireCertificate(cert)
 			continue
 		}
 
@@ -185,13 +184,8 @@ func (r *certRenewer) shouldRenew(cert *ManagedCert) bool {
 // exemption; ARI `replaces` exempts the order entirely where supported.
 func (r *certRenewer) renew(cert *ManagedCert) {
 	allowed := r.renewableDomains(cert)
-
-	// Only eviction drops a certificate. Quarantine just defers renewal: the
-	// certificate keeps serving until the quarantine lifts or it expires.
 	if len(allowed) == 0 {
-		slog.Info("Dropping certificate with no remaining domains", "certificate", cert.Identifier)
-		r.manager.removeCertificate(cert.Identifier)
-		r.notifyChange()
+		// reconcile retires zero-renewable certificates before calling renew.
 		return
 	}
 
@@ -210,6 +204,27 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 		slog.Info("Deferring renewal until quarantined members recover",
 			"certificate", cert.Identifier, "quarantined", quarantined)
 		return
+	}
+
+	// Probe the remaining members before spending an order: a tenant whose
+	// DNS moved away would fail validation and could sink the whole batch —
+	// or worse, fail in a way ACME does not attribute to any one domain.
+	// Unreachable members follow the same policy as quarantined ones.
+	if unreachable := r.preflightMembers(domains); len(unreachable) > 0 {
+		if time.Until(cert.NotAfter) > quarantineCompactionWindow {
+			slog.Info("Deferring renewal until unreachable members recover",
+				"certificate", cert.Identifier, "unreachable", unreachable)
+			return
+		}
+
+		domains = slices.DeleteFunc(domains, func(domain string) bool {
+			return slices.Contains(unreachable, domain)
+		})
+		if len(domains) == 0 {
+			slog.Info("Deferring renewal; every member failed the pre-flight probe",
+				"certificate", cert.Identifier)
+			return
+		}
 	}
 
 	domains, toppedUp := r.topUpBatch(domains)
@@ -294,6 +309,34 @@ func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replac
 	return renewed, true
 }
 
+// retireCertificate disposes of a certificate with no renewable domains. A
+// superseded certificate — nothing maps through it anymore — goes immediately.
+// An evicted certificate that still serves a mapped domain is kept until its
+// own expiry: eviction can be a lying domain source, and deleting the key
+// would turn one bad poll into a certificate outage for every member.
+func (r *certRenewer) retireCertificate(cert *ManagedCert) {
+	if r.certStillServes(cert) && r.now().Before(cert.NotAfter) {
+		slog.Debug("Keeping evicted certificate until expiry",
+			"certificate", cert.Identifier, "expires", cert.NotAfter)
+		return
+	}
+
+	slog.Info("Removing certificate with no remaining domains", "certificate", cert.Identifier)
+	r.manager.removeCertificate(cert.Identifier)
+	r.notifyChange()
+}
+
+// certStillServes reports whether any of a certificate's domains still map to
+// it — i.e. a handshake for that name would be answered with this certificate.
+func (r *certRenewer) certStillServes(cert *ManagedCert) bool {
+	for _, domain := range cert.Domains {
+		if r.manager.certIDForDomain(domain) == cert.Identifier {
+			return true
+		}
+	}
+	return false
+}
+
 // renewableDomains filters a certificate's set down to domains that are still
 // allowed (deploy-registered or dynamic) AND still mapped to this certificate
 // — a domain that moved to a newer certificate no longer renews through this
@@ -347,6 +390,36 @@ func (r *certRenewer) topUpBatch(domains []string) (batch, taken []string) {
 	return append(domains, kept...), kept
 }
 
+// preflightMembers probes a renewal batch's dynamic members and quarantines
+// the unreachable ones. Only dynamic (tenant-supplied) domains are probed:
+// they must route back to this proxy to be validated or served at all. A
+// deploy-registered host may be reachable over DNS-01 only, and a wildcard
+// has no name to answer on, so neither is probed.
+func (r *certRenewer) preflightMembers(domains []string) []string {
+	if r.config.Preflight == nil {
+		return nil
+	}
+
+	probeable := []string{}
+	for _, domain := range domains {
+		if strings.HasPrefix(domain, "*.") {
+			continue
+		}
+		if _, dynamic := r.manager.dynamicOwner(domain); !dynamic {
+			continue
+		}
+		probeable = append(probeable, domain)
+	}
+
+	unreachable, failures := probeDomains(probeable, r.config.Preflight)
+	for _, domain := range unreachable {
+		backoff := r.quarantine.RecordFailure(domain, quarantinePreflight)
+		slog.Warn("Renewal member failed pre-flight probe; holding back",
+			"domain", domain, "backoff", backoff, "error", failures[domain])
+	}
+	return unreachable
+}
+
 func (r *certRenewer) dynamicServiceFor(domains []string) (string, bool) {
 	for _, domain := range domains {
 		if service, ok := r.manager.dynamicOwner(domain); ok {
@@ -363,7 +436,20 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 		return
 	}
 
-	failed := failedDomainsFromError(err, domains)
+	// Probe only dynamic members when attributing the failure: a registered
+	// host may be DNS-01-only and unreachable over HTTP by design.
+	probe := r.config.Preflight
+	if probe != nil {
+		preflight := probe
+		probe = func(domain string) error {
+			if _, dynamic := r.manager.dynamicOwner(domain); !dynamic {
+				return nil
+			}
+			return preflight(domain)
+		}
+	}
+
+	failed := identifyFailedDomains(err, domains, probe)
 
 	slog.Warn("Certificate renewal failed", "certificate", cert.Identifier,
 		"domains", domains, "failed", failed, "error", err)
@@ -398,6 +484,12 @@ func (r *certRenewer) reportMetrics() {
 	for _, cert := range certs {
 		isWildcard := containsWildcard(cert.Domains)
 		for _, domain := range cert.Domains {
+			// Evicted certificates linger until expiry; only the certificate a
+			// domain currently maps to may report that domain's expiry, or the
+			// zombie would clobber the gauge of its successor.
+			if r.manager.certIDForDomain(domain) != cert.Identifier {
+				continue
+			}
 			metrics.Tracker.SetCertificateExpiry(domain, isWildcard, cert.NotAfter)
 		}
 	}

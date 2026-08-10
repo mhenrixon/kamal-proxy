@@ -64,13 +64,18 @@ func newDomainsListCommand() *domainsListCommand {
 func (c *domainsListCommand) run(cmd *cobra.Command, args []string) error {
 	return fetchDomainsStatus(func(response server.DomainsStatusResponse) {
 		table := NewTable()
-		table.AddRow([]string{"Service", "Domain", "Certified", "Quarantined until"})
+		table.AddRow([]string{"Service", "Domain", "Certified", "Quarantined until", "Removal held"})
 
 		for _, name := range slices.Sorted(maps.Keys(response.Services)) {
 			service := response.Services[name]
 			domains := slices.SortedFunc(slices.Values(service.Domains), func(a, b server.DomainStatus) int {
 				return strings.Compare(a.Domain, b.Domain)
 			})
+
+			heldRemovals := make(map[string]struct{}, len(service.HeldRemovals))
+			for _, domain := range service.HeldRemovals {
+				heldRemovals[domain] = struct{}{}
+			}
 
 			for _, domain := range domains {
 				certified := "no"
@@ -83,7 +88,12 @@ func (c *domainsListCommand) run(cmd *cobra.Command, args []string) error {
 					quarantined = entry.Until.Format("2006-01-02 15:04:05")
 				}
 
-				table.AddRow([]string{name, domain.Domain, certified, quarantined})
+				held := ""
+				if _, ok := heldRemovals[domain.Domain]; ok {
+					held = "yes"
+				}
+
+				table.AddRow([]string{name, domain.Domain, certified, quarantined, held})
 			}
 		}
 
@@ -111,8 +121,10 @@ func (c *domainsStatsCommand) run(cmd *cobra.Command, args []string) error {
 	return fetchDomainsStatus(func(response server.DomainsStatusResponse) {
 		domains := 0
 		certified := 0
+		held := 0
 		for _, service := range response.Services {
 			domains += len(service.Domains)
+			held += len(service.HeldRemovals)
 			for _, domain := range service.Domains {
 				if domain.Certified {
 					certified++
@@ -125,6 +137,7 @@ func (c *domainsStatsCommand) run(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Certified:                    %d\n", certified)
 		fmt.Printf("Queued for issuance:          %d\n", response.QueueLength)
 		fmt.Printf("Quarantined:                  %d\n", len(response.Quarantine))
+		fmt.Printf("Held removals:                %d\n", held)
 		fmt.Printf("Managed certificates:         %d\n", response.Certificates)
 	})
 }
