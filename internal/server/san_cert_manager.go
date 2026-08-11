@@ -642,6 +642,13 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 // maps, and persists it. sortedDomains must be the sorted identifier set the
 // certificate was ordered for.
 func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sortedDomains []string) (*ManagedCert, error) {
+	return m.adoptCertificateAt(resource, sortedDomains, m.directoryForDomains(sortedDomains))
+}
+
+// adoptCertificateAt is adoptCertificate with the recorded directory pinned
+// by the caller — used when the order itself was pinned, so the stamp always
+// names the directory that actually issued.
+func (m *SANCertManager) adoptCertificateAt(resource *certificate.Resource, sortedDomains []string, directory string) (*ManagedCert, error) {
 	// Parse the certificate
 	tlsCert, err := tls.X509KeyPair(resource.Certificate, resource.PrivateKey)
 	if err != nil {
@@ -663,7 +670,7 @@ func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sorted
 		Domains:     sortedDomains,
 		NotAfter:    notAfter,
 		Certificate: &tlsCert,
-		Directory:   m.directoryForDomains(sortedDomains),
+		Directory:   directory,
 	}
 
 	// The maps are published and the files written under one hold of the

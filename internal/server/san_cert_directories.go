@@ -356,12 +356,10 @@ func (m *SANCertManager) buildDirectoryClients(directory string) (*directoryClie
 	}, nil
 }
 
-// obtainersFor resolves the clients answering one order: the owning service's
-// directory picks the ACME identity, and zone selection picks the DNS-01
-// solver within it. A nil DNS obtainer means HTTP-01 territory.
-func (m *SANCertManager) obtainersFor(domains []string) (httpObtainer, dnsObtainer certObtainer, err error) {
-	directory := m.directoryForDomains(domains)
-
+// obtainersForDirectory resolves the clients answering one order at the given
+// directory: the directory picks the ACME identity, and zone selection picks
+// the DNS-01 solver within it. A nil DNS obtainer means HTTP-01 territory.
+func (m *SANCertManager) obtainersForDirectory(directory string, domains []string) (httpObtainer, dnsObtainer certObtainer, err error) {
 	if directory == m.config.Directory {
 		dnsObtainer, err := m.orderObtainer(domains)
 		if err != nil {

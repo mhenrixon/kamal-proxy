@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -474,19 +475,35 @@ func TestDirInsidePinnedTree(t *testing.T) {
 }
 
 func TestExportCertificateStore_AccountKeysOnlyStoreExports(t *testing.T) {
-	paths := testCertStorePaths(t)
-	require.NoError(t, os.MkdirAll(paths.CertsPath, 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, "acme_user.json"),
-		testAccountKeyJSON(t), 0600))
-	require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, "acme_user_staging.json"),
-		testAccountKeyJSON(t), 0600))
+	// A fresh estate that has registered accounts but issued nothing yet
+	// still gets its backup — whichever identities it holds.
+	tests := []struct {
+		name  string
+		files []string
+	}{
+		{"primary and staging keys", []string{"acme_user.json", "acme_user_staging.json"}},
+		{"a lone staging key", []string{"acme_user_staging.json"}},
+	}
 
-	archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
-	summary, err := ExportCertificateStore(paths, archivePath)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testCertStorePaths(t)
+			require.NoError(t, os.MkdirAll(paths.CertsPath, 0700))
+			for _, name := range tt.files {
+				require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, name),
+					testAccountKeyJSON(t), 0600))
+			}
 
-	// A fresh estate that has registered accounts (a --tls-staging identity
-	// among them) but issued nothing yet still gets its backup.
-	require.NoError(t, err)
-	assert.Empty(t, summary.Warnings)
-	assert.Zero(t, summary.Certificates)
+			archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+			summary, err := ExportCertificateStore(paths, archivePath)
+			require.NoError(t, err)
+			assert.Empty(t, summary.Warnings)
+			assert.Zero(t, summary.Certificates)
+
+			report, err := VerifyCertificateArchive(archivePath)
+			require.NoError(t, err)
+			assert.Empty(t, report.Certificates)
+			assert.Equal(t, slices.Contains(tt.files, "acme_user.json"), report.HasAccountKey)
+		})
+	}
 }

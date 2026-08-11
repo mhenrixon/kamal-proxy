@@ -26,7 +26,16 @@ import (
 // It deliberately does NOT take a rate limit token: callers hold one already,
 // so that a queued order waits before it is assembled rather than after.
 func (m *SANCertManager) obtainCertificate(request certificate.ObtainRequest) (*certificate.Resource, error) {
-	httpObtainer, dnsObtainer, err := m.obtainersFor(request.Domains)
+	return m.obtainCertificateAt(m.directoryForDomains(request.Domains), request)
+}
+
+// obtainCertificateAt is obtainCertificate with the ACME directory pinned by
+// the caller — the renewer pins a partition to its computed directory so a
+// domain whose owner is temporarily unresolvable still renews under its
+// certificate's recorded identity instead of falling back to the run-level
+// one.
+func (m *SANCertManager) obtainCertificateAt(directory string, request certificate.ObtainRequest) (*certificate.Resource, error) {
+	httpObtainer, dnsObtainer, err := m.obtainersForDirectory(directory, request.Domains)
 	if err != nil {
 		return nil, err
 	}

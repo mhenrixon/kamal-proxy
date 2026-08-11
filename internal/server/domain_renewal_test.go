@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	acmeconfig "github.com/basecamp/kamal-proxy/internal/server/acme"
 )
 
 // fakeARIObtainer adds ACME Renewal Information support to fakeObtainer.
@@ -600,4 +603,81 @@ func TestCertRenewer_DirectorySwitchDropsARIReplaces(t *testing.T) {
 	require.Len(t, calls, 1)
 	assert.Empty(t, calls[0].ReplacesCertID,
 		"a replaces identifier from another CA leads the target CA to reject the order (RFC 9773)")
+}
+
+// fakeDirectoryObtainer records which directory each pinned order was placed
+// at, as managerObtainer does in production.
+type fakeDirectoryObtainer struct {
+	*fakeObtainer
+	mu          sync.Mutex
+	directories []string
+}
+
+func (f *fakeDirectoryObtainer) ObtainAt(directory string, request certificate.ObtainRequest) (*certificate.Resource, error) {
+	f.mu.Lock()
+	f.directories = append(f.directories, directory)
+	f.mu.Unlock()
+	return f.Obtain(request)
+}
+
+func TestCertRenewer_UnresolvedOwnerRenewsAtRecordedDirectory(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	// A wildcard certificate recorded at production, due for renewal. Its only
+	// covered member belongs to a run-level service, so it mismatches the
+	// cover and goes pending (getting a certificate of its own) — leaving the
+	// wildcard's owner unresolvable. The order must still be pinned to the
+	// recorded directory, not fall back to the run-level one.
+	adoptTestCert(t, manager, []string{"*.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+	certID := manager.certIDForDomain("*.example.com")
+	manager.certificates[certID].Directory = LetsEncryptProduction
+
+	require.NoError(t, manager.RegisterDomain("member.example.com", "plain-svc"))
+	_, pending := manager.pendingDomains["member.example.com"]
+	require.True(t, pending, "fixture: the member must be pending so the wildcard has no resolvable owner")
+
+	obtainer := &fakeDirectoryObtainer{fakeObtainer: successfulObtainer(t)}
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	require.Len(t, obtainer.Calls(), 1)
+	assert.Equal(t, []string{LetsEncryptProduction}, obtainer.directories,
+		"the order must be pinned to the certificate's recorded directory")
+	renewed := manager.certificates[manager.certIDForDomain("*.example.com")]
+	require.NotNil(t, renewed)
+	assert.Equal(t, LetsEncryptProduction, renewed.Directory,
+		"the replacement must record the directory that actually issued it")
+}
+
+func TestCertRenewer_ARIMarkerSurvivesAFailedFirstPartition(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.selection.Zones = map[string]acmeconfig.ProviderName{
+		"a.test": "cloudflare",
+		"b.test": "route53",
+	}
+
+	manager.SetDynamicDomains("service1", []string{"x.a.test", "y.b.test"})
+	adoptTestCert(t, manager, []string{"x.a.test", "y.b.test"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	// Two same-directory provider partitions; the first order fails at the
+	// CA. The marker was not consumed, so the second order must carry it.
+	failed := false
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		if !failed {
+			failed = true
+			return nil, errors.New("boom")
+		}
+		return testCertResource(t, request.Domains, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)), nil
+	}}
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 2)
+	assert.NotEmpty(t, calls[0].ReplacesCertID)
+	assert.NotEmpty(t, calls[1].ReplacesCertID,
+		"an order the CA refused leaves the ARI marker for the next same-directory partition")
 }
