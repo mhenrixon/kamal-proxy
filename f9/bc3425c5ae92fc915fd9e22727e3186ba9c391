@@ -1,0 +1,77 @@
+internal/server/cert_store_restore.go
+  s_0c1aa74f31faea::t_745ea482916898 97-105
+internal/server/cert_store_export.go
+  s_0c1aa74f31faea::t_c6c3e2cb41b0c0 33-41
+  s_0c1aa74f31faea::t_a087d25ff85f44 212-215
+internal/server/san_cert_issuance.go
+  s_0c1aa74f31faea::t_9bdf49cb2291ce 29
+internal/server/san_cert_zones.go
+  s_0c1aa74f31faea::t_d3b31aa924c38b 161-162,167-175,179,191-194,196,198
+  s_0c1aa74f31faea::t_83ea321a3bcd78 24-52,57-60,69,71,75-76,79,81,84,89,93,96-98,104-105
+internal/server/san_cert_directories_test.go
+  s_0c1aa74f31faea::t_fc61407b248372 246-271
+  s_0c1aa74f31faea::t_ac025c0d3ee498 52-53
+  s_0c1aa74f31faea::t_52f47de71d47e0 217-245
+  s_0c1aa74f31faea::t_d2000bd0d705d0 6,8,10
+  s_0c1aa74f31faea::t_c118a258b6dd08 38-40,42
+  s_0c1aa74f31faea::t_80d2c22af43696 4
+  s_0c1aa74f31faea::t_ca18d7263389f2 122-216
+  s_0c1aa74f31faea::t_0863d5ad43764d 5
+  s_0c1aa74f31faea::t_afc16256b3b18f 1-3,7,9,11-37,41,43-51,54-88,91-121
+  s_0c1aa74f31faea::t_71e4e599d81e9b 89-90
+internal/server/san_cert_manager.go
+  s_0c1aa74f31faea::t_b4278bad10193b 170-174
+  s_0c1aa74f31faea::t_99952a63c55a9e 222-225
+  s_0c1aa74f31faea::t_eb68f8e67ffa0a 643
+  s_0c1aa74f31faea::t_9055252ef8a478 131-133
+  s_0c1aa74f31faea::t_9caacfed7b2c4e 216-221
+  s_0c1aa74f31faea::t_3cc3821176d5f2 766-767
+  s_0c1aa74f31faea::t_e0aec9db1335f4 271
+  s_0c1aa74f31faea::t_72a2a0e7b042cf 145-153
+  s_0c1aa74f31faea::t_942a12b233f7ea 308
+  s_0c1aa74f31faea::t_02773a7a39f016 362
+  s_0c1aa74f31faea::t_075d2d3a99c897 511-515,524
+  s_0c1aa74f31faea::t_433aece11c0c5f 798,803-804,806,811
+internal/server/domain_renewal_test.go
+  s_0c1aa74f31faea::t_e7f6ebec001825 505-548
+internal/server/service_options_validation.go
+  s_0c1aa74f31faea::t_3c630bb14eba99 48-64
+internal/server/service.go
+  s_0c1aa74f31faea::t_aa16cb06d254a0 322-325
+  s_0c1aa74f31faea::t_6ec90a9f4830e0 781-783
+internal/server/service_test.go
+  s_0c1aa74f31faea::t_19fdf81168b1ab 614-640
+internal/server/dynamic_domains.go
+  s_0c1aa74f31faea::t_1692622ebb0cf1 559-560,562-567
+internal/server/domain_renewal.go
+  s_0c1aa74f31faea::t_7f6e0816be45e8 151-154
+  s_0c1aa74f31faea::t_d1e18c6aa3a65f 162-176
+internal/server/cert_store_archive.go
+  s_0c1aa74f31faea::t_51d1a319d21329 379-380,383-385,388-400,402,405,407,413,420,422
+  s_0c1aa74f31faea::t_184f43f730be42 114-117
+  s_0c1aa74f31faea::t_32e4342ad92375 275-282
+  s_0c1aa74f31faea::t_38ddbcff98934b 331
+internal/server/san_cert_directories.go
+  s_0c1aa74f31faea::t_3b5e3e1ecf0c5e 1-263
+  s_0c1aa74f31faea::t_965d5d17509562 264-334
+internal/server/tls_on_demand_gate_test.go
+  s_0c1aa74f31faea::t_d33b64ebb4ecf0 104
+internal/server/cert_store_restore_test.go
+  s_0c1aa74f31faea::t_573b4c12bd2aac 659-694
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f9bc3425c5ae92fc915fd9e22727e3186ba9c391",
+  "prompts": {},
+  "sessions": {
+    "s_0c1aa74f31faea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce428264-8ca7-44e0-986c-9f8f6361689b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
