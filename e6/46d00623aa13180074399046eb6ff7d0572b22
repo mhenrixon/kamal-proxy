@@ -1,0 +1,38 @@
+internal/server/dynamic_domains.go
+  s_0c1aa74f31faea::t_e43f6bb799ac43 559-565
+internal/server/san_cert_issuance.go
+  s_0c1aa74f31faea::t_517041173f4e89 29-38
+internal/server/san_cert_directories.go
+  s_0c1aa74f31faea::t_8b460957594e23 359-362
+internal/server/domain_renewal.go
+  s_0c1aa74f31faea::t_3fa58d79c83d8f 316-321,324,328,330,334-342,345,348,351
+  s_0c1aa74f31faea::t_bbdd1a1160b9ca 280,285,289-297
+  s_0c1aa74f31faea::t_23d61cd45a3566 359
+  s_0c1aa74f31faea::t_51d3ef2ae0051b 44-52
+internal/server/domain_renewal_test.go
+  s_0c1aa74f31faea::t_67c67fa081a363 607-626,631-635,637-683
+  s_0c1aa74f31faea::t_11376f1550816b 6,14-15
+  s_0c1aa74f31faea::t_c6881988f673da 627-630,636
+internal/server/san_cert_manager.go
+  s_0c1aa74f31faea::t_4d3b770eaad605 645-651
+  s_0c1aa74f31faea::t_f87c0aeb193604 673
+internal/server/cert_store_export_test.go
+  s_0c1aa74f31faea::t_33cea87f70c8de 13
+  s_0c1aa74f31faea::t_aa8956f1dcf736 478-486,488-508
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e646d00623aa13180074399046eb6ff7d0572b22",
+  "prompts": {},
+  "sessions": {
+    "s_0c1aa74f31faea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce428264-8ca7-44e0-986c-9f8f6361689b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
