@@ -94,6 +94,15 @@ func RestoreCertificateStore(opts CertStoreRestoreOptions) (CertsRestoreSummary,
 		summary.AccountKeyRestored = true
 	}
 
+	for _, name := range slices.Sorted(maps.Keys(archive.extraAccountKeys)) {
+		if err := os.MkdirAll(opts.Paths.CertsPath, 0700); err != nil {
+			return summary, fmt.Errorf("failed to create the certificate directory: %w", err)
+		}
+		if err := writeFileStaged(filepath.Join(opts.Paths.CertsPath, name), archive.extraAccountKeys[name]); err != nil {
+			return summary, fmt.Errorf("failed to restore the ACME account key %s: %w", name, err)
+		}
+	}
+
 	if archive.dynamicDomains != nil {
 		if err := writeFileStaged(opts.Paths.DynamicDomainsStatePath, archive.dynamicDomains); err != nil {
 			return summary, fmt.Errorf("failed to restore the dynamic domains state: %w", err)

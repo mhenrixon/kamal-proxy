@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	acmeconfig "github.com/basecamp/kamal-proxy/internal/server/acme"
 )
 
 // fakeARIObtainer adds ACME Renewal Information support to fakeObtainer.
@@ -501,4 +504,180 @@ func TestCertRenewer_QuarantinesCulpritsOnFailure(t *testing.T) {
 	// The certificate is untouched and keeps serving until a renewal succeeds
 	certs := manager.ManagedCertificates()
 	require.Len(t, certs, 1)
+}
+
+func TestCertRenewer_ReissuesImmediatelyWhenDirectoryChanges(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+
+	// A fresh certificate, nowhere near its renewal window — but the service
+	// has since flipped to a different ACME directory.
+	adoptTestCert(t, manager, []string{"tenant.example.com"},
+		time.Now().Add(-24*time.Hour), time.Now().Add(89*24*time.Hour))
+	manager.SetServiceDirectory("service1", LetsEncryptProduction)
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	require.Len(t, obtainer.Calls(), 1, "a directory switch must re-issue on the next reconcile")
+
+	// The replacement records the new directory, so the next reconcile is quiet.
+	certs := manager.ManagedCertificates()
+	require.Len(t, certs, 1)
+	assert.Equal(t, LetsEncryptProduction, certs[0].Directory)
+
+	renewer.reconcile()
+	assert.Len(t, obtainer.Calls(), 1)
+}
+
+func TestCertRenewer_DirectoryChanged(t *testing.T) {
+	manager := testSANCertManager(t)
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: successfulObtainer(t)})
+
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+
+	legacy := &ManagedCert{Domains: []string{"tenant.example.com"}}
+	assert.False(t, renewer.directoryChanged(legacy),
+		"an empty recorded directory reads as the run-level one")
+
+	manager.SetServiceDirectory("service1", LetsEncryptProduction)
+	assert.True(t, renewer.directoryChanged(legacy))
+
+	orphan := &ManagedCert{Domains: []string{"gone.example.net"}, Directory: LetsEncryptProduction}
+	assert.False(t, renewer.directoryChanged(orphan),
+		"a certificate with no resolvable owner keeps its recorded directory")
+}
+
+func TestCertRenewer_SplitsMixedDirectoryCertificateAtRenewal(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	manager.SetDynamicDomains("plain-svc", []string{"plain.example.net"})
+	manager.SetDynamicDomains("staged-svc", []string{"staged.example.com"})
+
+	// A legacy certificate spanning both services, issued at the run-level
+	// directory before the staged service flipped.
+	adoptTestCert(t, manager, []string{"plain.example.net", "staged.example.com"},
+		time.Now().Add(-24*time.Hour), time.Now().Add(89*24*time.Hour))
+	manager.SetServiceDirectory("staged-svc", LetsEncryptProduction)
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 2, "a mixed-directory certificate must split into one order per directory")
+	assert.Equal(t, []string{"plain.example.net"}, calls[0].Domains)
+	assert.Equal(t, []string{"staged.example.com"}, calls[1].Domains)
+
+	// The ARI marker rides the order staying at the issuing CA; the switched
+	// partition sends none — the old identifier means nothing to the new CA.
+	assert.NotEmpty(t, calls[0].ReplacesCertID)
+	assert.Empty(t, calls[1].ReplacesCertID)
+
+	// Each replacement records its owner's directory, and the mixed
+	// certificate is gone.
+	plainCert := manager.certificates[manager.certIDForDomain("plain.example.net")]
+	stagedCert := manager.certificates[manager.certIDForDomain("staged.example.com")]
+	require.NotNil(t, plainCert)
+	require.NotNil(t, stagedCert)
+	assert.Equal(t, manager.config.Directory, manager.normalizeDirectory(plainCert.Directory))
+	assert.Equal(t, LetsEncryptProduction, stagedCert.Directory)
+	assert.Len(t, manager.ManagedCertificates(), 2)
+}
+
+func TestCertRenewer_DirectorySwitchDropsARIReplaces(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+	adoptTestCert(t, manager, []string{"tenant.example.com"},
+		time.Now().Add(-24*time.Hour), time.Now().Add(89*24*time.Hour))
+	manager.SetServiceDirectory("service1", LetsEncryptProduction)
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 1)
+	assert.Empty(t, calls[0].ReplacesCertID,
+		"a replaces identifier from another CA leads the target CA to reject the order (RFC 9773)")
+}
+
+// fakeDirectoryObtainer records which directory each pinned order was placed
+// at, as managerObtainer does in production.
+type fakeDirectoryObtainer struct {
+	*fakeObtainer
+	mu          sync.Mutex
+	directories []string
+}
+
+func (f *fakeDirectoryObtainer) ObtainAt(directory string, request certificate.ObtainRequest) (*certificate.Resource, error) {
+	f.mu.Lock()
+	f.directories = append(f.directories, directory)
+	f.mu.Unlock()
+	return f.Obtain(request)
+}
+
+func TestCertRenewer_UnresolvedOwnerRenewsAtRecordedDirectory(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	// A wildcard certificate recorded at production, due for renewal. Its only
+	// covered member belongs to a run-level service, so it mismatches the
+	// cover and goes pending (getting a certificate of its own) — leaving the
+	// wildcard's owner unresolvable. The order must still be pinned to the
+	// recorded directory, not fall back to the run-level one.
+	adoptTestCert(t, manager, []string{"*.example.com"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+	certID := manager.certIDForDomain("*.example.com")
+	manager.certificates[certID].Directory = LetsEncryptProduction
+
+	require.NoError(t, manager.RegisterDomain("member.example.com", "plain-svc"))
+	_, pending := manager.pendingDomains["member.example.com"]
+	require.True(t, pending, "fixture: the member must be pending so the wildcard has no resolvable owner")
+
+	obtainer := &fakeDirectoryObtainer{fakeObtainer: successfulObtainer(t)}
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	require.Len(t, obtainer.Calls(), 1)
+	assert.Equal(t, []string{LetsEncryptProduction}, obtainer.directories,
+		"the order must be pinned to the certificate's recorded directory")
+	renewed := manager.certificates[manager.certIDForDomain("*.example.com")]
+	require.NotNil(t, renewed)
+	assert.Equal(t, LetsEncryptProduction, renewed.Directory,
+		"the replacement must record the directory that actually issued it")
+}
+
+func TestCertRenewer_ARIMarkerSurvivesAFailedFirstPartition(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.selection.Zones = map[string]acmeconfig.ProviderName{
+		"a.test": "cloudflare",
+		"b.test": "route53",
+	}
+
+	manager.SetDynamicDomains("service1", []string{"x.a.test", "y.b.test"})
+	adoptTestCert(t, manager, []string{"x.a.test", "y.b.test"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	// Two same-directory provider partitions; the first order fails at the
+	// CA. The marker was not consumed, so the second order must carry it.
+	failed := false
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		if !failed {
+			failed = true
+			return nil, errors.New("boom")
+		}
+		return testCertResource(t, request.Domains, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)), nil
+	}}
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 2)
+	assert.NotEmpty(t, calls[0].ReplacesCertID)
+	assert.NotEmpty(t, calls[1].ReplacesCertID,
+		"an order the CA refused leaves the ARI marker for the next same-directory partition")
 }

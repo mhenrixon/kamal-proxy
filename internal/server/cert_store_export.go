@@ -30,6 +30,34 @@ const (
 	acmeUserFile = "acme_user.json"
 )
 
+// isExtraAccountKeyFile matches the per-directory ACME account files that sit
+// beside the primary acme_user.json when services use their own ACME
+// directory (--tls-staging). The set is closed to exactly the names
+// accountFileForDirectory generates — acme_user_staging.json or an
+// 8-character lowercase hex hash — so the archive's entry set stays
+// enumerable and arbitrary acme_user_*.json files are not silently adopted
+// as ACME identities.
+func isExtraAccountKeyFile(name string) bool {
+	if name == "acme_user_staging.json" {
+		return true
+	}
+
+	hash, ok := strings.CutPrefix(name, "acme_user_")
+	if !ok {
+		return false
+	}
+	hash, ok = strings.CutSuffix(hash, ".json")
+	if !ok || len(hash) != 8 {
+		return false
+	}
+	for _, c := range hash {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // ErrCertStoreEmpty reports an export attempt against a store with nothing in
 // it. Failing loudly beats a cron job faithfully archiving nothing.
 var ErrCertStoreEmpty = errors.New("certificate store is empty; nothing to export")
@@ -108,7 +136,13 @@ func ExportCertificateStore(paths CertStorePaths, outputPath string) (CertsExpor
 	// The account key alone is not a certificate: a fresh estate that has only
 	// registered an account still gets its backup.
 	certsWithoutState := slices.ContainsFunc(certFiles, func(file archiveFile) bool {
-		return file.name != archiveAccountKeyEntry
+		if file.name == archiveAccountKeyEntry {
+			return false
+		}
+		// Per-directory account keys are estate metadata like the primary
+		// one: an account-only store (registered but nothing issued yet)
+		// still gets its backup.
+		return !isExtraAccountKeyFile(strings.TrimPrefix(file.name, archiveCertsPrefix))
 	})
 	if !hasState && certsWithoutState {
 		return summary, fmt.Errorf("the certificate store has certificates but no state file at %s; refusing to export an unrestorable archive", paths.ACMEStatePath)
@@ -198,6 +232,10 @@ func collectCertsEntries(certsPath string, state managerState, summary *CertsExp
 		switch {
 		case !entry.IsDir() && name == acmeUserFile:
 			if file, ok := collectOptionalJSON(filepath.Join(certsPath, name), archiveAccountKeyEntry, summary); ok {
+				files = append(files, file)
+			}
+		case !entry.IsDir() && isExtraAccountKeyFile(name):
+			if file, ok := collectOptionalJSON(filepath.Join(certsPath, name), archiveCertsPrefix+name, summary); ok {
 				files = append(files, file)
 			}
 		case entry.IsDir() && name == legacyHTTP01CacheDir:

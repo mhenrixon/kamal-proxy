@@ -319,6 +319,10 @@ func (so ServiceOptions) Validate() error {
 		return err
 	}
 
+	if err := so.validateACMEDirectory(); err != nil {
+		return err
+	}
+
 	if err := so.validateDynamicRedirects(); err != nil {
 		return err
 	}
@@ -755,6 +759,15 @@ func (s *Service) servesRootPath() bool {
 }
 
 func (s *Service) createCertManager(options ServiceOptions) (CertManager, error) {
+	// A service that stops using the shared SAN manager on this deploy —
+	// static certificate, on-demand URL, or TLS disabled — must not leave a
+	// stale directory override behind: retained certificates would keep
+	// renewing against the old (possibly staging) identity. The SAN branch
+	// below re-records the current override.
+	if s.sanCertManager != nil {
+		s.sanCertManager.SetServiceDirectory(s.name, "")
+	}
+
 	if !options.TLSEnabled {
 		return nil, nil
 	}
@@ -774,6 +787,9 @@ func (s *Service) createCertManager(options ServiceOptions) (CertManager, error)
 	// Use the shared SAN certificate manager when available. An explicit
 	// on-demand URL is a per-service opt-in, so it wins over the shared manager.
 	if s.sanCertManager != nil && options.TLSOnDemandURL == "" {
+		// The per-service directory (--tls-staging) must be on record before
+		// any host is registered, so batching and issuance see it.
+		s.sanCertManager.SetServiceDirectory(s.name, options.ACMEDirectory)
 		for _, host := range options.Hosts {
 			if host == "" {
 				// Catch-all marker, not a provisionable domain

@@ -101,7 +101,7 @@ func BenchmarkRouter_GetCertificate(b *testing.B) {
 		Certificate: &tls.Certificate{},
 	}
 	manager.domainToCert["app.example.com"] = "app"
-	manager.registeredDomains["app.example.com"] = struct{}{}
+	manager.registeredDomains["app.example.com"] = "app"
 	router.SetSANCertManager(manager)
 
 	router.services.Set(&Service{

@@ -41,6 +41,15 @@ type renewalInfoGetter interface {
 	GetRenewalInfo(request certificate.RenewalInfoRequest) (*certificate.RenewalInfoResponse, error)
 }
 
+// directoryObtainer is implemented by obtainers that can pin an order to a
+// specific ACME directory. The renewer prefers it when available, so a
+// partition whose owners are temporarily unresolvable still orders under the
+// certificate's recorded identity instead of the resolver's run-level
+// fallback.
+type directoryObtainer interface {
+	ObtainAt(directory string, request certificate.ObtainRequest) (*certificate.Resource, error)
+}
+
 type certRenewerConfig struct {
 	Obtainer certObtainer
 
@@ -148,12 +157,28 @@ func (r *certRenewer) reconcile() {
 			continue
 		}
 
-		if r.shouldRenew(cert) {
+		// The directory check comes first: a switched certificate must be
+		// replaced regardless of what ARI (queried at a directory that may no
+		// longer be the right one) would say about its timing.
+		if r.directoryChanged(cert) || r.shouldRenew(cert) {
 			r.renew(cert)
 		}
 	}
 
 	r.reportMetrics()
+}
+
+// directoryChanged reports whether any of the certificate's domains is owned
+// by a service that wants a different ACME directory than the one that issued
+// it. After a --tls-staging flip the certificate is replaced on the next
+// reconcile rather than at the renewal window: a staging certificate is not
+// browser-trusted, and a production one spends rate limits the operator opted
+// out of. The renewal then splits along directory boundaries, so each
+// replacement is ordered under its owner's identity. A certificate with no
+// resolvable owner keeps its recorded directory — services may simply not
+// have re-attached yet after a restart.
+func (r *certRenewer) directoryChanged(cert *ManagedCert) bool {
+	return r.manager.certDirectoryMismatched(cert)
 }
 
 func (r *certRenewer) shouldRenew(cert *ManagedCert) bool {
@@ -243,23 +268,38 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	}
 
 	// A certificate issued before zone mappings existed can span DNS
-	// providers; its renewal splits along provider boundaries, one order per
-	// partition. A certificate can only be "replaced" once, so the ARI marker
-	// rides the first order.
+	// providers, and a legacy certificate can span services whose directories
+	// have since diverged; its renewal splits along both boundaries, one
+	// order per partition. A certificate can only be "replaced" once, and the
+	// marker only means something to the CA that issued the predecessor (RFC
+	// 9773 tells a CA to reject a replaces identifier it never issued), so
+	// the ARI marker rides the first order that stays at the recorded
+	// directory — a full directory switch sends no marker at all.
+	recorded := r.manager.normalizeDirectory(cert.Directory)
 	renewedAll := true
+	ariConsumed := false
 	newIdentifiers := []string{}
-	for i, partition := range r.manager.splitByProviderZone(domains) {
-		partitionReplaces := ""
-		if i == 0 {
-			partitionReplaces = replaces
-		}
+	for _, directoryPart := range r.manager.splitByDesiredDirectory(cert, domains) {
+		for _, partition := range r.manager.splitByProviderZone(directoryPart.domains) {
+			partitionReplaces := ""
+			if !ariConsumed && directoryPart.directory == recorded {
+				partitionReplaces = replaces
+			}
 
-		renewed, ok := r.renewPartition(cert, partition, partitionReplaces)
-		if !ok {
-			renewedAll = false
-			continue
+			renewed, adopted, ordered := r.renewPartition(cert, partition, partitionReplaces, directoryPart.directory)
+			// The marker is spent once the CA accepted an order carrying it —
+			// adoption can still fail locally, but re-sending an identifier
+			// the CA already honored would have the next order rejected. An
+			// order the CA refused leaves the marker for a later partition.
+			if partitionReplaces != "" && ordered {
+				ariConsumed = true
+			}
+			if !adopted {
+				renewedAll = false
+				continue
+			}
+			newIdentifiers = append(newIdentifiers, renewed.Identifier)
 		}
-		newIdentifiers = append(newIdentifiers, renewed.Identifier)
 	}
 
 	// The old certificate goes only when every partition has a successor: a
@@ -273,32 +313,42 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	}
 }
 
-// renewPartition runs one renewal order and adopts its certificate. It
-// reports success; failures quarantine or log exactly as a whole-certificate
-// renewal did.
-func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replaces string) (*ManagedCert, bool) {
+// renewPartition runs one renewal order at the partition's directory and
+// adopts its certificate. adopted reports end-to-end success; ordered reports
+// that the CA accepted the order (which spends an ARI replaces marker even if
+// adoption then fails locally). Failures quarantine or log exactly as a
+// whole-certificate renewal did.
+func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replaces, directory string) (renewed *ManagedCert, adopted, ordered bool) {
 	if r.config.Bucket != nil {
 		if err := r.config.Bucket.Take(r.ctx); err != nil {
-			return nil, false
+			return nil, false, false
 		}
 	}
 
-	slog.Info("Renewing certificate", "certificate", cert.Identifier, "domains", domains)
+	slog.Info("Renewing certificate", "certificate", cert.Identifier, "domains", domains, "directory", directory)
 
-	resource, err := r.config.Obtainer.Obtain(certificate.ObtainRequest{
+	request := certificate.ObtainRequest{
 		Domains:        domains,
 		Bundle:         true,
 		ReplacesCertID: replaces,
-	})
-	if err != nil {
-		r.handleRenewalFailure(cert, domains, err)
-		return nil, false
 	}
 
-	renewed, err := r.manager.adoptCertificate(resource, domains)
+	var resource *certificate.Resource
+	var err error
+	if pinned, ok := r.config.Obtainer.(directoryObtainer); ok {
+		resource, err = pinned.ObtainAt(directory, request)
+	} else {
+		resource, err = r.config.Obtainer.Obtain(request)
+	}
+	if err != nil {
+		r.handleRenewalFailure(cert, domains, err)
+		return nil, false, false
+	}
+
+	renewed, err = r.manager.adoptCertificateAt(resource, domains, directory)
 	if err != nil {
 		slog.Error("Failed to adopt renewed certificate", "certificate", cert.Identifier, "error", err)
-		return nil, false
+		return nil, false, true
 	}
 
 	for _, domain := range domains {
@@ -306,7 +356,7 @@ func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replac
 		metrics.Tracker.IncCertificateRenewals(domain, true)
 	}
 
-	return renewed, true
+	return renewed, true, true
 }
 
 // retireCertificate disposes of a certificate with no renewable domains. A

@@ -128,8 +128,9 @@ type SANCertManager struct {
 	// Pending domains waiting to be batched: domain -> service name
 	pendingDomains map[string]string
 
-	// Deploy-registered hosts allowed to provision synchronously
-	registeredDomains map[string]struct{}
+	// Deploy-registered hosts allowed to provision synchronously:
+	// domain -> service name
+	registeredDomains map[string]string
 
 	// Runtime-learned domains from tls-domains-source: domain -> service name
 	dynamicDomains map[string]string
@@ -140,6 +141,15 @@ type SANCertManager struct {
 	// guard filters handshake-driven batches through preflight and quarantine
 	// (see san_cert_batch_guard.go); zero value means unguarded.
 	guard issuanceGuard
+
+	// Per-service ACME directory overrides and the lazily built client
+	// bundles for non-default directories; see san_cert_directories.go.
+	serviceDirectories map[string]string
+	directoryClients   map[string]*directoryClients
+
+	// directoryInitMu single-flights lazy bundle construction, which does
+	// network I/O and so cannot ride m.mu.
+	directoryInitMu sync.Mutex
 
 	// Currently provisioning: rootDomain -> done channel
 	provisioning map[string]chan struct{}
@@ -157,6 +167,11 @@ type ManagedCert struct {
 	Domains     []string         `json:"domains"`
 	NotAfter    time.Time        `json:"not_after"`
 	Certificate *tls.Certificate `json:"-"` // Not persisted, loaded from files
+
+	// Directory is the ACME directory that issued this certificate. Empty in
+	// state written before per-service directories existed, which reads as
+	// the run-level directory (normalizeDirectory).
+	Directory string `json:"directory,omitempty"`
 }
 
 // http01Challenge is one presented challenge: the key authorization to serve,
@@ -198,14 +213,16 @@ func NewSANCertManager(config SANCertManagerConfig) (*SANCertManager, error) {
 			Default: config.DNSProvider,
 			Zones:   config.DNSProviderZones,
 		},
-		bucket:            newTokenBucket(DefaultIssuanceBurst, DefaultIssuanceRefillInterval),
-		certificates:      make(map[string]*ManagedCert),
-		domainToCert:      make(map[string]string),
-		pendingDomains:    make(map[string]string),
-		registeredDomains: make(map[string]struct{}),
-		dynamicDomains:    make(map[string]string),
-		provisioning:      make(map[string]chan struct{}),
-		challengeTokens:   make(map[string]http01Challenge),
+		bucket:             newTokenBucket(DefaultIssuanceBurst, DefaultIssuanceRefillInterval),
+		certificates:       make(map[string]*ManagedCert),
+		domainToCert:       make(map[string]string),
+		pendingDomains:     make(map[string]string),
+		registeredDomains:  make(map[string]string),
+		dynamicDomains:     make(map[string]string),
+		serviceDirectories: make(map[string]string),
+		directoryClients:   make(map[string]*directoryClients),
+		provisioning:       make(map[string]chan struct{}),
+		challengeTokens:    make(map[string]http01Challenge),
 	}
 
 	// Ensure cache directory exists
@@ -251,7 +268,7 @@ func (m *SANCertManager) initializeClients() error {
 	defer m.mu.Unlock()
 
 	// Load or create ACME user
-	user, err := m.loadOrCreateUser()
+	user, err := m.loadOrCreateUser(acmeUserFile)
 	if err != nil {
 		return fmt.Errorf("failed to setup ACME user: %w", err)
 	}
@@ -288,7 +305,7 @@ func (m *SANCertManager) initializeClients() error {
 		user.Registration = reg
 
 		// Save user with registration
-		if err := m.saveUser(); err != nil {
+		if err := m.saveUser(user, acmeUserFile); err != nil {
 			slog.Warn("Failed to save ACME user", "error", err)
 		}
 	}
@@ -342,12 +359,16 @@ func (m *SANCertManager) RegisterDomain(domain string, service string) error {
 		return ErrManagerNotReady
 	}
 
-	m.registeredDomains[domain] = struct{}{}
+	m.registeredDomains[domain] = service
 
-	// Check if domain already has a certificate, its own or a wildcard's
+	// Check if domain already has a certificate, its own or a wildcard's. A
+	// covering certificate from a DIFFERENT directory (a staging host under a
+	// production wildcard, say) does not satisfy the registration: the domain
+	// stays pending so its own service's identity issues for it.
 	if certID := m.certIDCovering(domain); certID != "" {
 		cert := m.certificates[certID]
-		if cert != nil && time.Until(cert.NotAfter) > 24*time.Hour {
+		if cert != nil && time.Until(cert.NotAfter) > 24*time.Hour &&
+			m.certMatchesServiceDirectoryLocked(cert, service) {
 			slog.Debug("Domain already has valid certificate",
 				"domain", domain,
 				"certificate", certID,
@@ -359,6 +380,9 @@ func (m *SANCertManager) RegisterDomain(domain string, service string) error {
 	// Check if domain is covered by an existing valid SAN certificate
 	for _, cert := range m.certificates {
 		if time.Until(cert.NotAfter) <= 24*time.Hour {
+			continue
+		}
+		if !m.certMatchesServiceDirectoryLocked(cert, service) {
 			continue
 		}
 		for _, d := range cert.Domains {
@@ -413,8 +437,17 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 	if certID := m.certIDCovering(domain); certID != "" {
 		cert = m.certificates[certID]
 	}
-	_, isRegistered := m.registeredDomains[domain]
+	owner, isRegistered := m.registeredDomains[domain]
 	dynamicService, isDynamic := m.dynamicDomains[domain]
+	if !isRegistered {
+		owner = dynamicService
+	}
+	// A domain covered only by another directory's certificate (a staging
+	// host under a production wildcard, say) needs one of its own, exactly as
+	// if the covering certificate were expiring: registered domains
+	// reprovision on the handshake, dynamic ones through the issuer.
+	directoryMismatch := cert != nil && (isRegistered || isDynamic) &&
+		!m.certMatchesServiceDirectoryLocked(cert, owner)
 	m.mu.RUnlock()
 
 	if !ready {
@@ -423,15 +456,22 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 
 	if cert != nil && cert.Certificate != nil {
 		// Return existing valid certificate
-		if time.Until(cert.NotAfter) > 24*time.Hour {
+		if time.Until(cert.NotAfter) > 24*time.Hour && !directoryMismatch {
 			return cert.Certificate, nil
 		}
 
 		if isRegistered {
-			slog.Info("Certificate expiring soon, will reprovision",
-				"domain", domain,
-				"expiresAt", cert.NotAfter,
-			)
+			if directoryMismatch {
+				slog.Info("Covering certificate is from another ACME directory, will reprovision",
+					"domain", domain,
+					"certificate_directory", cert.Directory,
+				)
+			} else {
+				slog.Info("Certificate expiring soon, will reprovision",
+					"domain", domain,
+					"expiresAt", cert.NotAfter,
+				)
+			}
 		} else if time.Until(cert.NotAfter) > 0 {
 			// Dynamic and evicted domains keep serving a still-valid
 			// certificate; the renewal loop is responsible for rotating it.
@@ -491,13 +531,20 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 
 	// Collect ALL pending domains (up to MaxSANsPerCertificate). Quarantined
 	// domains do not consume batch slots: with more quarantined hosts than a
-	// batch holds, the eligible ones must still fit.
+	// batch holds, the eligible ones must still fit. One order has exactly one
+	// ACME identity, so only batch-mates sharing the requested domain's
+	// directory join; the rest keep their pending slot for a batch of their
+	// own.
+	batchDirectory := m.directoryForDomainLocked(domain)
 	candidates := []string{domain}
 	for pendingDomain := range m.pendingDomains {
 		if pendingDomain == domain {
 			continue
 		}
 		if m.guard.quarantine != nil && m.guard.quarantine.IsQuarantined(pendingDomain) {
+			continue
+		}
+		if m.directoryForDomainLocked(pendingDomain) != batchDirectory {
 			continue
 		}
 		candidates = append(candidates, pendingDomain)
@@ -595,6 +642,13 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 // maps, and persists it. sortedDomains must be the sorted identifier set the
 // certificate was ordered for.
 func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sortedDomains []string) (*ManagedCert, error) {
+	return m.adoptCertificateAt(resource, sortedDomains, m.directoryForDomains(sortedDomains))
+}
+
+// adoptCertificateAt is adoptCertificate with the recorded directory pinned
+// by the caller — used when the order itself was pinned, so the stamp always
+// names the directory that actually issued.
+func (m *SANCertManager) adoptCertificateAt(resource *certificate.Resource, sortedDomains []string, directory string) (*ManagedCert, error) {
 	// Parse the certificate
 	tlsCert, err := tls.X509KeyPair(resource.Certificate, resource.PrivateKey)
 	if err != nil {
@@ -616,6 +670,7 @@ func (m *SANCertManager) adoptCertificate(resource *certificate.Resource, sorted
 		Domains:     sortedDomains,
 		NotAfter:    notAfter,
 		Certificate: &tlsCert,
+		Directory:   directory,
 	}
 
 	// The maps are published and the files written under one hold of the
@@ -738,8 +793,8 @@ func (m *SANCertManager) GetStats() map[string]interface{} {
 
 // Persistence methods
 
-func (m *SANCertManager) loadOrCreateUser() (*acmeUser, error) {
-	userPath := filepath.Join(m.config.CachePath, acmeUserFile)
+func (m *SANCertManager) loadOrCreateUser(filename string) (*acmeUser, error) {
+	userPath := filepath.Join(m.config.CachePath, filename)
 
 	data, err := os.ReadFile(userPath)
 	if err == nil {
@@ -770,20 +825,20 @@ func (m *SANCertManager) loadOrCreateUser() (*acmeUser, error) {
 	return user, nil
 }
 
-func (m *SANCertManager) saveUser() error {
+func (m *SANCertManager) saveUser(user *acmeUser, filename string) error {
 	if m.config.CachePath == "" {
 		return nil
 	}
 
-	keyPEM := certcrypto.PEMEncode(m.user.Key)
-	m.user.KeyPEM = keyPEM
+	keyPEM := certcrypto.PEMEncode(user.Key)
+	user.KeyPEM = keyPEM
 
-	data, err := json.MarshalIndent(m.user, "", "  ")
+	data, err := json.MarshalIndent(user, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	userPath := filepath.Join(m.config.CachePath, acmeUserFile)
+	userPath := filepath.Join(m.config.CachePath, filename)
 	return os.WriteFile(userPath, data, 0600)
 }
 

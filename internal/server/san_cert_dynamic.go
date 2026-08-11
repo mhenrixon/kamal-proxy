@@ -106,7 +106,9 @@ func (m *SANCertManager) HasCertificate(domain string) bool {
 }
 
 // HasValidCertificate reports whether the domain is covered by a loaded
-// certificate that is not due for replacement.
+// certificate that is not due for replacement. A certificate issued by a
+// different directory than the domain's owner wants does not count: it is
+// exactly what the issuer must replace after a --tls-staging flip.
 func (m *SANCertManager) HasValidCertificate(domain string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -117,7 +119,14 @@ func (m *SANCertManager) HasValidCertificate(domain string) bool {
 	}
 
 	cert := m.certificates[certID]
-	return cert != nil && cert.Certificate != nil && time.Until(cert.NotAfter) > 24*time.Hour
+	if cert == nil || cert.Certificate == nil || time.Until(cert.NotAfter) <= 24*time.Hour {
+		return false
+	}
+
+	if service, ok := m.ownerOfLocked(domain); ok && !m.certMatchesServiceDirectoryLocked(cert, service) {
+		return false
+	}
+	return true
 }
 
 // requestDynamicCertificate asks the issuer (when wired) to provision a
