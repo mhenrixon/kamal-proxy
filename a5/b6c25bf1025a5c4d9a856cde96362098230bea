@@ -1,0 +1,48 @@
+internal/server/domain_renewal_test.go
+  s_0c1aa74f31faea::t_49d99ed83b85a9 549-603
+internal/server/cert_store_export_test.go
+  s_0c1aa74f31faea::t_49d99ed83b85a9 475-492
+internal/server/cert_store_export.go
+  s_0c1aa74f31faea::t_5925c93a0f8360 33-39,41-58
+  s_0c1aa74f31faea::t_9f313390838fe4 139-145
+internal/server/san_cert_dynamic.go
+  s_0c1aa74f31faea::t_fd636f98621bc7 109-111,122-129
+internal/server/san_cert_manager.go
+  s_0c1aa74f31faea::t_68bf23187b18fa 442-449
+  s_0c1aa74f31faea::t_dc0bdc733c9e5c 464-474
+  s_0c1aa74f31faea::t_acab7853b0cc63 440,450,459
+  s_0c1aa74f31faea::t_1104505e98d9ba 364-367,370-371,385
+internal/server/san_cert_directories.go
+  s_0c1aa74f31faea::t_a3e78fdde85bb8 75-78
+  s_0c1aa74f31faea::t_cf085ec6002021 81
+  s_0c1aa74f31faea::t_e4bc800d96bbfa 178-185,189,195-224,227-238
+  s_0c1aa74f31faea::t_404dd479384cfb 191-192
+  s_0c1aa74f31faea::t_eefc774291a88d 225-226
+  s_0c1aa74f31faea::t_6feffbd28dc1d8 96-141
+  s_0c1aa74f31faea::t_f00bd21e082238 143-148,153-160
+internal/server/domain_renewal.go
+  s_0c1aa74f31faea::t_dfd6cc12e1701a 262-269,271,273-279,281-286
+  s_0c1aa74f31faea::t_2e928a4d7a77a6 162-170,172
+internal/server/service.go
+  s_0c1aa74f31faea::t_72db9be65e9cab 762-770
+internal/server/san_cert_directories_test.go
+  s_0c1aa74f31faea::t_aa2f8062c16639 109,113,115-116,118-158
+  s_0c1aa74f31faea::t_8fa4bbe5ad36ce 310-392
+  s_0c1aa74f31faea::t_ab5268ad101f3e 56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a5b6c25bf1025a5c4d9a856cde96362098230bea",
+  "prompts": {},
+  "sessions": {
+    "s_0c1aa74f31faea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce428264-8ca7-44e0-986c-9f8f6361689b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
