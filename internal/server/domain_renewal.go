@@ -159,19 +159,17 @@ func (r *certRenewer) reconcile() {
 	r.reportMetrics()
 }
 
-// directoryChanged reports whether a certificate was issued by a different
-// ACME directory than its domains' owning service now wants. After a
-// --tls-staging flip the certificate is replaced on the next reconcile rather
-// than at the renewal window: a staging certificate is not browser-trusted,
-// and a production one spends rate limits the operator opted out of. A
-// certificate with no resolvable owner keeps its recorded directory —
-// services may simply not have re-attached yet after a restart.
+// directoryChanged reports whether any of the certificate's domains is owned
+// by a service that wants a different ACME directory than the one that issued
+// it. After a --tls-staging flip the certificate is replaced on the next
+// reconcile rather than at the renewal window: a staging certificate is not
+// browser-trusted, and a production one spends rate limits the operator opted
+// out of. The renewal then splits along directory boundaries, so each
+// replacement is ordered under its owner's identity. A certificate with no
+// resolvable owner keeps its recorded directory — services may simply not
+// have re-attached yet after a restart.
 func (r *certRenewer) directoryChanged(cert *ManagedCert) bool {
-	desired, known := r.manager.desiredDirectoryForCert(cert)
-	if !known {
-		return false
-	}
-	return desired != r.manager.normalizeDirectory(cert.Directory)
+	return r.manager.certDirectoryMismatched(cert)
 }
 
 func (r *certRenewer) shouldRenew(cert *ManagedCert) bool {
@@ -261,23 +259,32 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	}
 
 	// A certificate issued before zone mappings existed can span DNS
-	// providers; its renewal splits along provider boundaries, one order per
-	// partition. A certificate can only be "replaced" once, so the ARI marker
-	// rides the first order.
+	// providers, and a legacy certificate can span services whose directories
+	// have since diverged; its renewal splits along both boundaries, one
+	// order per partition. A certificate can only be "replaced" once, and the
+	// marker only means something to the CA that issued the predecessor (RFC
+	// 9773 tells a CA to reject a replaces identifier it never issued), so
+	// the ARI marker rides the first order that stays at the recorded
+	// directory — a full directory switch sends no marker at all.
+	recorded := r.manager.normalizeDirectory(cert.Directory)
 	renewedAll := true
+	ariAssigned := false
 	newIdentifiers := []string{}
-	for i, partition := range r.manager.splitByProviderZone(domains) {
-		partitionReplaces := ""
-		if i == 0 {
-			partitionReplaces = replaces
-		}
+	for _, directoryPart := range r.manager.splitByDesiredDirectory(cert, domains) {
+		for _, partition := range r.manager.splitByProviderZone(directoryPart.domains) {
+			partitionReplaces := ""
+			if !ariAssigned && directoryPart.directory == recorded {
+				partitionReplaces = replaces
+				ariAssigned = true
+			}
 
-		renewed, ok := r.renewPartition(cert, partition, partitionReplaces)
-		if !ok {
-			renewedAll = false
-			continue
+			renewed, ok := r.renewPartition(cert, partition, partitionReplaces)
+			if !ok {
+				renewedAll = false
+				continue
+			}
+			newIdentifiers = append(newIdentifiers, renewed.Identifier)
 		}
-		newIdentifiers = append(newIdentifiers, renewed.Identifier)
 	}
 
 	// The old certificate goes only when every partition has a successor: a

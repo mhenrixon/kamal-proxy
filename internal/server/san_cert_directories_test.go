@@ -53,6 +53,7 @@ func TestSANCertManager_DirectoryForDomains(t *testing.T) {
 		{"unknown domain falls back to the default", []string{"nobody.example.org"}, manager.config.Directory},
 		{"wildcard resolves through a covered domain", []string{"*.example.com"}, LetsEncryptProduction},
 		{"first resolvable owner decides", []string{"nobody.example.net", "registered.example.com"}, LetsEncryptProduction},
+		{"a concrete owner outranks a wildcard's coverage scan", []string{"*.example.com", "default.example.net"}, manager.config.Directory},
 	}
 
 	for _, tt := range tests {
@@ -105,19 +106,56 @@ func TestSANCertManager_AccountFileForStagingWhenDefaultIsProduction(t *testing.
 	assert.Equal(t, "acme_user_staging.json", manager.accountFileForDirectory(LetsEncryptStaging))
 }
 
-func TestSANCertManager_DesiredDirectoryForCert(t *testing.T) {
+func TestSANCertManager_CertDirectoryMismatched(t *testing.T) {
 	manager := testSANCertManager(t)
 	manager.SetServiceDirectory("staging-svc", LetsEncryptProduction)
 	require.NoError(t, manager.RegisterDomain("app.example.com", "staging-svc"))
+	require.NoError(t, manager.RegisterDomain("plain.example.net", "plain-svc"))
 
-	owned := &ManagedCert{Domains: []string{"app.example.com"}}
-	desired, known := manager.desiredDirectoryForCert(owned)
-	require.True(t, known)
-	assert.Equal(t, LetsEncryptProduction, desired)
+	matching := &ManagedCert{Domains: []string{"app.example.com"}, Directory: LetsEncryptProduction}
+	assert.False(t, manager.certDirectoryMismatched(matching))
 
-	orphan := &ManagedCert{Domains: []string{"gone.example.net"}}
-	_, known = manager.desiredDirectoryForCert(orphan)
-	assert.False(t, known, "a certificate with no resolvable owner must not report a desired directory")
+	legacy := &ManagedCert{Domains: []string{"app.example.com"}}
+	assert.True(t, manager.certDirectoryMismatched(legacy),
+		"an empty recorded directory reads as the run-level one, which this owner has moved away from")
+
+	// A legacy multi-service SAN: the plain domain matches the recorded
+	// directory, but ANY mismatched owner flags the certificate — a single
+	// first-owner answer would let the staged domain ride the wrong identity.
+	mixed := &ManagedCert{Domains: []string{"plain.example.net", "app.example.com"}}
+	assert.True(t, manager.certDirectoryMismatched(mixed))
+
+	orphan := &ManagedCert{Domains: []string{"gone.example.org"}, Directory: LetsEncryptProduction}
+	assert.False(t, manager.certDirectoryMismatched(orphan),
+		"a certificate with no resolvable owner keeps its recorded directory")
+}
+
+func TestSANCertManager_WildcardOwnerConsultsOnlyDomainsTheCertServes(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.SetServiceDirectory("staged-svc", LetsEncryptProduction)
+
+	wildcard := testSelfSignedCert(t, []string{"*.example.com"},
+		time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour))
+	managed := &ManagedCert{
+		Identifier:  "wildcard",
+		Domains:     []string{"*.example.com"},
+		NotAfter:    wildcard.Leaf.NotAfter,
+		Certificate: wildcard,
+	}
+	manager.certificates["wildcard"] = managed
+	manager.domainToCert["*.example.com"] = "wildcard"
+
+	// A member riding the wildcard anchors its directory.
+	require.NoError(t, manager.RegisterDomain("member.example.com", "plain-svc"))
+	assert.False(t, manager.certDirectoryMismatched(managed))
+
+	// A staged host under the same apex goes pending for its own certificate;
+	// it must NOT drag the wildcard onto its directory.
+	require.NoError(t, manager.RegisterDomain("app.example.com", "staged-svc"))
+	_, pending := manager.pendingDomains["app.example.com"]
+	require.True(t, pending)
+	assert.False(t, manager.certDirectoryMismatched(managed),
+		"a pending covered domain must not speak for the wildcard certificate")
 }
 
 func TestSANCertManager_AdoptCertificateStampsDirectory(t *testing.T) {
@@ -268,4 +306,87 @@ func TestRouter_DeployRegistersServiceDirectoryWithSANManager(t *testing.T) {
 		serviceOptions, defaultTargetOptions, defaultDeploymentOptions))
 
 	assert.Equal(t, manager.config.Directory, manager.directoryForService("web"))
+}
+
+func TestSANCertManager_RegisterDomainRejectsCoverageFromAnotherDirectory(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.SetServiceDirectory("staged-svc", LetsEncryptProduction)
+
+	// A valid wildcard issued at the run-level directory covers both hosts.
+	wildcard := testSelfSignedCert(t, []string{"*.example.com"},
+		time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour))
+	manager.certificates["wildcard"] = &ManagedCert{
+		Identifier:  "wildcard",
+		Domains:     []string{"*.example.com"},
+		NotAfter:    wildcard.Leaf.NotAfter,
+		Certificate: wildcard,
+	}
+	manager.domainToCert["*.example.com"] = "wildcard"
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "staged-svc"))
+
+	_, pending := manager.pendingDomains["app.example.com"]
+	assert.True(t, pending, "a covering certificate from another directory must not satisfy the registration")
+	assert.False(t, manager.HasValidCertificate("app.example.com"),
+		"the wrong-directory cover does not count as valid for its owner")
+
+	// A same-directory sibling still takes the fast path.
+	require.NoError(t, manager.RegisterDomain("other.example.com", "plain-svc"))
+	_, pending = manager.pendingDomains["other.example.com"]
+	assert.False(t, pending)
+	assert.True(t, manager.HasValidCertificate("other.example.com"))
+}
+
+func TestRouter_RedeployOffTheSANManagerClearsTheDirectoryOverride(t *testing.T) {
+	router := testRouter(t)
+	manager := testSANCertManager(t)
+	router.SetSANCertManager(manager)
+
+	_, target := testBackend(t, "first", http.StatusOK)
+
+	serviceOptions := defaultServiceOptions
+	serviceOptions.TLSEnabled = true
+	serviceOptions.Hosts = []string{"app.example.com"}
+	serviceOptions.ACMEDirectory = LetsEncryptProduction
+
+	require.NoError(t, router.DeployService("web", []string{target}, defaultEmptyReaders,
+		serviceOptions, defaultTargetOptions, defaultDeploymentOptions))
+	require.Equal(t, LetsEncryptProduction, manager.directoryForService("web"))
+
+	// Redeploying with a static certificate leaves the shared manager behind;
+	// the override must not linger, or retained certificates would keep
+	// renewing against the old identity.
+	certPath, keyPath := prepareTestCertificateFiles(t)
+	serviceOptions.TLSCertificatePath = certPath
+	serviceOptions.TLSPrivateKeyPath = keyPath
+
+	require.NoError(t, router.DeployService("web", []string{target}, defaultEmptyReaders,
+		serviceOptions, defaultTargetOptions, defaultDeploymentOptions))
+
+	assert.Equal(t, manager.config.Directory, manager.directoryForService("web"))
+}
+
+func TestIsExtraAccountKeyFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected bool
+	}{
+		{"acme_user_staging.json", true},
+		{"acme_user_5e76d315.json", true},
+		{"acme_user_05e6df34.json", true},
+		{"acme_user.json", false},
+		{"acme_user_.json", false},
+		{"acme_user_5e76d31.json", false},   // 7 hex chars
+		{"acme_user_5e76d3155.json", false}, // 9 hex chars
+		{"acme_user_5E76D315.json", false},  // uppercase
+		{"acme_user_evil.json", false},
+		{"acme_user_staging.json.bak", false},
+		{"acme_user_deadbeef.txt", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isExtraAccountKeyFile(tt.name))
+		})
+	}
 }

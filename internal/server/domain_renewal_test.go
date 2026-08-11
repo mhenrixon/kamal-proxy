@@ -546,3 +546,58 @@ func TestCertRenewer_DirectoryChanged(t *testing.T) {
 	assert.False(t, renewer.directoryChanged(orphan),
 		"a certificate with no resolvable owner keeps its recorded directory")
 }
+
+func TestCertRenewer_SplitsMixedDirectoryCertificateAtRenewal(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	manager.SetDynamicDomains("plain-svc", []string{"plain.example.net"})
+	manager.SetDynamicDomains("staged-svc", []string{"staged.example.com"})
+
+	// A legacy certificate spanning both services, issued at the run-level
+	// directory before the staged service flipped.
+	adoptTestCert(t, manager, []string{"plain.example.net", "staged.example.com"},
+		time.Now().Add(-24*time.Hour), time.Now().Add(89*24*time.Hour))
+	manager.SetServiceDirectory("staged-svc", LetsEncryptProduction)
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 2, "a mixed-directory certificate must split into one order per directory")
+	assert.Equal(t, []string{"plain.example.net"}, calls[0].Domains)
+	assert.Equal(t, []string{"staged.example.com"}, calls[1].Domains)
+
+	// The ARI marker rides the order staying at the issuing CA; the switched
+	// partition sends none — the old identifier means nothing to the new CA.
+	assert.NotEmpty(t, calls[0].ReplacesCertID)
+	assert.Empty(t, calls[1].ReplacesCertID)
+
+	// Each replacement records its owner's directory, and the mixed
+	// certificate is gone.
+	plainCert := manager.certificates[manager.certIDForDomain("plain.example.net")]
+	stagedCert := manager.certificates[manager.certIDForDomain("staged.example.com")]
+	require.NotNil(t, plainCert)
+	require.NotNil(t, stagedCert)
+	assert.Equal(t, manager.config.Directory, manager.normalizeDirectory(plainCert.Directory))
+	assert.Equal(t, LetsEncryptProduction, stagedCert.Directory)
+	assert.Len(t, manager.ManagedCertificates(), 2)
+}
+
+func TestCertRenewer_DirectorySwitchDropsARIReplaces(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+	adoptTestCert(t, manager, []string{"tenant.example.com"},
+		time.Now().Add(-24*time.Hour), time.Now().Add(89*24*time.Hour))
+	manager.SetServiceDirectory("service1", LetsEncryptProduction)
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 1)
+	assert.Empty(t, calls[0].ReplacesCertID,
+		"a replaces identifier from another CA leads the target CA to reject the order (RFC 9773)")
+}

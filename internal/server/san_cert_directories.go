@@ -72,22 +72,13 @@ func (m *SANCertManager) ownerOf(domain string) (string, bool) {
 }
 
 // ownerOfLocked resolves a domain's owning service; a wildcard resolves
-// through a concrete domain it covers, mirroring coversAllowedDomain. A
-// pending entry with an empty service (a batch survivor restored by
-// restorePending) does not name an owner. Callers must hold m.mu.
+// through the lexicographically smallest concrete domain it covers, so the
+// answer does not depend on map iteration order. A pending entry with an
+// empty service (a batch survivor restored by restorePending) does not name
+// an owner. Callers must hold m.mu.
 func (m *SANCertManager) ownerOfLocked(domain string) (string, bool) {
 	if strings.HasPrefix(domain, "*.") {
-		for covered, service := range m.registeredDomains {
-			if matchesWildcard(domain, covered) && service != "" {
-				return service, true
-			}
-		}
-		for covered, service := range m.dynamicDomains {
-			if matchesWildcard(domain, covered) && service != "" {
-				return service, true
-			}
-		}
-		return "", false
+		return m.wildcardOwnerLocked(domain, nil)
 	}
 
 	if service, ok := m.registeredDomains[domain]; ok && service != "" {
@@ -102,14 +93,71 @@ func (m *SANCertManager) ownerOfLocked(domain string) (string, bool) {
 	return "", false
 }
 
+// wildcardOwnerLocked resolves a wildcard's owner through the
+// lexicographically smallest concrete domain it covers, so the answer does
+// not depend on map iteration order. A pending covered domain never speaks
+// for the wildcard — pending means it is getting a certificate of its own
+// (possibly under a different directory) — and when cert is non-nil, neither
+// does a domain this certificate no longer serves. Callers must hold m.mu.
+func (m *SANCertManager) wildcardOwnerLocked(wildcard string, cert *ManagedCert) (string, bool) {
+	bestDomain, bestService := "", ""
+	scan := func(domains map[string]string) {
+		for covered, service := range domains {
+			if service == "" || !matchesWildcard(wildcard, covered) {
+				continue
+			}
+			if _, pending := m.pendingDomains[covered]; pending {
+				continue
+			}
+			if cert != nil && m.certIDCovering(covered) != cert.Identifier {
+				continue
+			}
+			if bestDomain == "" || covered < bestDomain {
+				bestDomain, bestService = covered, service
+			}
+		}
+	}
+	scan(m.registeredDomains)
+	scan(m.dynamicDomains)
+	return bestService, bestService != ""
+}
+
+// certOwnedDirectoryLocked resolves the directory the owner of one of a
+// certificate's domains wants; a wildcard member consults only the domains
+// this certificate still serves. Callers must hold m.mu.
+func (m *SANCertManager) certOwnedDirectoryLocked(cert *ManagedCert, domain string) (string, bool) {
+	var service string
+	var ok bool
+	if strings.HasPrefix(domain, "*.") {
+		service, ok = m.wildcardOwnerLocked(domain, cert)
+	} else {
+		service, ok = m.ownerOfLocked(domain)
+	}
+	if !ok {
+		return "", false
+	}
+	return m.directoryForServiceLocked(service), true
+}
+
 // directoryForDomains resolves the directory an order for these domains must
-// use: the first resolvable owner's directory. Batches are single-service by
-// construction, so the first owner speaks for the whole order; with no owner
-// at all, the run-level directory answers.
+// use. Concrete domains are consulted before wildcards: a wildcard synthesized
+// from a batch appears alongside concrete members (at least the apex), and
+// those members name the originating service directly, while a wildcard's
+// coverage scan could land on any service under the apex. Batches are
+// single-service by construction, so the first resolvable owner speaks for
+// the whole order; with no owner at all, the run-level directory answers.
 func (m *SANCertManager) directoryForDomains(domains []string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	for _, domain := range domains {
+		if strings.HasPrefix(domain, "*.") {
+			continue
+		}
+		if service, ok := m.ownerOfLocked(domain); ok {
+			return m.directoryForServiceLocked(service)
+		}
+	}
 	for _, domain := range domains {
 		if service, ok := m.ownerOfLocked(domain); ok {
 			return m.directoryForServiceLocked(service)
@@ -127,21 +175,67 @@ func (m *SANCertManager) directoryForDomainLocked(domain string) string {
 	return m.config.Directory
 }
 
-// desiredDirectoryForCert reports the directory the owning service of a
-// certificate's domains currently wants. known is false when no owner is
-// resolvable — the certificate must then keep its recorded directory rather
-// than churn against the default, because services may simply not have
-// re-attached yet after a restart.
-func (m *SANCertManager) desiredDirectoryForCert(cert *ManagedCert) (string, bool) {
+// certDirectoryMismatched reports whether ANY resolvable owner of the
+// certificate's domains wants a different directory than the one that issued
+// it — a legacy certificate can span services, and a single first-owner
+// answer would let the other services' domains ride the wrong identity. A
+// certificate with no resolvable owner at all keeps its recorded directory
+// rather than churn against the default, because services may simply not
+// have re-attached yet after a restart.
+func (m *SANCertManager) certDirectoryMismatched(cert *ManagedCert) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	recorded := m.normalizeDirectory(cert.Directory)
 	for _, domain := range cert.Domains {
-		if service, ok := m.ownerOfLocked(domain); ok {
-			return m.directoryForServiceLocked(service), true
+		if desired, ok := m.certOwnedDirectoryLocked(cert, domain); ok && desired != recorded {
+			return true
 		}
 	}
-	return "", false
+	return false
+}
+
+// certMatchesServiceDirectoryLocked reports whether a certificate was issued
+// by the directory a service wants. Callers must hold m.mu.
+func (m *SANCertManager) certMatchesServiceDirectoryLocked(cert *ManagedCert, service string) bool {
+	return m.normalizeDirectory(cert.Directory) == m.directoryForServiceLocked(service)
+}
+
+// directoryPartition is one directory-homogeneous slice of a renewal order.
+type directoryPartition struct {
+	directory string
+	domains   []string
+}
+
+// splitByDesiredDirectory partitions an identifier set so no ACME order spans
+// directories: each domain goes with its owner's desired directory, and a
+// domain with no resolvable owner rides with the certificate's recorded one.
+// Partitions keep first-appearance order, so a sorted input yields
+// deterministic output.
+func (m *SANCertManager) splitByDesiredDirectory(cert *ManagedCert, domains []string) []directoryPartition {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	recorded := m.normalizeDirectory(cert.Directory)
+
+	keys := []string{}
+	partitions := map[string][]string{}
+	for _, domain := range domains {
+		directory := recorded
+		if desired, ok := m.certOwnedDirectoryLocked(cert, domain); ok {
+			directory = desired
+		}
+		if _, ok := partitions[directory]; !ok {
+			keys = append(keys, directory)
+		}
+		partitions[directory] = append(partitions[directory], domain)
+	}
+
+	split := make([]directoryPartition, 0, len(keys))
+	for _, key := range keys {
+		split = append(split, directoryPartition{directory: key, domains: partitions[key]})
+	}
+	return split
 }
 
 // normalizeDirectory resolves an empty (legacy) recorded directory to the

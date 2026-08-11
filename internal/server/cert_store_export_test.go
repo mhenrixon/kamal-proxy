@@ -472,3 +472,21 @@ func TestDirInsidePinnedTree(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, inside)
 }
+
+func TestExportCertificateStore_AccountKeysOnlyStoreExports(t *testing.T) {
+	paths := testCertStorePaths(t)
+	require.NoError(t, os.MkdirAll(paths.CertsPath, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, "acme_user.json"),
+		testAccountKeyJSON(t), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, "acme_user_staging.json"),
+		testAccountKeyJSON(t), 0600))
+
+	archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+	summary, err := ExportCertificateStore(paths, archivePath)
+
+	// A fresh estate that has registered accounts (a --tls-staging identity
+	// among them) but issued nothing yet still gets its backup.
+	require.NoError(t, err)
+	assert.Empty(t, summary.Warnings)
+	assert.Zero(t, summary.Certificates)
+}

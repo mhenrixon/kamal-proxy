@@ -361,10 +361,14 @@ func (m *SANCertManager) RegisterDomain(domain string, service string) error {
 
 	m.registeredDomains[domain] = service
 
-	// Check if domain already has a certificate, its own or a wildcard's
+	// Check if domain already has a certificate, its own or a wildcard's. A
+	// covering certificate from a DIFFERENT directory (a staging host under a
+	// production wildcard, say) does not satisfy the registration: the domain
+	// stays pending so its own service's identity issues for it.
 	if certID := m.certIDCovering(domain); certID != "" {
 		cert := m.certificates[certID]
-		if cert != nil && time.Until(cert.NotAfter) > 24*time.Hour {
+		if cert != nil && time.Until(cert.NotAfter) > 24*time.Hour &&
+			m.certMatchesServiceDirectoryLocked(cert, service) {
 			slog.Debug("Domain already has valid certificate",
 				"domain", domain,
 				"certificate", certID,
@@ -376,6 +380,9 @@ func (m *SANCertManager) RegisterDomain(domain string, service string) error {
 	// Check if domain is covered by an existing valid SAN certificate
 	for _, cert := range m.certificates {
 		if time.Until(cert.NotAfter) <= 24*time.Hour {
+			continue
+		}
+		if !m.certMatchesServiceDirectoryLocked(cert, service) {
 			continue
 		}
 		for _, d := range cert.Domains {
@@ -430,8 +437,17 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 	if certID := m.certIDCovering(domain); certID != "" {
 		cert = m.certificates[certID]
 	}
-	_, isRegistered := m.registeredDomains[domain]
+	owner, isRegistered := m.registeredDomains[domain]
 	dynamicService, isDynamic := m.dynamicDomains[domain]
+	if !isRegistered {
+		owner = dynamicService
+	}
+	// A domain covered only by another directory's certificate (a staging
+	// host under a production wildcard, say) needs one of its own, exactly as
+	// if the covering certificate were expiring: registered domains
+	// reprovision on the handshake, dynamic ones through the issuer.
+	directoryMismatch := cert != nil && (isRegistered || isDynamic) &&
+		!m.certMatchesServiceDirectoryLocked(cert, owner)
 	m.mu.RUnlock()
 
 	if !ready {
@@ -440,15 +456,22 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 
 	if cert != nil && cert.Certificate != nil {
 		// Return existing valid certificate
-		if time.Until(cert.NotAfter) > 24*time.Hour {
+		if time.Until(cert.NotAfter) > 24*time.Hour && !directoryMismatch {
 			return cert.Certificate, nil
 		}
 
 		if isRegistered {
-			slog.Info("Certificate expiring soon, will reprovision",
-				"domain", domain,
-				"expiresAt", cert.NotAfter,
-			)
+			if directoryMismatch {
+				slog.Info("Covering certificate is from another ACME directory, will reprovision",
+					"domain", domain,
+					"certificate_directory", cert.Directory,
+				)
+			} else {
+				slog.Info("Certificate expiring soon, will reprovision",
+					"domain", domain,
+					"expiresAt", cert.NotAfter,
+				)
+			}
 		} else if time.Until(cert.NotAfter) > 0 {
 			// Dynamic and evicted domains keep serving a still-valid
 			// certificate; the renewal loop is responsible for rotating it.

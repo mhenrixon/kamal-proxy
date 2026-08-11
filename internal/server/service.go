@@ -759,6 +759,15 @@ func (s *Service) servesRootPath() bool {
 }
 
 func (s *Service) createCertManager(options ServiceOptions) (CertManager, error) {
+	// A service that stops using the shared SAN manager on this deploy —
+	// static certificate, on-demand URL, or TLS disabled — must not leave a
+	// stale directory override behind: retained certificates would keep
+	// renewing against the old (possibly staging) identity. The SAN branch
+	// below re-records the current override.
+	if s.sanCertManager != nil {
+		s.sanCertManager.SetServiceDirectory(s.name, "")
+	}
+
 	if !options.TLSEnabled {
 		return nil, nil
 	}
