@@ -26,13 +26,12 @@ import (
 // It deliberately does NOT take a rate limit token: callers hold one already,
 // so that a queued order waits before it is assembled rather than after.
 func (m *SANCertManager) obtainCertificate(request certificate.ObtainRequest) (*certificate.Resource, error) {
-	dnsObtainer, err := m.orderObtainer(request.Domains)
+	httpObtainer, dnsObtainer, err := m.obtainersFor(request.Domains)
 	if err != nil {
 		return nil, err
 	}
 
 	m.mu.RLock()
-	httpObtainer := m.httpObtainer
 	httpFallback := m.config.HTTPFallback
 	m.mu.RUnlock()
 

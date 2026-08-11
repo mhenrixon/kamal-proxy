@@ -30,6 +30,15 @@ const (
 	acmeUserFile = "acme_user.json"
 )
 
+// isExtraAccountKeyFile matches the per-directory ACME account files
+// (acme_user_staging.json, acme_user_<hash>.json) that sit beside the primary
+// acme_user.json when services use their own ACME directory (--tls-staging).
+func isExtraAccountKeyFile(name string) bool {
+	return strings.HasPrefix(name, "acme_user_") &&
+		strings.HasSuffix(name, ".json") &&
+		!strings.Contains(name, "/")
+}
+
 // ErrCertStoreEmpty reports an export attempt against a store with nothing in
 // it. Failing loudly beats a cron job faithfully archiving nothing.
 var ErrCertStoreEmpty = errors.New("certificate store is empty; nothing to export")
@@ -198,6 +207,10 @@ func collectCertsEntries(certsPath string, state managerState, summary *CertsExp
 		switch {
 		case !entry.IsDir() && name == acmeUserFile:
 			if file, ok := collectOptionalJSON(filepath.Join(certsPath, name), archiveAccountKeyEntry, summary); ok {
+				files = append(files, file)
+			}
+		case !entry.IsDir() && isExtraAccountKeyFile(name):
+			if file, ok := collectOptionalJSON(filepath.Join(certsPath, name), archiveCertsPrefix+name, summary); ok {
 				files = append(files, file)
 			}
 		case entry.IsDir() && name == legacyHTTP01CacheDir:

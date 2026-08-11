@@ -111,6 +111,10 @@ type certStoreArchive struct {
 	accountKey     []byte
 	dynamicDomains []byte
 
+	// extraAccountKeys holds the per-directory account files (--tls-staging
+	// identities), keyed by filename.
+	extraAccountKeys map[string][]byte
+
 	// certs is keyed by the certificate's directory name (the sanitized
 	// certificate identifier).
 	certs map[string]archiveCertPair
@@ -268,6 +272,14 @@ func (a *certStoreArchive) placeEntry(name string, data []byte, rawCerts map[str
 	}
 
 	if rest, ok := strings.CutPrefix(name, archiveCertsPrefix); ok {
+		if isExtraAccountKeyFile(rest) {
+			if a.extraAccountKeys == nil {
+				a.extraAccountKeys = map[string][]byte{}
+			}
+			a.extraAccountKeys[rest] = data
+			return nil
+		}
+
 		dir, base, found := strings.Cut(rest, "/")
 		// The directory must already be in the sanitized form the exporter
 		// writes: two spellings that sanitize to the same on-disk path would
@@ -316,7 +328,7 @@ func (a *certStoreArchive) assembleCertPairs(rawCerts map[string]map[string][]by
 // validate cross-checks the state file against the archived certificates and
 // discards an account key that could not carry the ACME identity forward.
 func (a *certStoreArchive) validate() error {
-	a.checkAccountKey()
+	a.checkAccountKeys()
 
 	if !a.hasState {
 		if len(a.certs) > 0 {
@@ -364,41 +376,50 @@ func (a *certStoreArchive) validate() error {
 	return nil
 }
 
-// checkAccountKey drops an account key entry that does not hold usable key
-// material, with a warning: restoring it would make the next boot silently
+// checkAccountKeys drops account key entries that do not hold usable key
+// material, with a warning: restoring one would make the next boot silently
 // register a fresh ACME account while the operator believes the identity was
 // preserved. The estate's certificates still restore.
-func (a *certStoreArchive) checkAccountKey() {
-	if a.accountKey == nil {
-		return
+func (a *certStoreArchive) checkAccountKeys() {
+	if a.accountKey != nil && !a.usableAccountKey(a.accountKey, "ACME account key") {
+		a.accountKey = nil
 	}
 
+	for _, name := range slices.Sorted(maps.Keys(a.extraAccountKeys)) {
+		if !a.usableAccountKey(a.extraAccountKeys[name], "ACME account key "+name) {
+			delete(a.extraAccountKeys, name)
+		}
+	}
+}
+
+// usableAccountKey reports whether data parses as an account holding an ECDSA
+// private key, warning under the given label otherwise. It mirrors
+// loadOrCreateUser exactly: that only accepts an ECDSA key, so any other key
+// type would be silently discarded at boot and a fresh account registered --
+// the very outcome this check exists to make loud.
+func (a *certStoreArchive) usableAccountKey(data []byte, label string) bool {
 	var user acmeUser
-	if err := json.Unmarshal(a.accountKey, &user); err != nil {
+	if err := json.Unmarshal(data, &user); err != nil {
 		a.warnings = append(a.warnings, certArchiveWarning{
 			kind: warnAccountKey,
-			text: fmt.Sprintf("the archived ACME account key does not parse and will not be restored; the next boot will register a fresh account: %v", err),
+			text: fmt.Sprintf("the archived %s does not parse and will not be restored; the next boot will register a fresh account: %v", label, err),
 		})
-		a.accountKey = nil
-		return
+		return false
 	}
 
-	// Mirror loadOrCreateUser exactly: it only accepts an ECDSA key, so any
-	// other key type would be silently discarded at boot and a fresh account
-	// registered -- the very outcome this check exists to make loud.
 	key, err := certcrypto.ParsePEMPrivateKey(user.KeyPEM)
 	if err == nil {
 		if _, ok := key.(*ecdsa.PrivateKey); ok {
-			return
+			return true
 		}
 		err = errors.New("the key is not an ECDSA key")
 	}
 
 	a.warnings = append(a.warnings, certArchiveWarning{
 		kind: warnAccountKey,
-		text: fmt.Sprintf("the archived ACME account key holds no usable private key and will not be restored; the next boot will register a fresh account: %v", err),
+		text: fmt.Sprintf("the archived %s holds no usable private key and will not be restored; the next boot will register a fresh account: %v", label, err),
 	})
-	a.accountKey = nil
+	return false
 }
 
 // validateManagerState checks the invariants a healthy manager always

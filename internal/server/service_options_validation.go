@@ -45,6 +45,23 @@ func (so ServiceOptions) validateDynamicRedirects() error {
 	return nil
 }
 
+// validateACMEDirectory rejects a per-service ACME directory that is not an
+// http(s) URL. The deploy CLI only ever sets the well-known staging constant,
+// but the field arrives over RPC and would otherwise fail much later, inside
+// an ACME order.
+func (so ServiceOptions) validateACMEDirectory() error {
+	if so.ACMEDirectory == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(so.ACMEDirectory)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return fmt.Errorf("%w: acme directory must be an http(s) URL: %q", ErrServiceOptionsInvalid, so.ACMEDirectory)
+	}
+
+	return nil
+}
+
 func (so ServiceOptions) validateDynamicDomains() error {
 	if so.TLSDomainsSource == "" {
 		if so.TLSDomainsBatchSize != 0 {

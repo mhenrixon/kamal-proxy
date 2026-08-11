@@ -21,49 +21,23 @@ import (
 // the same ACME account) and routes each order to the provider its zone
 // names, with the single default provider answering for everything else.
 
-// initDNSClients builds the DNS-01 clients the configuration names. Must be
-// called with m.mu held.
-//
-// The two configuration forms fail differently on a broken provider: an
-// explicit zone mapping is explicit intent — silently continuing without its
-// provider is the exact failure per-zone selection exists to remove — so it
-// fails the boot outright. The default provider keeps its existing softness:
-// with HTTP fallback on, a provider that cannot be constructed logs and
-// leaves issuance on HTTP-01.
+// initDNSClients builds the DNS-01 clients the configuration names, on the
+// primary account. Must be called with m.mu held.
 func (m *SANCertManager) initDNSClients() error {
-	clients := map[acme.ProviderName]certObtainer{}
-
-	for _, zone := range slices.Sorted(maps.Keys(m.selection.Zones)) {
-		name := m.selection.Zones[zone]
-		if _, ok := clients[name]; ok {
-			continue
-		}
-
-		obtainer, err := m.newDNSObtainer(name)
-		if err != nil {
-			return fmt.Errorf("DNS provider %q for zone %q: %w", name, zone, err)
-		}
-		clients[name] = obtainer
+	def, zoned, err := m.buildDNSObtainers(m.user, m.config.Directory)
+	if err != nil {
+		return err
 	}
 
-	if len(clients) > 0 {
-		m.dnsObtainers = clients
+	if len(zoned) > 0 {
+		m.dnsObtainers = zoned
 		slog.Info("Per-zone DNS-01 challenge solvers initialized",
 			"zones", slices.Sorted(maps.Keys(m.selection.Zones)))
 	}
 
-	if m.config.DNSProvider != "" && m.config.DNSProvider != "none" {
-		obtainer, err := m.newDNSObtainer(m.config.DNSProvider)
-		if err != nil {
-			if !m.config.HTTPFallback {
-				return fmt.Errorf("failed to create DNS provider %q: %w", m.config.DNSProvider, err)
-			}
-			slog.Warn("DNS provider not available, staying on HTTP-01",
-				"provider", m.config.DNSProvider, "error", err)
-		} else {
-			m.dnsObtainer = obtainer
-			slog.Info("DNS-01 challenge solver initialized", "provider", m.config.DNSProvider)
-		}
+	if def != nil {
+		m.dnsObtainer = def
+		slog.Info("DNS-01 challenge solver initialized", "provider", m.config.DNSProvider)
 	}
 
 	if m.dnsObtainer != nil || len(m.dnsObtainers) > 0 {
@@ -73,16 +47,62 @@ func (m *SANCertManager) initDNSClients() error {
 	return nil
 }
 
-// newDNSObtainer builds a DNS-01 client for one provider on the manager's
-// ACME account and returns its certifier.
-func (m *SANCertManager) newDNSObtainer(name acme.ProviderName) (certObtainer, error) {
+// buildDNSObtainers builds the DNS-01 clients the configuration names, on the
+// given ACME identity — the primary account at boot, or a per-service
+// directory's account when its bundle is built.
+//
+// The two configuration forms fail differently on a broken provider: an
+// explicit zone mapping is explicit intent — silently continuing without its
+// provider is the exact failure per-zone selection exists to remove — so it
+// fails the caller outright. The default provider keeps its existing
+// softness: with HTTP fallback on, a provider that cannot be constructed logs
+// and leaves issuance on HTTP-01.
+func (m *SANCertManager) buildDNSObtainers(user *acmeUser, directory string) (certObtainer, map[acme.ProviderName]certObtainer, error) {
+	clients := map[acme.ProviderName]certObtainer{}
+
+	for _, zone := range slices.Sorted(maps.Keys(m.selection.Zones)) {
+		name := m.selection.Zones[zone]
+		if _, ok := clients[name]; ok {
+			continue
+		}
+
+		obtainer, err := m.newDNSObtainer(user, directory, name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("DNS provider %q for zone %q: %w", name, zone, err)
+		}
+		clients[name] = obtainer
+	}
+	if len(clients) == 0 {
+		clients = nil
+	}
+
+	var def certObtainer
+	if m.config.DNSProvider != "" && m.config.DNSProvider != "none" {
+		obtainer, err := m.newDNSObtainer(user, directory, m.config.DNSProvider)
+		if err != nil {
+			if !m.config.HTTPFallback {
+				return nil, nil, fmt.Errorf("failed to create DNS provider %q: %w", m.config.DNSProvider, err)
+			}
+			slog.Warn("DNS provider not available, staying on HTTP-01",
+				"provider", m.config.DNSProvider, "error", err)
+		} else {
+			def = obtainer
+		}
+	}
+
+	return def, clients, nil
+}
+
+// newDNSObtainer builds a DNS-01 client for one provider on the given ACME
+// identity and returns its certifier.
+func (m *SANCertManager) newDNSObtainer(user *acmeUser, directory string, name acme.ProviderName) (certObtainer, error) {
 	dnsProvider, err := providers.NewProvider(name)
 	if err != nil {
 		return nil, err
 	}
 
-	legoConfig := lego.NewConfig(m.user)
-	legoConfig.CADirURL = m.config.Directory
+	legoConfig := lego.NewConfig(user)
+	legoConfig.CADirURL = directory
 	legoConfig.Certificate.KeyType = certcrypto.EC256
 
 	client, err := lego.NewClient(legoConfig)
@@ -138,17 +158,25 @@ func (m *SANCertManager) splitByProviderZone(domains []string) [][]string {
 }
 
 // orderObtainer resolves the one DNS obtainer answering for an order's
-// domains. Nil with no error means no DNS provider covers them: HTTP-01
-// territory. Batching splits before ordering, so an order spanning providers
-// is an invariant violation, refused rather than half-answered.
+// domains on the primary identity. Nil with no error means no DNS provider
+// covers them: HTTP-01 territory.
 func (m *SANCertManager) orderObtainer(domains []string) (certObtainer, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	return orderObtainerFrom(m.selection, domains, m.dnsObtainer, m.dnsObtainers)
+}
+
+// orderObtainerFrom resolves the one DNS obtainer answering for an order's
+// domains out of the given identity's solvers. Nil with no error means no DNS
+// provider covers them: HTTP-01 territory. Batching splits before ordering,
+// so an order spanning providers is an invariant violation, refused rather
+// than half-answered.
+func orderObtainerFrom(selection acme.ProviderSelection, domains []string, def certObtainer, zoned map[acme.ProviderName]certObtainer) (certObtainer, error) {
 	var obtainer certObtainer
 	key := ""
 	for i, domain := range domains {
-		domainObtainer, domainKey := m.resolveObtainerLocked(domain)
+		domainObtainer, domainKey := resolveObtainerFrom(selection, domain, def, zoned)
 		if i == 0 {
 			obtainer, key = domainObtainer, domainKey
 			continue
@@ -160,14 +188,14 @@ func (m *SANCertManager) orderObtainer(domains []string) (certObtainer, error) {
 	return obtainer, nil
 }
 
-// resolveObtainerLocked returns the obtainer and partition key for one
-// domain. Callers must hold m.mu.
-func (m *SANCertManager) resolveObtainerLocked(domain string) (certObtainer, string) {
-	provider, zone := m.selection.ProviderFor(domain)
+// resolveObtainerFrom returns the obtainer and partition key for one domain
+// out of the given identity's solvers.
+func resolveObtainerFrom(selection acme.ProviderSelection, domain string, def certObtainer, zoned map[acme.ProviderName]certObtainer) (certObtainer, string) {
+	provider, zone := selection.ProviderFor(domain)
 	if zone != "" {
-		return m.dnsObtainers[provider], "zone:" + string(provider)
+		return zoned[provider], "zone:" + string(provider)
 	}
-	return m.dnsObtainer, ""
+	return def, ""
 }
 
 // hasDNSProviderFor reports whether some DNS-01 obtainer would answer for a

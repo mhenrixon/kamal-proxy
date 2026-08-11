@@ -556,8 +556,15 @@ func (o managerObtainer) Obtain(request certificate.ObtainRequest) (*certificate
 	return o.manager.obtainCertificate(request)
 }
 
+// GetRenewalInfo asks the identity that issued the certificate — a staging
+// cert's ARI lives at the staging CA, not the run-level one.
 func (o managerObtainer) GetRenewalInfo(request certificate.RenewalInfoRequest) (*certificate.RenewalInfoResponse, error) {
-	obtainer := o.manager.acmeCertifier()
+	var domains []string
+	if request.Cert != nil {
+		domains = request.Cert.DNSNames
+	}
+
+	obtainer := o.manager.renewalInfoObtainer(domains)
 	if obtainer == nil {
 		return nil, ErrManagerNotReady
 	}

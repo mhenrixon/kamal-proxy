@@ -148,12 +148,30 @@ func (r *certRenewer) reconcile() {
 			continue
 		}
 
-		if r.shouldRenew(cert) {
+		// The directory check comes first: a switched certificate must be
+		// replaced regardless of what ARI (queried at a directory that may no
+		// longer be the right one) would say about its timing.
+		if r.directoryChanged(cert) || r.shouldRenew(cert) {
 			r.renew(cert)
 		}
 	}
 
 	r.reportMetrics()
+}
+
+// directoryChanged reports whether a certificate was issued by a different
+// ACME directory than its domains' owning service now wants. After a
+// --tls-staging flip the certificate is replaced on the next reconcile rather
+// than at the renewal window: a staging certificate is not browser-trusted,
+// and a production one spends rate limits the operator opted out of. A
+// certificate with no resolvable owner keeps its recorded directory —
+// services may simply not have re-attached yet after a restart.
+func (r *certRenewer) directoryChanged(cert *ManagedCert) bool {
+	desired, known := r.manager.desiredDirectoryForCert(cert)
+	if !known {
+		return false
+	}
+	return desired != r.manager.normalizeDirectory(cert.Directory)
 }
 
 func (r *certRenewer) shouldRenew(cert *ManagedCert) bool {

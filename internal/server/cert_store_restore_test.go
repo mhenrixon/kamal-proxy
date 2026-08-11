@@ -656,3 +656,39 @@ func TestRestoreCertificateStore_DegenerateArchiveIntoFreshStore(t *testing.T) {
 	state := readImportedState(t, paths.ACMEStatePath)
 	assert.Contains(t, state.Certificates, "san:gone")
 }
+
+func TestRestoreCertificateStore_RoundTripsExtraAccountKeysAndDirectories(t *testing.T) {
+	paths := testCertStorePaths(t)
+	state := populateCertStore(t, paths, []string{"staging.example.com"})
+
+	// A per-service directory estate: the certificate records its issuing
+	// directory, and the staging identity's account key sits beside the
+	// primary one.
+	for _, cert := range state.Certificates {
+		cert.Directory = LetsEncryptStaging
+	}
+	require.NoError(t, writeManagerStateFile(paths.ACMEStatePath, state))
+	stagingKey := testAccountKeyJSON(t)
+	require.NoError(t, os.WriteFile(filepath.Join(paths.CertsPath, "acme_user_staging.json"), stagingKey, 0600))
+
+	archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
+	summary, err := ExportCertificateStore(paths, archivePath)
+	require.NoError(t, err)
+	assert.Empty(t, summary.Warnings, "a per-directory account key is part of the estate, not an unexpected file")
+
+	target := testCertStorePaths(t)
+	_, err = RestoreCertificateStore(CertStoreRestoreOptions{ArchivePath: archivePath, Paths: target})
+	require.NoError(t, err)
+
+	restoredKey, err := os.ReadFile(filepath.Join(target.CertsPath, "acme_user_staging.json"))
+	require.NoError(t, err)
+	assert.Equal(t, stagingKey, restoredKey)
+
+	var restored managerState
+	data, err := os.ReadFile(target.ACMEStatePath)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &restored))
+	for _, cert := range restored.Certificates {
+		assert.Equal(t, LetsEncryptStaging, cert.Directory, "the issuing directory must survive export and restore")
+	}
+}

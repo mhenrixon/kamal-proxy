@@ -611,3 +611,30 @@ func TestService_MarshallingPoolState(t *testing.T) {
 	assert.Equal(t, 3*time.Second, restored.targetOptions.DialTimeout)
 	assert.True(t, restored.targetOptions.DisableKeepAlives)
 }
+
+func TestServiceOptions_Validate_ACMEDirectory(t *testing.T) {
+	assertValid := func(options ServiceOptions) {
+		t.Helper()
+		require.NoError(t, options.Validate())
+	}
+
+	assertNotValid := func(options ServiceOptions, expected string) {
+		t.Helper()
+		err := options.Validate()
+		require.ErrorContains(t, err, expected)
+		require.ErrorIs(t, err, ErrServiceOptionsInvalid)
+	}
+
+	hosts := []string{"example.com"}
+
+	assertValid(ServiceOptions{Hosts: hosts, TLSEnabled: true})
+	assertValid(ServiceOptions{Hosts: hosts, TLSEnabled: true, ACMEDirectory: ACMEStagingDirectoryURL})
+	assertValid(ServiceOptions{Hosts: hosts, TLSEnabled: true, ACMEDirectory: "http://pebble.internal:14000/dir"})
+
+	assertNotValid(ServiceOptions{Hosts: hosts, TLSEnabled: true, ACMEDirectory: "not-a-url"},
+		"acme directory must be an http(s) URL")
+	assertNotValid(ServiceOptions{Hosts: hosts, TLSEnabled: true, ACMEDirectory: "ftp://example.com/dir"},
+		"acme directory must be an http(s) URL")
+	assertNotValid(ServiceOptions{Hosts: hosts, TLSEnabled: true, ACMEDirectory: "https://"},
+		"acme directory must be an http(s) URL")
+}

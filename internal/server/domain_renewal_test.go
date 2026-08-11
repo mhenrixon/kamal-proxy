@@ -502,3 +502,47 @@ func TestCertRenewer_QuarantinesCulpritsOnFailure(t *testing.T) {
 	certs := manager.ManagedCertificates()
 	require.Len(t, certs, 1)
 }
+
+func TestCertRenewer_ReissuesImmediatelyWhenDirectoryChanges(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+
+	// A fresh certificate, nowhere near its renewal window — but the service
+	// has since flipped to a different ACME directory.
+	adoptTestCert(t, manager, []string{"tenant.example.com"},
+		time.Now().Add(-24*time.Hour), time.Now().Add(89*24*time.Hour))
+	manager.SetServiceDirectory("service1", LetsEncryptProduction)
+
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	require.Len(t, obtainer.Calls(), 1, "a directory switch must re-issue on the next reconcile")
+
+	// The replacement records the new directory, so the next reconcile is quiet.
+	certs := manager.ManagedCertificates()
+	require.Len(t, certs, 1)
+	assert.Equal(t, LetsEncryptProduction, certs[0].Directory)
+
+	renewer.reconcile()
+	assert.Len(t, obtainer.Calls(), 1)
+}
+
+func TestCertRenewer_DirectoryChanged(t *testing.T) {
+	manager := testSANCertManager(t)
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: successfulObtainer(t)})
+
+	manager.SetDynamicDomains("service1", []string{"tenant.example.com"})
+
+	legacy := &ManagedCert{Domains: []string{"tenant.example.com"}}
+	assert.False(t, renewer.directoryChanged(legacy),
+		"an empty recorded directory reads as the run-level one")
+
+	manager.SetServiceDirectory("service1", LetsEncryptProduction)
+	assert.True(t, renewer.directoryChanged(legacy))
+
+	orphan := &ManagedCert{Domains: []string{"gone.example.net"}, Directory: LetsEncryptProduction}
+	assert.False(t, renewer.directoryChanged(orphan),
+		"a certificate with no resolvable owner keeps its recorded directory")
+}
