@@ -567,3 +567,42 @@ func TestSANCertManager_GetCertificate_MismatchedDynamicCertServedWhileIssuerRep
 	assert.Empty(t, obtainer.Calls(), "no synchronous order may ride a tenant handshake")
 	assert.Equal(t, []string{"shop.tenant.net"}, requests)
 }
+
+// A handshake that waits out another handshake's order must not be handed the
+// wrong-directory certificate that order failed to replace.
+func TestSANCertManager_GetCertificate_WaiterRefusesStillMismatchedCert(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.httpObtainer = successfulObtainer(t)
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "staged"))
+	_, err := manager.adoptCertificate(
+		testCertResource(t, []string{"app.example.com"}, time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour)),
+		[]string{"app.example.com"})
+	require.NoError(t, err)
+
+	manager.SetServiceDirectory("staged", LetsEncryptProduction)
+
+	// Occupy the provisioning slot, as a concurrent handshake's order would.
+	inflight := make(chan struct{})
+	manager.mu.Lock()
+	manager.provisioning["_batch_"] = inflight
+	manager.mu.Unlock()
+
+	type result struct {
+		cert *tls.Certificate
+		err  error
+	}
+	results := make(chan result, 1)
+	go func() {
+		cert, err := manager.provisionCertificate(context.Background(), "app.example.com")
+		results <- result{cert, err}
+	}()
+
+	// The order finishes WITHOUT adopting a replacement (it failed).
+	close(inflight)
+
+	r := <-results
+	require.Error(t, r.err, "the waiter must not serve the certificate the failed order was replacing")
+	assert.ErrorIs(t, r.err, ErrCertNotFound)
+	assert.Nil(t, r.cert)
+}

@@ -532,7 +532,7 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 		// Wait for existing provisioning to complete
 		select {
 		case <-done:
-			return m.getCertForDomain(domain)
+			return m.getServableCertForDomain(domain)
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -719,8 +719,14 @@ func (m *SANCertManager) adoptCertificateAt(resource *certificate.Resource, sort
 	return managed, nil
 }
 
-// getCertForDomain retrieves a certificate for a domain
-func (m *SANCertManager) getCertForDomain(domain string) (*tls.Certificate, error) {
+// getServableCertForDomain retrieves the certificate covering a domain,
+// refusing one the domain's owner would not accept. A handshake that waited
+// out another handshake's order can find the store unchanged when that order
+// failed; for a registered domain mid-directory-flip, handing it the
+// still-mismatched certificate would serve the wrong CA to the exact clients
+// the flip was made for — the waiter fails instead, and the next handshake
+// retries the order.
+func (m *SANCertManager) getServableCertForDomain(domain string) (*tls.Certificate, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -731,6 +737,11 @@ func (m *SANCertManager) getCertForDomain(domain string) (*tls.Certificate, erro
 
 	cert := m.certificates[certID]
 	if cert == nil || cert.Certificate == nil {
+		return nil, ErrCertNotFound
+	}
+
+	if service, ok := m.registeredDomains[domain]; ok && service != "" &&
+		!m.certMatchesServiceDirectoryLocked(cert, service) {
 		return nil, ErrCertNotFound
 	}
 
