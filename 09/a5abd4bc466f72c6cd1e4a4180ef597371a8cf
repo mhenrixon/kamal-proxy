@@ -1,0 +1,24 @@
+internal/metrics/metrics.go
+  s_14e23450b0fd2c::t_a471ec5821d571 6-7,14-16
+  s_14e23450b0fd2c::t_3d91fe65422b34 34-38,40-47,49-51,55-137
+internal/metrics/metrics_test.go
+  s_14e23450b0fd2c::t_962be8ad7b1de9 4,6,9,12-92
+internal/server/cert_metrics_test.go
+  s_14e23450b0fd2c::t_ae71ff4dee8e72 233-234,239-240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "09a5abd4bc466f72c6cd1e4a4180ef597371a8cf",
+  "prompts": {},
+  "sessions": {
+    "s_14e23450b0fd2c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "881e2ef2-da9a-4d91-a30e-a6136fe52e38",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
