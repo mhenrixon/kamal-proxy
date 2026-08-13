@@ -460,3 +460,80 @@ func TestSANCertManager_InitializeAdoptsLegacyCacheWithoutDeadlock(t *testing.T)
 
 	assert.True(t, manager.HasCertificate("legacy.test"), "the legacy certificate was not adopted")
 }
+
+// Issue #101: a registered domain in the last 24h of its certificate's life
+// must keep serving the held certificate and replace it in the background —
+// not gamble the handshake on a synchronous ACME order.
+func TestSANCertManager_GetCertificate_ServesExpiringRegisteredCertAndQueuesReplacement(t *testing.T) {
+	manager := testSANCertManager(t)
+	obtainer := successfulObtainer(t)
+	manager.httpObtainer = obtainer
+
+	requests := [][2]string{}
+	manager.SetDynamicCertRequester(func(domain, service string) {
+		requests = append(requests, [2]string{domain, service})
+	})
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "web"))
+	held, err := manager.adoptCertificate(
+		testCertResource(t, []string{"app.example.com"}, time.Now().Add(-89*24*time.Hour), time.Now().Add(2*time.Hour)),
+		[]string{"app.example.com"})
+	require.NoError(t, err)
+
+	served, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: "app.example.com"})
+
+	require.NoError(t, err, "a handshake must not fail while a valid certificate is held")
+	assert.Same(t, held.Certificate, served)
+	assert.Empty(t, obtainer.Calls(), "no synchronous order may ride the handshake")
+	require.Len(t, requests, 1, "a replacement must be queued asynchronously")
+	assert.Equal(t, [2]string{"app.example.com", "web"}, requests[0])
+}
+
+// An actually expired certificate serves nobody: the synchronous first-issuance
+// path remains the right response for a registered domain.
+func TestSANCertManager_GetCertificate_ExpiredRegisteredCertReprovisionsSynchronously(t *testing.T) {
+	manager := testSANCertManager(t)
+	obtainer := successfulObtainer(t)
+	manager.httpObtainer = obtainer
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "web"))
+	_, err := manager.adoptCertificate(
+		testCertResource(t, []string{"app.example.com"}, time.Now().Add(-90*24*time.Hour), time.Now().Add(-time.Hour)),
+		[]string{"app.example.com"})
+	require.NoError(t, err)
+
+	served, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: "app.example.com"})
+
+	require.NoError(t, err)
+	require.NotNil(t, served)
+	require.Len(t, obtainer.Calls(), 1, "an expired certificate must be replaced on the spot")
+	assert.True(t, served.Leaf.NotAfter.After(time.Now().Add(24*time.Hour)), "the handshake must get the fresh certificate")
+}
+
+// A still-valid certificate from the wrong ACME directory (post --tls-staging
+// flip) follows the same rule: serve what we hold, replace in the background.
+func TestSANCertManager_GetCertificate_MismatchedDirectoryCertServedWhileReplacementQueues(t *testing.T) {
+	manager := testSANCertManager(t)
+	obtainer := successfulObtainer(t)
+	manager.httpObtainer = obtainer
+
+	requests := []string{}
+	manager.SetDynamicCertRequester(func(domain, service string) {
+		requests = append(requests, domain)
+	})
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "staged"))
+	held, err := manager.adoptCertificate(
+		testCertResource(t, []string{"app.example.com"}, time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour)),
+		[]string{"app.example.com"})
+	require.NoError(t, err)
+
+	manager.SetServiceDirectory("staged", LetsEncryptProduction)
+
+	served, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: "app.example.com"})
+
+	require.NoError(t, err)
+	assert.Same(t, held.Certificate, served, "the held certificate keeps serving until its replacement lands")
+	assert.Empty(t, obtainer.Calls())
+	assert.Equal(t, []string{"app.example.com"}, requests)
+}

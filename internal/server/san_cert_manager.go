@@ -421,10 +421,12 @@ func (m *SANCertManager) UnregisterDomain(domain string, service string) error {
 // GetCertificate returns a certificate for the TLS handshake.
 //
 // Provisioning is gated by a hard allowlist: deploy-registered hosts provision
-// synchronously (the original behavior), dynamic domains are queued for
+// synchronously only when no still-valid certificate exists (first issuance,
+// or expiry that renewal failed to prevent), dynamic domains are queued for
 // asynchronous issuance, and any other server name is refused outright so a
 // catch-all service cannot be used to burn rate limits on scanner-supplied
-// names.
+// names. A held certificate that is merely due for replacement keeps serving
+// while its replacement is issued in the background.
 func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	domain := hello.ServerName
 	if domain == "" {
@@ -460,26 +462,28 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 			return cert.Certificate, nil
 		}
 
-		if isRegistered {
-			if directoryMismatch {
-				slog.Info("Covering certificate is from another ACME directory, will reprovision",
-					"domain", domain,
-					"certificate_directory", cert.Directory,
-				)
-			} else {
-				slog.Info("Certificate expiring soon, will reprovision",
+		// Due for replacement: expiring inside 24 hours, or issued by a
+		// directory the owning service has moved away from. While the
+		// certificate is still valid it keeps serving, and the replacement is
+		// queued for asynchronous issuance — reaching this state means
+		// proactive renewal has been failing, which is exactly when a
+		// synchronous order on the handshake is most likely to fail too, and
+		// a handshake that errors while a valid certificate is in hand is a
+		// self-inflicted outage. Evicted domains (neither registered nor
+		// dynamic) serve out the certificate they have with no replacement.
+		if time.Until(cert.NotAfter) > 0 {
+			if isRegistered || isDynamic {
+				slog.Info("Certificate due for replacement; serving held certificate meanwhile",
 					"domain", domain,
 					"expiresAt", cert.NotAfter,
+					"directory_mismatch", directoryMismatch,
 				)
-			}
-		} else if time.Until(cert.NotAfter) > 0 {
-			// Dynamic and evicted domains keep serving a still-valid
-			// certificate; the renewal loop is responsible for rotating it.
-			if isDynamic {
-				m.requestDynamicCertificate(domain, dynamicService)
+				m.requestDynamicCertificate(domain, owner)
 			}
 			return cert.Certificate, nil
 		}
+		// Expired: nothing worth serving remains, so registered domains fall
+		// through to synchronous provisioning and dynamic ones to the issuer.
 	}
 
 	if isRegistered {
