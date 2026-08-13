@@ -1,0 +1,21 @@
+internal/server/san_cert_manager.go
+  s_0c1aa74f31faea::t_62b66eaf773ec2 468,474-485,496-497
+internal/server/san_cert_manager_test.go
+  s_0c1aa74f31faea::t_06ef73a0fc6771 513-545,555,557-558,561,563,566-568
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cfaf93867587caab0cbb0c5568f2209e5b4ae88f",
+  "prompts": {},
+  "sessions": {
+    "s_0c1aa74f31faea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce428264-8ca7-44e0-986c-9f8f6361689b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
