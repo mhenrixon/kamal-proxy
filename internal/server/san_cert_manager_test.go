@@ -606,3 +606,38 @@ func TestSANCertManager_GetCertificate_WaiterRefusesStillMismatchedCert(t *testi
 	assert.ErrorIs(t, r.err, ErrCertNotFound)
 	assert.Nil(t, r.cert)
 }
+
+// Same rule for expiry: after a failed order, the waiter refuses a
+// certificate no client would accept rather than moving the failure
+// client-side.
+func TestSANCertManager_GetCertificate_WaiterRefusesExpiredCert(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.httpObtainer = successfulObtainer(t)
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "web"))
+	_, err := manager.adoptCertificate(
+		testCertResource(t, []string{"app.example.com"}, time.Now().Add(-90*24*time.Hour), time.Now().Add(-time.Hour)),
+		[]string{"app.example.com"})
+	require.NoError(t, err)
+
+	inflight := make(chan struct{})
+	manager.mu.Lock()
+	manager.provisioning["_batch_"] = inflight
+	manager.mu.Unlock()
+
+	type result struct {
+		cert *tls.Certificate
+		err  error
+	}
+	results := make(chan result, 1)
+	go func() {
+		cert, err := manager.provisionCertificate(context.Background(), "app.example.com")
+		results <- result{cert, err}
+	}()
+
+	close(inflight)
+
+	r := <-results
+	require.ErrorIs(t, r.err, ErrCertNotFound)
+	assert.Nil(t, r.cert)
+}

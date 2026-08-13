@@ -740,6 +740,12 @@ func (m *SANCertManager) getServableCertForDomain(domain string) (*tls.Certifica
 		return nil, ErrCertNotFound
 	}
 
+	// An expired certificate fails at the client anyway; refusing it here
+	// keeps the failure server-side and retryable.
+	if time.Until(cert.NotAfter) <= 0 {
+		return nil, ErrCertNotFound
+	}
+
 	if service, ok := m.registeredDomains[domain]; ok && service != "" &&
 		!m.certMatchesServiceDirectoryLocked(cert, service) {
 		return nil, ErrCertNotFound
