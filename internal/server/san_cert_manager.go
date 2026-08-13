@@ -465,13 +465,24 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 		// Due for replacement: expiring inside 24 hours, or issued by a
 		// directory the owning service has moved away from. While the
 		// certificate is still valid it keeps serving, and the replacement is
-		// queued for asynchronous issuance — reaching this state means
+		// queued for asynchronous issuance — reaching the expiry window means
 		// proactive renewal has been failing, which is exactly when a
 		// synchronous order on the handshake is most likely to fail too, and
 		// a handshake that errors while a valid certificate is in hand is a
 		// self-inflicted outage. Evicted domains (neither registered nor
 		// dynamic) serve out the certificate they have with no replacement.
-		if time.Until(cert.NotAfter) > 0 {
+		//
+		// A registered domain whose certificate came from the wrong directory
+		// is the exception: the mismatch is fresh operator intent (a
+		// --tls-staging flip), not a degraded renewal — ACME is presumably
+		// healthy, and a staging certificate is untrusted by public clients
+		// anyway — so the handshake reprovisions synchronously, exactly as a
+		// first issuance would. Dynamic domains stay on the serve-stale path
+		// even then: failing every tenant handshake at once while the issuer
+		// drains a rate-limited queue would turn one flag flip into a fleet
+		// outage.
+		syncReprovision := directoryMismatch && isRegistered
+		if time.Until(cert.NotAfter) > 0 && !syncReprovision {
 			if isRegistered || isDynamic {
 				slog.Info("Certificate due for replacement; serving held certificate meanwhile",
 					"domain", domain,
@@ -482,8 +493,8 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 			}
 			return cert.Certificate, nil
 		}
-		// Expired: nothing worth serving remains, so registered domains fall
-		// through to synchronous provisioning and dynamic ones to the issuer.
+		// Expired (or mismatched-registered): registered domains fall through
+		// to synchronous provisioning and dynamic ones to the issuer.
 	}
 
 	if isRegistered {

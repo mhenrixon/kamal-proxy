@@ -510,17 +510,17 @@ func TestSANCertManager_GetCertificate_ExpiredRegisteredCertReprovisionsSynchron
 	assert.True(t, served.Leaf.NotAfter.After(time.Now().Add(24*time.Hour)), "the handshake must get the fresh certificate")
 }
 
-// A still-valid certificate from the wrong ACME directory (post --tls-staging
-// flip) follows the same rule: serve what we hold, replace in the background.
-func TestSANCertManager_GetCertificate_MismatchedDirectoryCertServedWhileReplacementQueues(t *testing.T) {
+// A registered domain holding a certificate from the wrong ACME directory
+// (post --tls-staging flip) reprovisions synchronously: the mismatch is fresh
+// operator intent, not a degraded renewal, and a wrong-CA certificate may be
+// untrusted by the clients the flip was made for.
+func TestSANCertManager_GetCertificate_MismatchedDirectoryCertReprovisionsSynchronously(t *testing.T) {
 	manager := testSANCertManager(t)
-	obtainer := successfulObtainer(t)
-	manager.httpObtainer = obtainer
+	stagingObtainer := successfulObtainer(t)
+	manager.httpObtainer = stagingObtainer
 
-	requests := []string{}
-	manager.SetDynamicCertRequester(func(domain, service string) {
-		requests = append(requests, domain)
-	})
+	prodObtainer := successfulObtainer(t)
+	manager.directoryClients[LetsEncryptProduction] = &directoryClients{httpObtainer: prodObtainer}
 
 	require.NoError(t, manager.RegisterDomain("app.example.com", "staged"))
 	held, err := manager.adoptCertificate(
@@ -533,7 +533,37 @@ func TestSANCertManager_GetCertificate_MismatchedDirectoryCertServedWhileReplace
 	served, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: "app.example.com"})
 
 	require.NoError(t, err)
-	assert.Same(t, held.Certificate, served, "the held certificate keeps serving until its replacement lands")
-	assert.Empty(t, obtainer.Calls())
-	assert.Equal(t, []string{"app.example.com"}, requests)
+	require.NotNil(t, served)
+	assert.NotSame(t, held.Certificate, served, "the wrong-directory certificate must not keep serving")
+	require.Len(t, prodObtainer.Calls(), 1, "the replacement must be ordered at the service's directory")
+	assert.Empty(t, stagingObtainer.Calls())
+}
+
+// A dynamic domain in the same situation keeps serving: hard-failing every
+// tenant handshake while the issuer drains a rate-limited queue would turn
+// one --tls-staging flip into a fleet outage.
+func TestSANCertManager_GetCertificate_MismatchedDynamicCertServedWhileIssuerReplaces(t *testing.T) {
+	manager := testSANCertManager(t)
+	obtainer := successfulObtainer(t)
+	manager.httpObtainer = obtainer
+
+	requests := []string{}
+	manager.SetDynamicCertRequester(func(domain, service string) {
+		requests = append(requests, domain)
+	})
+
+	manager.SetDynamicDomains("tenants", []string{"shop.tenant.net"})
+	held, err := manager.adoptCertificate(
+		testCertResource(t, []string{"shop.tenant.net"}, time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour)),
+		[]string{"shop.tenant.net"})
+	require.NoError(t, err)
+
+	manager.SetServiceDirectory("tenants", LetsEncryptProduction)
+
+	served, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: "shop.tenant.net"})
+
+	require.NoError(t, err)
+	assert.Same(t, held.Certificate, served, "tenant handshakes keep serving while the issuer replaces")
+	assert.Empty(t, obtainer.Calls(), "no synchronous order may ride a tenant handshake")
+	assert.Equal(t, []string{"shop.tenant.net"}, requests)
 }
