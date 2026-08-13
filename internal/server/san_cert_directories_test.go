@@ -390,3 +390,29 @@ func TestIsExtraAccountKeyFile(t *testing.T) {
 		})
 	}
 }
+
+// Issue #102: a handshake batch never takes another service's pending hosts —
+// the primary domain's certificate lifecycle must not be coupled to hosts its
+// operator does not control.
+func TestSANCertManager_HandshakeBatchNeverMixesServices(t *testing.T) {
+	manager := testSANCertManager(t)
+	obtainer := successfulObtainer(t)
+	manager.httpObtainer = obtainer
+
+	require.NoError(t, manager.RegisterDomain("a.svc-one.test", "svc-one"))
+	require.NoError(t, manager.RegisterDomain("b.svc-one.test", "svc-one"))
+	require.NoError(t, manager.RegisterDomain("c.svc-two.test", "svc-two"))
+
+	_, err := manager.provisionCertificate(context.Background(), "a.svc-one.test")
+	require.NoError(t, err)
+
+	require.Len(t, obtainer.Calls(), 1)
+	assert.ElementsMatch(t, []string{"a.svc-one.test", "b.svc-one.test"}, obtainer.Calls()[0].Domains,
+		"the batch must take same-service mates and leave other services' hosts out")
+
+	// The other service's host kept its pending slot for a batch of its own.
+	_, err = manager.provisionCertificate(context.Background(), "c.svc-two.test")
+	require.NoError(t, err)
+	require.Len(t, obtainer.Calls(), 2)
+	assert.Equal(t, []string{"c.svc-two.test"}, obtainer.Calls()[1].Domains)
+}

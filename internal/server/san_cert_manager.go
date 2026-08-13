@@ -544,19 +544,28 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 	done := make(chan struct{})
 	m.provisioning[provisioningKey] = done
 
-	// Collect ALL pending domains (up to MaxSANsPerCertificate). Quarantined
-	// domains do not consume batch slots: with more quarantined hosts than a
-	// batch holds, the eligible ones must still fit. One order has exactly one
-	// ACME identity, so only batch-mates sharing the requested domain's
-	// directory join; the rest keep their pending slot for a batch of their
-	// own.
+	// Collect the triggering service's pending domains (up to
+	// MaxSANsPerCertificate). Quarantined domains do not consume batch slots:
+	// with more quarantined hosts than a batch holds, the eligible ones must
+	// still fit. One order has exactly one ACME identity, so only batch-mates
+	// sharing the requested domain's directory join — and only batch-mates of
+	// the SAME service: sharing a certificate across services couples the
+	// primary domain's renewal to hosts its operator does not control, for
+	// the certificate's whole life. Everything else keeps its pending slot
+	// for a batch of its own.
 	batchDirectory := m.directoryForDomainLocked(domain)
+	batchService := m.registeredDomains[domain]
 	candidates := []string{domain}
 	for pendingDomain := range m.pendingDomains {
 		if pendingDomain == domain {
 			continue
 		}
 		if m.guard.quarantine != nil && m.guard.quarantine.IsQuarantined(pendingDomain) {
+			continue
+		}
+		// The owner map is authoritative — a pending entry restored from a
+		// failed batch carries no service name.
+		if m.registeredDomains[pendingDomain] != batchService {
 			continue
 		}
 		if m.directoryForDomainLocked(pendingDomain) != batchDirectory {

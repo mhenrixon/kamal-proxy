@@ -96,6 +96,16 @@ func (m *SANCertManager) coversAllowedDomain(wildcard string) bool {
 	return false
 }
 
+// isRegisteredDomain reports whether a domain is deploy-registered — the
+// operator's own name, as opposed to a tenant domain learned from a source.
+func (m *SANCertManager) isRegisteredDomain(domain string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	_, ok := m.registeredDomains[domain]
+	return ok
+}
+
 // HasCertificate reports whether the manager has ever issued a certificate
 // covering the domain, even an expired one.
 func (m *SANCertManager) HasCertificate(domain string) bool {

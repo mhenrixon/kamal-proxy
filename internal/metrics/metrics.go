@@ -16,6 +16,7 @@ type tracker interface {
 	SetCertificateExpiry(domain string, isWildcard bool, expiryTime time.Time)
 	IncCertificateRenewals(domain string, success bool)
 	SetCertificateCount(total, wildcard, http01 int)
+	SetDeferredRenewals(count int)
 	TrackCacheEvent(service, result string)
 	TrackCacheRefusal(service, reason string)
 	TrackCacheLease(service, outcome string)
@@ -42,6 +43,7 @@ func (nullTracker) SubtractInflightRequest(service string)                      
 func (nullTracker) SetCertificateExpiry(domain string, isWildcard bool, expiryTime time.Time) {}
 func (nullTracker) IncCertificateRenewals(domain string, success bool)                        {}
 func (nullTracker) SetCertificateCount(total, wildcard, http01 int)                           {}
+func (nullTracker) SetDeferredRenewals(count int)                                             {}
 func (nullTracker) TrackCacheEvent(service, result string)                                    {}
 func (nullTracker) TrackCacheRefusal(service, reason string)                                  {}
 func (nullTracker) TrackCacheLease(service, outcome string)                                   {}
@@ -58,9 +60,10 @@ type prometheusTracker struct {
 	inflightRequests *prometheus.GaugeVec
 
 	// Certificate metrics
-	certExpiry   *prometheus.GaugeVec
-	certRenewals *prometheus.CounterVec
-	certCount    *prometheus.GaugeVec
+	certExpiry       *prometheus.GaugeVec
+	certRenewals     *prometheus.CounterVec
+	certCount        *prometheus.GaugeVec
+	deferredRenewals prometheus.Gauge
 
 	// Response cache metrics
 	cacheEvents     *prometheus.CounterVec
@@ -230,6 +233,14 @@ func NewPrometheusTracker() *prometheusTracker {
 			},
 			[]string{"type"},
 		),
+		deferredRenewals: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name:      "certificate_renewals_deferred",
+				Namespace: "kamal",
+				Subsystem: "proxy",
+				Help:      "Certificates due for renewal whose order is deferred waiting on quarantined or unreachable members.",
+			},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -239,6 +250,7 @@ func NewPrometheusTracker() *prometheusTracker {
 		tracker.certExpiry,
 		tracker.certRenewals,
 		tracker.certCount,
+		tracker.deferredRenewals,
 		tracker.cacheEvents,
 		tracker.cacheRefusals,
 		tracker.cacheLeases,
@@ -289,6 +301,10 @@ func (p *prometheusTracker) SetCertificateCount(total, wildcard, http01 int) {
 	p.certCount.WithLabelValues("total").Set(float64(total))
 	p.certCount.WithLabelValues("wildcard").Set(float64(wildcard))
 	p.certCount.WithLabelValues("http01").Set(float64(http01))
+}
+
+func (p *prometheusTracker) SetDeferredRenewals(count int) {
+	p.deferredRenewals.Set(float64(count))
 }
 
 func (p *prometheusTracker) TrackCacheEvent(service, result string) {

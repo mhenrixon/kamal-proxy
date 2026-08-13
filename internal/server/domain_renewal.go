@@ -33,6 +33,15 @@ const (
 	// Further out, renewal is deferred so a transient failure cannot unmap a
 	// domain from its still-valid certificate.
 	quarantineCompactionWindow = 7 * 24 * time.Hour
+
+	// registeredQuarantineCompactionWindow is the compaction window for a
+	// certificate covering deploy-registered hosts. Tenant domains from a
+	// domain source are individually expendable; deploy hosts are the
+	// operator's own names, so their renewal must not be deferred into the
+	// final week by a flapping batch-mate — compaction starts a week
+	// earlier, at the cost of an occasionally forfeited identical-set
+	// renewal exemption.
+	registeredQuarantineCompactionWindow = 14 * 24 * time.Hour
 )
 
 // renewalInfoGetter is implemented by obtainers that support ACME Renewal
@@ -142,8 +151,10 @@ func (r *certRenewer) run() {
 }
 
 // reconcile checks every managed certificate once, renewing or dropping as
-// needed, then refreshes the certificate metrics.
+// needed, then refreshes the certificate metrics — including the gauge of
+// renewals currently deferred waiting on quarantined or unreachable members.
 func (r *certRenewer) reconcile() {
+	deferred := 0
 	for _, cert := range r.manager.ManagedCertificates() {
 		if r.ctx.Err() != nil {
 			return
@@ -161,11 +172,26 @@ func (r *certRenewer) reconcile() {
 		// replaced regardless of what ARI (queried at a directory that may no
 		// longer be the right one) would say about its timing.
 		if r.directoryChanged(cert) || r.shouldRenew(cert) {
-			r.renew(cert)
+			if r.renew(cert) {
+				deferred++
+			}
 		}
 	}
 
+	metrics.Tracker.SetDeferredRenewals(deferred)
 	r.reportMetrics()
+}
+
+// compactionWindowFor returns how close to expiry a partially-blocked
+// certificate may keep deferring its renewal: certificates covering a
+// deploy-registered host compact a week earlier than tenant-only ones.
+func (r *certRenewer) compactionWindowFor(domains []string) time.Duration {
+	for _, domain := range domains {
+		if r.manager.isRegisteredDomain(domain) {
+			return registeredQuarantineCompactionWindow
+		}
+	}
+	return quarantineCompactionWindow
 }
 
 // directoryChanged reports whether any of the certificate's domains is owned
@@ -206,29 +232,33 @@ func (r *certRenewer) shouldRenew(cert *ManagedCert) bool {
 
 // renew re-obtains a certificate for its identifier set minus evicted and
 // quarantined members. An unchanged set keeps Let's Encrypt's renewal
-// exemption; ARI `replaces` exempts the order entirely where supported.
-func (r *certRenewer) renew(cert *ManagedCert) {
+// exemption; ARI `replaces` exempts the order entirely where supported. It
+// reports whether the renewal was deferred waiting on blocked members, so
+// reconcile can surface the count as a gauge.
+func (r *certRenewer) renew(cert *ManagedCert) (deferred bool) {
 	allowed := r.renewableDomains(cert)
 	if len(allowed) == 0 {
 		// reconcile retires zero-renewable certificates before calling renew.
-		return
+		return false
 	}
 
 	domains, quarantined := r.quarantine.Filter(allowed)
 	if len(domains) == 0 {
 		slog.Info("Deferring renewal; all remaining domains are quarantined",
 			"certificate", cert.Identifier, "quarantined", quarantined)
-		return
+		return true
 	}
 
 	// While there is time, wait for quarantined members rather than renewing
 	// without them: a shrunken set would unmap them from a still-valid
 	// certificate AND forfeit the identical-set renewal exemption. Compact
-	// only when expiry is close.
-	if len(quarantined) > 0 && time.Until(cert.NotAfter) > quarantineCompactionWindow {
+	// only when expiry is close — closer for tenant-only certificates than
+	// for ones covering the operator's own deploy-registered hosts.
+	compactionWindow := r.compactionWindowFor(allowed)
+	if len(quarantined) > 0 && time.Until(cert.NotAfter) > compactionWindow {
 		slog.Info("Deferring renewal until quarantined members recover",
 			"certificate", cert.Identifier, "quarantined", quarantined)
-		return
+		return true
 	}
 
 	// Probe the remaining members before spending an order: a tenant whose
@@ -236,10 +266,10 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	// or worse, fail in a way ACME does not attribute to any one domain.
 	// Unreachable members follow the same policy as quarantined ones.
 	if unreachable := r.preflightMembers(domains); len(unreachable) > 0 {
-		if time.Until(cert.NotAfter) > quarantineCompactionWindow {
+		if time.Until(cert.NotAfter) > compactionWindow {
 			slog.Info("Deferring renewal until unreachable members recover",
 				"certificate", cert.Identifier, "unreachable", unreachable)
-			return
+			return true
 		}
 
 		domains = slices.DeleteFunc(domains, func(domain string) bool {
@@ -248,7 +278,7 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 		if len(domains) == 0 {
 			slog.Info("Deferring renewal; every member failed the pre-flight probe",
 				"certificate", cert.Identifier)
-			return
+			return true
 		}
 	}
 
@@ -311,6 +341,8 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	if len(newIdentifiers) > 0 {
 		r.notifyChange()
 	}
+
+	return false
 }
 
 // renewPartition runs one renewal order at the partition's directory and
