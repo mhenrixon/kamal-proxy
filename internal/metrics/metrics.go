@@ -3,13 +3,17 @@ package metrics
 import (
 	"net/http"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-type tracker interface {
+// EventTracker is the sink for metric emissions. The process-wide instance is
+// reached through Tracker and swapped with SetTracker.
+type EventTracker interface {
 	TrackRequest(service, method string, status int, duration time.Duration)
 	AddInflightRequest(service string)
 	SubtractInflightRequest(service string)
@@ -28,11 +32,114 @@ type tracker interface {
 	TrackDenial(service, rule string)
 }
 
-var Tracker tracker = &nullTracker{}
+// Tracker delegates every emission to the tracker SetTracker installed last (a
+// no-op until Enable runs). The delegate is behind an atomic pointer because
+// installation must not race with request goroutines emitting through it --
+// and in tests, background work outlives the test that started it.
+var Tracker = &delegatingTracker{}
 
+var enableOnce sync.Once
+
+// Enable installs the Prometheus tracker and returns the handler serving its
+// collectors. Registration happens once per process: the collectors live in
+// the default registry, which panics on re-registration, and a second
+// metrics-enabled server (or `go test -count=2`) must reuse them. Later calls
+// also leave the active tracker alone, so a tracker installed in between (a
+// test fake) keeps receiving events.
 func Enable() http.Handler {
-	Tracker = NewPrometheusTracker()
+	enableOnce.Do(func() {
+		SetTracker(NewPrometheusTracker())
+	})
 	return promhttp.Handler()
+}
+
+// SetTracker atomically installs t as the destination for all metric events
+// and returns the tracker it replaced, so tests can restore it.
+func SetTracker(t EventTracker) EventTracker {
+	previous := Tracker.delegate.Swap(&trackerBox{t})
+	if previous == nil {
+		return &nullTracker{}
+	}
+	return previous.t
+}
+
+// trackerBox keeps the atomic pointer to a single concrete type while the
+// tracked value stays an interface.
+type trackerBox struct{ t EventTracker }
+
+type delegatingTracker struct {
+	delegate atomic.Pointer[trackerBox]
+}
+
+func (d *delegatingTracker) active() EventTracker {
+	if box := d.delegate.Load(); box != nil {
+		return box.t
+	}
+	return nullTracker{}
+}
+
+func (d *delegatingTracker) TrackRequest(service, method string, status int, duration time.Duration) {
+	d.active().TrackRequest(service, method, status, duration)
+}
+
+func (d *delegatingTracker) AddInflightRequest(service string) {
+	d.active().AddInflightRequest(service)
+}
+
+func (d *delegatingTracker) SubtractInflightRequest(service string) {
+	d.active().SubtractInflightRequest(service)
+}
+
+func (d *delegatingTracker) SetCertificateExpiry(domain string, isWildcard bool, expiryTime time.Time) {
+	d.active().SetCertificateExpiry(domain, isWildcard, expiryTime)
+}
+
+func (d *delegatingTracker) IncCertificateRenewals(domain string, success bool) {
+	d.active().IncCertificateRenewals(domain, success)
+}
+
+func (d *delegatingTracker) SetCertificateCount(total, wildcard, http01 int) {
+	d.active().SetCertificateCount(total, wildcard, http01)
+}
+
+func (d *delegatingTracker) SetDeferredRenewals(count int) {
+	d.active().SetDeferredRenewals(count)
+}
+
+func (d *delegatingTracker) TrackCacheEvent(service, result string) {
+	d.active().TrackCacheEvent(service, result)
+}
+
+func (d *delegatingTracker) TrackCacheRefusal(service, reason string) {
+	d.active().TrackCacheRefusal(service, reason)
+}
+
+func (d *delegatingTracker) TrackCacheLease(service, outcome string) {
+	d.active().TrackCacheLease(service, outcome)
+}
+
+func (d *delegatingTracker) TrackCacheLeaseWait(service, outcome string) {
+	d.active().TrackCacheLeaseWait(service, outcome)
+}
+
+func (d *delegatingTracker) TrackCacheEviction(service, state string) {
+	d.active().TrackCacheEviction(service, state)
+}
+
+func (d *delegatingTracker) SetDynamicRedirects(service string, hosts, rules int) {
+	d.active().SetDynamicRedirects(service, hosts, rules)
+}
+
+func (d *delegatingTracker) TrackDynamicRedirectPoll(service, outcome string) {
+	d.active().TrackDynamicRedirectPoll(service, outcome)
+}
+
+func (d *delegatingTracker) TrackDynamicRedirect(service string, status int) {
+	d.active().TrackDynamicRedirect(service, status)
+}
+
+func (d *delegatingTracker) TrackDenial(service, rule string) {
+	d.active().TrackDenial(service, rule)
 }
 
 type nullTracker struct{}

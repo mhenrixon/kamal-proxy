@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,118 +242,15 @@ func (f *fakeTracker) renewalCount(domain string, success bool) int {
 	return f.renewals[key]
 }
 
-// switchableTracker is installed into metrics.Tracker exactly once, before any
-// test runs, and thereafter only its delegate changes.
-//
-// Swapping metrics.Tracker itself is a data race: it is a package-level variable
-// that every request path reads, and background work outlives the test that
-// started it -- a stale revalidation goroutine reading the tracker while the
-// next test installs its own is a genuine concurrent write. Swapping an atomic
-// delegate instead removes the write entirely.
-type switchableTracker struct {
-	delegate atomic.Pointer[fakeTracker]
-}
-
-var activeTracker = &switchableTracker{}
-
-func init() {
-	// In init rather than in installFakeTracker: at this point no goroutine
-	// exists that could be reading the variable.
-	metrics.Tracker = activeTracker
-}
-
-func (s *switchableTracker) current() *fakeTracker { return s.delegate.Load() }
-
-func (s *switchableTracker) TrackRequest(service, method string, status int, dur time.Duration) {}
-func (s *switchableTracker) AddInflightRequest(service string)                                  {}
-func (s *switchableTracker) SubtractInflightRequest(service string)                             {}
-
-func (s *switchableTracker) SetCertificateExpiry(domain string, isWildcard bool, expiry time.Time) {
-	if fake := s.current(); fake != nil {
-		fake.SetCertificateExpiry(domain, isWildcard, expiry)
-	}
-}
-
-func (s *switchableTracker) IncCertificateRenewals(domain string, success bool) {
-	if fake := s.current(); fake != nil {
-		fake.IncCertificateRenewals(domain, success)
-	}
-}
-
-func (s *switchableTracker) SetCertificateCount(total, wildcard, http01 int) {
-	if fake := s.current(); fake != nil {
-		fake.SetCertificateCount(total, wildcard, http01)
-	}
-}
-
-func (s *switchableTracker) SetDeferredRenewals(count int) {
-	if fake := s.current(); fake != nil {
-		fake.SetDeferredRenewals(count)
-	}
-}
-
-func (s *switchableTracker) TrackCacheEvent(service, result string) {
-	if fake := s.current(); fake != nil {
-		fake.TrackCacheEvent(service, result)
-	}
-}
-
-func (s *switchableTracker) TrackCacheRefusal(service, reason string) {
-	if fake := s.current(); fake != nil {
-		fake.TrackCacheRefusal(service, reason)
-	}
-}
-
-func (s *switchableTracker) TrackCacheLease(service, outcome string) {
-	if fake := s.current(); fake != nil {
-		fake.TrackCacheLease(service, outcome)
-	}
-}
-
-func (s *switchableTracker) TrackCacheLeaseWait(service, outcome string) {
-	if fake := s.current(); fake != nil {
-		fake.TrackCacheLeaseWait(service, outcome)
-	}
-}
-
-func (s *switchableTracker) TrackCacheEviction(service, state string) {
-	if fake := s.current(); fake != nil {
-		fake.TrackCacheEviction(service, state)
-	}
-}
-
-func (s *switchableTracker) SetDynamicRedirects(service string, hosts, rules int) {
-	if fake := s.current(); fake != nil {
-		fake.SetDynamicRedirects(service, hosts, rules)
-	}
-}
-
-func (s *switchableTracker) TrackDynamicRedirectPoll(service, outcome string) {
-	if fake := s.current(); fake != nil {
-		fake.TrackDynamicRedirectPoll(service, outcome)
-	}
-}
-
-func (s *switchableTracker) TrackDynamicRedirect(service string, status int) {
-	if fake := s.current(); fake != nil {
-		fake.TrackDynamicRedirect(service, status)
-	}
-}
-
-func (s *switchableTracker) TrackDenial(service, rule string) {
-	if fake := s.current(); fake != nil {
-		fake.TrackDenial(service, rule)
-	}
-}
-
 // installFakeTracker points the tracker at a fresh capturing tracker for the
-// duration of one test.
+// duration of one test. metrics.SetTracker swaps atomically, so background
+// work left over from other tests can keep emitting while it happens.
 func installFakeTracker(t *testing.T) *fakeTracker {
 	t.Helper()
 
 	fake := newFakeTracker()
-	previous := activeTracker.delegate.Swap(fake)
-	t.Cleanup(func() { activeTracker.delegate.Store(previous) })
+	previous := metrics.SetTracker(fake)
+	t.Cleanup(func() { metrics.SetTracker(previous) })
 
 	return fake
 }
