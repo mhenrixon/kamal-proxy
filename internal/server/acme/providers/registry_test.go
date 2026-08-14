@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/basecamp/kamal-proxy/internal/server/acme"
@@ -112,23 +111,4 @@ func TestNewProvider_Route53SkipsCredentialCheck(t *testing.T) {
 	provider, ok := registry[acme.ProviderRoute53]
 	require.True(t, ok)
 	assert.True(t, provider.NoBootCheck)
-}
-
-// GetSupportedProviders and the registry must agree, "auto" aside.
-func TestRegistry_MatchesSupportedProviders(t *testing.T) {
-	supported := acme.GetSupportedProviders()
-
-	for name := range registry {
-		assert.Contains(t, supported, name)
-	}
-
-	for _, name := range supported {
-		if name == acme.ProviderAuto {
-			continue
-		}
-		_, ok := registry[name]
-		assert.True(t, ok, "supported provider %s missing from registry", name)
-	}
-
-	assert.True(t, slices.Contains(supported, acme.ProviderAuto))
 }

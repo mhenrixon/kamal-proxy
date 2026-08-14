@@ -34,21 +34,6 @@ const DefaultProductionDirectory = "https://acme-v02.api.letsencrypt.org/directo
 // DefaultStagingDirectory is the Let's Encrypt staging ACME directory
 const DefaultStagingDirectory = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
-// GetSupportedProviders returns a list of supported DNS providers
-func GetSupportedProviders() []ProviderName {
-	return []ProviderName{
-		ProviderCloudflare,
-		ProviderRoute53,
-		ProviderDigitalOcean,
-		ProviderGoogleCloud,
-		ProviderNamecheap,
-		ProviderGoDaddy,
-		ProviderHetzner,
-		ProviderVultr,
-		ProviderAuto,
-	}
-}
-
 // ParseProviderName parses a string into a ProviderName
 func ParseProviderName(s string) (ProviderName, error) {
 	switch strings.ToLower(s) {

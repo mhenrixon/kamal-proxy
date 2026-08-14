@@ -12,6 +12,7 @@ import (
 
 	"github.com/basecamp/kamal-proxy/internal/server"
 	"github.com/basecamp/kamal-proxy/internal/server/acme"
+	"github.com/basecamp/kamal-proxy/internal/server/acme/providers"
 )
 
 type runCommand struct {
@@ -66,7 +67,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().StringVar(&globalConfig.MinTLS, "min-tls", getEnvString("MIN_TLS", server.DefaultMinTLSVersion), "Lowest TLS version the HTTPS listener will negotiate: 1.2 or 1.3 (TLS 1.0 and 1.1 cannot be enabled; HTTP/3 is always 1.3)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEEmail, "acme-email", getEnvString("ACME_EMAIL", ""), "Email address for ACME account registration (required for automatic TLS)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEDirectory, "acme-directory", getEnvString("ACME_DIRECTORY", server.LetsEncryptProduction), "ACME directory URL")
-	runCommand.cmd.Flags().StringSliceVar(&runCommand.acmeDNSProviders, "acme-dns-provider", strings.Split(getEnvString("ACME_DNS_PROVIDER", "auto"), ","), "DNS provider for DNS-01 challenges (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto). Repeatable: zone=provider entries pin a zone to the DNS host that serves it, and one bare entry is the default for unmatched zones")
+	runCommand.cmd.Flags().StringSliceVar(&runCommand.acmeDNSProviders, "acme-dns-provider", strings.Split(getEnvString("ACME_DNS_PROVIDER", "auto"), ","), "DNS provider for DNS-01 challenges (one of: "+providers.ProviderListForHelp()+"). Repeatable: zone=provider entries pin a zone to the DNS host that serves it, and one bare entry is the default for unmatched zones")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEPreferWildcard, "acme-prefer-wildcard", getEnvBool("ACME_PREFER_WILDCARD", true), "Prefer wildcard certificates when DNS provider available")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEHTTPFallback, "acme-http-fallback", getEnvBool("ACME_HTTP_FALLBACK", true), "Fall back to HTTP-01 challenge if DNS-01 fails")
 
