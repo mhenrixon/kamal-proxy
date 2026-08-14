@@ -1,0 +1,30 @@
+internal/server/san_cert_directories_test.go
+  s_0c1aa74f31faea::t_20ca0543cea825 419-445
+internal/server/domain_renewal_test.go
+  s_0c1aa74f31faea::t_20ca0543cea825 770-791
+internal/server/san_cert_dynamic.go
+  s_0c1aa74f31faea::t_c446acc48b5d8e 99-104,108-117
+internal/server/san_cert_manager.go
+  s_0c1aa74f31faea::t_e4aeae78fcfd09 527-532
+internal/server/domain_renewal.go
+  s_0c1aa74f31faea::t_c04fa26167c423 187-188,191
+internal/server/san_cert_manager_test.go
+  s_0c1aa74f31faea::t_847bdadfff1356 585-586,589
+  s_0c1aa74f31faea::t_f928427bf11736 626
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a3dcd2d2a2c798ab49b8b88a7ab151430b02ba73",
+  "prompts": {},
+  "sessions": {
+    "s_0c1aa74f31faea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce428264-8ca7-44e0-986c-9f8f6361689b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
