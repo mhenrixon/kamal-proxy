@@ -1,0 +1,33 @@
+internal/server/acme/providers/gen/main.go
+  s_0c1aa74f31faea::t_12ff18aa688f82 1-38
+internal/cmd/run_providers_test.go
+  s_0c1aa74f31faea::t_b6c2f757e432f9 1-23
+internal/server/acme/providers/docs.go
+  s_0c1aa74f31faea::t_0603ab67da2ff3 1-11,14-110
+  s_0c1aa74f31faea::t_9a1de3db6f3c14 12-13
+internal/server/acme/providers/docs_test.go
+  s_0c1aa74f31faea::t_6c43f4c9ac3b6e 1-98
+README.md
+  s_0c1aa74f31faea::t_dd63f9a476b313 1092-1101
+  s_0c1aa74f31faea::t_3babe44bdeefbe 1091,1102
+  s_0c1aa74f31faea::t_8ea80efeb87bf4 1139
+internal/cmd/run.go
+  s_0c1aa74f31faea::t_9bdea5d2326101 15
+  s_0c1aa74f31faea::t_6a08ecd46bb6c6 70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "aa1746881516bd687a1fe8a827885687a9d54bc5",
+  "prompts": {},
+  "sessions": {
+    "s_0c1aa74f31faea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce428264-8ca7-44e0-986c-9f8f6361689b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
