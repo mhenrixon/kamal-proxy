@@ -1088,16 +1088,18 @@ needs access to your DNS provider's API.
 
 **Supported DNS Providers:**
 
-| Provider | Environment Variables |
-|----------|----------------------|
-| Cloudflare | `CF_API_TOKEN` or (`CF_API_KEY` + `CF_API_EMAIL`) |
-| AWS Route53 | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
-| DigitalOcean | `DO_AUTH_TOKEN` |
-| Google Cloud DNS | `GCE_PROJECT` + `GOOGLE_APPLICATION_CREDENTIALS` |
-| Namecheap | `NAMECHEAP_API_USER` + `NAMECHEAP_API_KEY` |
-| GoDaddy | `GODADDY_API_KEY` + `GODADDY_API_SECRET` |
-| Hetzner | `HETZNER_API_KEY` |
-| Vultr | `VULTR_API_KEY` |
+<!-- BEGIN GENERATED: dns-provider-table (go generate ./internal/server/acme/providers) -->
+| Provider | Credentials | Optional |
+|----------|-------------|----------|
+| [Cloudflare](https://go-acme.github.io/lego/dns/cloudflare/) | `CF_API_TOKEN` or `CF_DNS_API_TOKEN` or (`CF_API_KEY` + `CF_API_EMAIL`) | `CF_API_EMAIL`, `CF_API_KEY`, `CF_DNS_API_TOKEN`, `CF_ZONE_API_TOKEN` |
+| [DigitalOcean](https://go-acme.github.io/lego/dns/digitalocean/) | `DO_AUTH_TOKEN` | — |
+| [Google Cloud DNS](https://go-acme.github.io/lego/dns/gcloud/) | `GCE_PROJECT` | `GCE_SERVICE_ACCOUNT_FILE`, `GOOGLE_APPLICATION_CREDENTIALS` |
+| [GoDaddy](https://go-acme.github.io/lego/dns/godaddy/) | (`GODADDY_API_KEY` + `GODADDY_API_SECRET`) | — |
+| [Hetzner](https://go-acme.github.io/lego/dns/hetzner/) | `HETZNER_API_KEY` | — |
+| [Namecheap](https://go-acme.github.io/lego/dns/namecheap/) | (`NAMECHEAP_API_USER` + `NAMECHEAP_API_KEY`) | `NAMECHEAP_SANDBOX` |
+| [AWS Route53](https://go-acme.github.io/lego/dns/route53/) | (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`) | `AWS_REGION`, `AWS_HOSTED_ZONE_ID`, `AWS_PROFILE` |
+| [Vultr](https://go-acme.github.io/lego/dns/vultr/) | `VULTR_API_KEY` | — |
+<!-- END GENERATED: dns-provider-table -->
 
 **Enabling wildcard certificates:**
 
@@ -1134,7 +1136,7 @@ rate limits (50 certificates per registered domain per week).
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
 | `--acme-email` | `ACME_EMAIL` | (required) | Contact email for Let's Encrypt |
-| `--acme-dns-provider` | `ACME_DNS_PROVIDER` | `auto` | DNS provider (cloudflare, route53, digitalocean, gcloud, namecheap, godaddy, hetzner, vultr, auto). Repeatable; `zone=provider` entries pin a zone to its DNS host |
+| `--acme-dns-provider` | `ACME_DNS_PROVIDER` | `auto` | DNS provider for DNS-01 challenges — any name from the supported-providers table above, or `auto`. Repeatable; `zone=provider` entries pin a zone to its DNS host |
 | `--acme-directory` | `ACME_DIRECTORY` | Let's Encrypt production | ACME directory URL |
 | `--acme-prefer-wildcard` | `ACME_PREFER_WILDCARD` | `true` | Prefer wildcard certificates when DNS provider available |
 | `--acme-http-fallback` | `ACME_HTTP_FALLBACK` | `true` | Fall back to HTTP-01 challenge if DNS-01 fails |
