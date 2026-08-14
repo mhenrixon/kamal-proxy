@@ -416,3 +416,30 @@ func TestSANCertManager_HandshakeBatchNeverMixesServices(t *testing.T) {
 	require.Len(t, obtainer.Calls(), 2)
 	assert.Equal(t, []string{"c.svc-two.test"}, obtainer.Calls()[1].Domains)
 }
+
+// A handshake must not wait out another service's in-flight order — that
+// order will never cover this domain, and the waiter would fail spuriously
+// instead of placing its own service's batch.
+func TestSANCertManager_HandshakeDoesNotWaitOnAnotherServicesOrder(t *testing.T) {
+	manager := testSANCertManager(t)
+	obtainer := successfulObtainer(t)
+	manager.httpObtainer = obtainer
+
+	require.NoError(t, manager.RegisterDomain("a.svc-one.test", "svc-one"))
+	require.NoError(t, manager.RegisterDomain("c.svc-two.test", "svc-two"))
+
+	// Simulate service one's order having run under the old global slot: a
+	// completed unrelated batch must not satisfy — or fail — service two.
+	stale := make(chan struct{})
+	close(stale)
+	manager.mu.Lock()
+	manager.provisioning["_batch_"] = stale
+	manager.mu.Unlock()
+
+	cert, err := manager.provisionCertificate(context.Background(), "c.svc-two.test")
+
+	require.NoError(t, err, "service two must place its own order, not inherit another's outcome")
+	require.NotNil(t, cert)
+	require.Len(t, obtainer.Calls(), 1)
+	assert.ElementsMatch(t, []string{"c.svc-two.test"}, obtainer.Calls()[0].Domains)
+}

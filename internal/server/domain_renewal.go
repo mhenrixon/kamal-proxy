@@ -184,10 +184,11 @@ func (r *certRenewer) reconcile() {
 
 // compactionWindowFor returns how close to expiry a partially-blocked
 // certificate may keep deferring its renewal: certificates covering a
-// deploy-registered host compact a week earlier than tenant-only ones.
+// deploy-registered host — directly or through a wildcard member — compact
+// a week earlier than tenant-only ones.
 func (r *certRenewer) compactionWindowFor(domains []string) time.Duration {
 	for _, domain := range domains {
-		if r.manager.isRegisteredDomain(domain) {
+		if r.manager.coversRegisteredDomain(domain) {
 			return registeredQuarantineCompactionWindow
 		}
 	}

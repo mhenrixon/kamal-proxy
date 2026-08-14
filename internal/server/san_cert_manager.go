@@ -523,10 +523,13 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 // has already been consulted. The rate limit has not, and this path is
 // handshake-driven, so it takes a token before ordering.
 func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string) (*tls.Certificate, error) {
-	// Use a single provisioning lock - we batch everything together
-	const provisioningKey = "_batch_"
-
 	m.mu.Lock()
+	// One in-flight batch per service. The single-flight exists to stop the
+	// SAME batch being ordered twice by concurrent handshakes; batches never
+	// span services, so a global slot would only make one service's
+	// handshake wait out — and then spuriously fail after — another
+	// service's unrelated order.
+	provisioningKey := "service:" + m.registeredDomains[domain]
 	if done, ok := m.provisioning[provisioningKey]; ok {
 		m.mu.Unlock()
 		// Wait for existing provisioning to complete

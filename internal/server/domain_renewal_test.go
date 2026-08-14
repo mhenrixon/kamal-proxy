@@ -767,3 +767,25 @@ func TestCertRenewer_ReportsDeferredRenewals(t *testing.T) {
 	require.NotEmpty(t, obtainer.Calls())
 	assert.Equal(t, 0, fake.DeferredRenewals(), "a completed renewal must clear the gauge")
 }
+
+// A wildcard certificate is synthesized from deploy-registered siblings, so
+// it must get the registered compaction window even though its member list
+// holds the wildcard identifier rather than the concrete hosts.
+func TestCertRenewer_WildcardCertCoveringRegisteredHostCompactsEarly(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	adoptTestCert(t, manager, []string{"*.wild.test", "extra.dyn.test"},
+		time.Now().Add(-80*24*time.Hour), time.Now().Add(10*24*time.Hour))
+	require.NoError(t, manager.RegisterDomain("app.wild.test", "web"))
+	manager.SetDynamicDomains("tenants", []string{"extra.dyn.test"})
+	quarantine.RecordFailure("extra.dyn.test", quarantineACME)
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 1, "a wildcard covering a registered host must compact inside the wider window")
+	assert.Equal(t, []string{"*.wild.test"}, calls[0].Domains)
+}
