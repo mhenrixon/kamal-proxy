@@ -1,0 +1,24 @@
+internal/server/acme/providers/docs_test.go
+  s_0c1aa74f31faea::t_d64c900cb0cccf 28-29
+  s_0c1aa74f31faea::t_e0a9b5363cad05 80-87,90-91
+README.md
+  s_0c1aa74f31faea::t_b61fd85847c1d5 1092-1101
+internal/server/acme/providers/docs.go
+  s_0c1aa74f31faea::t_7b2de3c357566b 45-49,52-53,57-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9323e30098eae45675b7d14fada74814205892dc",
+  "prompts": {},
+  "sessions": {
+    "s_0c1aa74f31faea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce428264-8ca7-44e0-986c-9f8f6361689b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
