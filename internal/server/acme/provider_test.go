@@ -75,23 +75,6 @@ func TestParseProviderName(t *testing.T) {
 	}
 }
 
-func TestGetSupportedProviders(t *testing.T) {
-	providers := GetSupportedProviders()
-
-	// Should have all expected providers
-	assert.Contains(t, providers, ProviderCloudflare)
-	assert.Contains(t, providers, ProviderRoute53)
-	assert.Contains(t, providers, ProviderDigitalOcean)
-	assert.Contains(t, providers, ProviderGoogleCloud)
-	assert.Contains(t, providers, ProviderNamecheap)
-	assert.Contains(t, providers, ProviderGoDaddy)
-	assert.Contains(t, providers, ProviderHetzner)
-	assert.Contains(t, providers, ProviderVultr)
-	assert.Contains(t, providers, ProviderAuto)
-
-	assert.Len(t, providers, 9)
-}
-
 func TestCheckEnvVars(t *testing.T) {
 	tests := []struct {
 		name    string

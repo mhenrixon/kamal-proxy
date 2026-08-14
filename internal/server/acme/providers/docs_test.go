@@ -25,8 +25,8 @@ func TestProviderTableMarkdown_RendersEveryRegistryEntry(t *testing.T) {
 	table := ProviderTableMarkdown()
 
 	for name, provider := range registry {
-		assert.Contains(t, table, "["+provider.DisplayName+"]("+provider.Docs+")",
-			"provider %s must appear with its docs link", name)
+		assert.Contains(t, table, "| `"+string(name)+"` | ["+provider.DisplayName+"]("+provider.Docs+")",
+			"provider %s must appear with its flag value and docs link", name)
 	}
 
 	// The credential column renders the full OR-of-ANDs rule, not prose:
@@ -77,13 +77,18 @@ func TestREADMEProviderTable_MatchesRegistry(t *testing.T) {
 		return
 	}
 
-	missing := []string{}
-	for _, name := range Names() {
-		if !strings.Contains(string(data), "["+registry[name].DisplayName+"](") {
-			missing = append(missing, string(name))
+	// Name the rows the registry renders that the committed table lacks —
+	// a brand-new provider AND a changed row (credentials, optional vars)
+	// both surface as an expected line the document does not contain.
+	stale := []string{}
+	for line := range strings.Lines(ProviderTableMarkdown()) {
+		line = strings.TrimSuffix(line, "\n")
+		if line != "" && !strings.Contains(string(data), line) {
+			stale = append(stale, line)
 		}
 	}
-	t.Fatalf("README.md provider table is out of date (run `go generate ./internal/server/acme/providers`); missing rows: %v", missing)
+	t.Fatalf("README.md provider table is out of date (run `go generate ./internal/server/acme/providers`); stale or missing rows:\n%s",
+		strings.Join(stale, "\n"))
 }
 
 // The flag help must enumerate the registry, plus the auto pseudo-provider,

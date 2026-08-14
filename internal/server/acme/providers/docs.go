@@ -42,18 +42,20 @@ func ProviderListForHelp() string {
 }
 
 // ProviderTableMarkdown renders the supported-provider table: one row per
-// registry entry, the display name linked to its lego documentation, the
-// credential rule as the same OR-of-ANDs the boot check enforces, and the
-// optional variables the entry names.
+// registry entry, leading with the name the --acme-dns-provider flag accepts
+// (a display name like "AWS Route53" is not a flag value), then the display
+// name linked to its lego documentation, the credential rule as the same
+// OR-of-ANDs the boot check enforces, and the optional variables the entry
+// names.
 func ProviderTableMarkdown() string {
 	var b strings.Builder
-	b.WriteString("| Provider | Credentials | Optional |\n")
-	b.WriteString("|----------|-------------|----------|\n")
+	b.WriteString("| Name | Provider | Credentials | Optional |\n")
+	b.WriteString("|------|----------|-------------|----------|\n")
 
 	for _, name := range Names() {
 		provider := registry[name]
-		fmt.Fprintf(&b, "| [%s](%s) | %s | %s |\n",
-			provider.DisplayName, provider.Docs,
+		fmt.Fprintf(&b, "| `%s` | [%s](%s) | %s | %s |\n",
+			name, provider.DisplayName, provider.Docs,
 			markdownCredentialSets(provider.credentialSets()),
 			markdownVars(provider.Optional))
 	}

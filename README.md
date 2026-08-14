@@ -1089,16 +1089,16 @@ needs access to your DNS provider's API.
 **Supported DNS Providers:**
 
 <!-- BEGIN GENERATED: dns-provider-table (go generate ./internal/server/acme/providers) -->
-| Provider | Credentials | Optional |
-|----------|-------------|----------|
-| [Cloudflare](https://go-acme.github.io/lego/dns/cloudflare/) | `CF_API_TOKEN` or `CF_DNS_API_TOKEN` or (`CF_API_KEY` + `CF_API_EMAIL`) | `CF_API_EMAIL`, `CF_API_KEY`, `CF_DNS_API_TOKEN`, `CF_ZONE_API_TOKEN` |
-| [DigitalOcean](https://go-acme.github.io/lego/dns/digitalocean/) | `DO_AUTH_TOKEN` | — |
-| [Google Cloud DNS](https://go-acme.github.io/lego/dns/gcloud/) | `GCE_PROJECT` | `GCE_SERVICE_ACCOUNT_FILE`, `GOOGLE_APPLICATION_CREDENTIALS` |
-| [GoDaddy](https://go-acme.github.io/lego/dns/godaddy/) | (`GODADDY_API_KEY` + `GODADDY_API_SECRET`) | — |
-| [Hetzner](https://go-acme.github.io/lego/dns/hetzner/) | `HETZNER_API_KEY` | — |
-| [Namecheap](https://go-acme.github.io/lego/dns/namecheap/) | (`NAMECHEAP_API_USER` + `NAMECHEAP_API_KEY`) | `NAMECHEAP_SANDBOX` |
-| [AWS Route53](https://go-acme.github.io/lego/dns/route53/) | (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`) | `AWS_REGION`, `AWS_HOSTED_ZONE_ID`, `AWS_PROFILE` |
-| [Vultr](https://go-acme.github.io/lego/dns/vultr/) | `VULTR_API_KEY` | — |
+| Name | Provider | Credentials | Optional |
+|------|----------|-------------|----------|
+| `cloudflare` | [Cloudflare](https://go-acme.github.io/lego/dns/cloudflare/) | `CF_API_TOKEN` or `CF_DNS_API_TOKEN` or (`CF_API_KEY` + `CF_API_EMAIL`) | `CF_API_EMAIL`, `CF_API_KEY`, `CF_DNS_API_TOKEN`, `CF_ZONE_API_TOKEN` |
+| `digitalocean` | [DigitalOcean](https://go-acme.github.io/lego/dns/digitalocean/) | `DO_AUTH_TOKEN` | — |
+| `gcloud` | [Google Cloud DNS](https://go-acme.github.io/lego/dns/gcloud/) | `GCE_PROJECT` | `GCE_SERVICE_ACCOUNT_FILE`, `GOOGLE_APPLICATION_CREDENTIALS` |
+| `godaddy` | [GoDaddy](https://go-acme.github.io/lego/dns/godaddy/) | (`GODADDY_API_KEY` + `GODADDY_API_SECRET`) | — |
+| `hetzner` | [Hetzner](https://go-acme.github.io/lego/dns/hetzner/) | `HETZNER_API_KEY` | — |
+| `namecheap` | [Namecheap](https://go-acme.github.io/lego/dns/namecheap/) | (`NAMECHEAP_API_USER` + `NAMECHEAP_API_KEY`) | `NAMECHEAP_SANDBOX` |
+| `route53` | [AWS Route53](https://go-acme.github.io/lego/dns/route53/) | (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`) | `AWS_REGION`, `AWS_HOSTED_ZONE_ID`, `AWS_PROFILE` |
+| `vultr` | [Vultr](https://go-acme.github.io/lego/dns/vultr/) | `VULTR_API_KEY` | — |
 <!-- END GENERATED: dns-provider-table -->
 
 **Enabling wildcard certificates:**
