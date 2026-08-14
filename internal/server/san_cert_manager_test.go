@@ -582,10 +582,11 @@ func TestSANCertManager_GetCertificate_WaiterRefusesStillMismatchedCert(t *testi
 
 	manager.SetServiceDirectory("staged", LetsEncryptProduction)
 
-	// Occupy the provisioning slot, as a concurrent handshake's order would.
+	// Occupy the service's provisioning slot, as a concurrent handshake's
+	// order for the same service would.
 	inflight := make(chan struct{})
 	manager.mu.Lock()
-	manager.provisioning["_batch_"] = inflight
+	manager.provisioning["service:staged"] = inflight
 	manager.mu.Unlock()
 
 	type result struct {
@@ -622,7 +623,7 @@ func TestSANCertManager_GetCertificate_WaiterRefusesExpiredCert(t *testing.T) {
 
 	inflight := make(chan struct{})
 	manager.mu.Lock()
-	manager.provisioning["_batch_"] = inflight
+	manager.provisioning["service:web"] = inflight
 	manager.mu.Unlock()
 
 	type result struct {

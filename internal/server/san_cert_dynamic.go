@@ -96,6 +96,28 @@ func (m *SANCertManager) coversAllowedDomain(wildcard string) bool {
 	return false
 }
 
+// coversRegisteredDomain reports whether a certificate identifier is, or
+// covers, a deploy-registered host — the operator's own name, as opposed to
+// a tenant domain learned from a source. A wildcard identifier resolves
+// through the registered names it covers: synthesized wildcards carry the
+// pattern in the member list, never the concrete hosts.
+func (m *SANCertManager) coversRegisteredDomain(identifier string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if strings.HasPrefix(identifier, "*.") {
+		for domain := range m.registeredDomains {
+			if matchesWildcard(identifier, domain) {
+				return true
+			}
+		}
+		return false
+	}
+
+	_, ok := m.registeredDomains[identifier]
+	return ok
+}
+
 // HasCertificate reports whether the manager has ever issued a certificate
 // covering the domain, even an expired one.
 func (m *SANCertManager) HasCertificate(domain string) bool {

@@ -681,3 +681,111 @@ func TestCertRenewer_ARIMarkerSurvivesAFailedFirstPartition(t *testing.T) {
 	assert.NotEmpty(t, calls[1].ReplacesCertID,
 		"an order the CA refused leaves the ARI marker for the next same-directory partition")
 }
+
+// Issue #102: a certificate covering deploy-registered hosts compacts away
+// quarantined members earlier than a tenant-only certificate — the operator's
+// own names must not have their renewal deferred into the final week by a
+// flapping batch-mate.
+func TestCertRenewer_RegisteredCertCompactsEarlierThanDynamic(t *testing.T) {
+	t.Run("registered cert compacts inside the wider window", func(t *testing.T) {
+		obtainer := successfulObtainer(t)
+		manager := testSANCertManager(t)
+		quarantine := newDomainQuarantine()
+
+		adoptTestCert(t, manager, []string{"a.reg.test", "b.reg.test"},
+			time.Now().Add(-80*24*time.Hour), time.Now().Add(10*24*time.Hour))
+		require.NoError(t, manager.RegisterDomain("a.reg.test", "web"))
+		require.NoError(t, manager.RegisterDomain("b.reg.test", "web"))
+		quarantine.RecordFailure("b.reg.test", quarantineACME)
+
+		renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+		renewer.reconcile()
+
+		calls := obtainer.Calls()
+		require.Len(t, calls, 1, "10 days out, a registered certificate must compact rather than defer")
+		assert.Equal(t, []string{"a.reg.test"}, calls[0].Domains)
+	})
+
+	t.Run("registered cert still defers outside the wider window", func(t *testing.T) {
+		obtainer := successfulObtainer(t)
+		manager := testSANCertManager(t)
+		quarantine := newDomainQuarantine()
+
+		adoptTestCert(t, manager, []string{"a.reg.test", "b.reg.test"},
+			time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+		require.NoError(t, manager.RegisterDomain("a.reg.test", "web"))
+		require.NoError(t, manager.RegisterDomain("b.reg.test", "web"))
+		quarantine.RecordFailure("b.reg.test", quarantineACME)
+
+		renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+		renewer.reconcile()
+
+		assert.Empty(t, obtainer.Calls(), "20 days out there is still time for the quarantined member to recover")
+	})
+
+	t.Run("dynamic-only cert keeps the tight window", func(t *testing.T) {
+		obtainer := successfulObtainer(t)
+		manager := testSANCertManager(t)
+		quarantine := newDomainQuarantine()
+
+		manager.SetDynamicDomains("tenants", []string{"a.dyn.test", "b.dyn.test"})
+		adoptTestCert(t, manager, []string{"a.dyn.test", "b.dyn.test"},
+			time.Now().Add(-80*24*time.Hour), time.Now().Add(10*24*time.Hour))
+		quarantine.RecordFailure("b.dyn.test", quarantineACME)
+
+		renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+		renewer.reconcile()
+
+		assert.Empty(t, obtainer.Calls(), "10 days out, a tenant certificate still waits for its member")
+	})
+}
+
+// Issue #102: deferred renewals are a gauge, not just a log line — the
+// operator must be able to alert on the coupling before the compaction
+// window, not discover it during an outage.
+func TestCertRenewer_ReportsDeferredRenewals(t *testing.T) {
+	fake := installFakeTracker(t)
+
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	manager.SetDynamicDomains("tenants", []string{"a.dyn.test", "b.dyn.test"})
+	adoptTestCert(t, manager, []string{"a.dyn.test", "b.dyn.test"},
+		time.Now().Add(-80*24*time.Hour), time.Now().Add(10*24*time.Hour))
+	quarantine.RecordFailure("b.dyn.test", quarantineACME)
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	assert.Equal(t, 1, fake.DeferredRenewals(), "a deferred renewal must be visible on the gauge")
+
+	// The member recovers; the next reconcile renews and the gauge clears.
+	quarantine.Clear("b.dyn.test")
+	renewer.reconcile()
+
+	require.NotEmpty(t, obtainer.Calls())
+	assert.Equal(t, 0, fake.DeferredRenewals(), "a completed renewal must clear the gauge")
+}
+
+// A wildcard certificate is synthesized from deploy-registered siblings, so
+// it must get the registered compaction window even though its member list
+// holds the wildcard identifier rather than the concrete hosts.
+func TestCertRenewer_WildcardCertCoveringRegisteredHostCompactsEarly(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+
+	adoptTestCert(t, manager, []string{"*.wild.test", "extra.dyn.test"},
+		time.Now().Add(-80*24*time.Hour), time.Now().Add(10*24*time.Hour))
+	require.NoError(t, manager.RegisterDomain("app.wild.test", "web"))
+	manager.SetDynamicDomains("tenants", []string{"extra.dyn.test"})
+	quarantine.RecordFailure("extra.dyn.test", quarantineACME)
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 1, "a wildcard covering a registered host must compact inside the wider window")
+	assert.Equal(t, []string{"*.wild.test"}, calls[0].Domains)
+}

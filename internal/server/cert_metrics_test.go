@@ -17,11 +17,12 @@ import (
 // fakeTracker captures certificate metric emissions so tests can assert that
 // the registry and renewal manager report them.
 type fakeTracker struct {
-	mu       sync.Mutex
-	expiry   map[string]time.Time // domain -> expiry
-	wildcard map[string]bool      // domain -> isWildcard
-	renewals map[string]int       // "domain:success"/"domain:failure" -> count
-	counts   []certCountSample
+	mu               sync.Mutex
+	expiry           map[string]time.Time // domain -> expiry
+	wildcard         map[string]bool      // domain -> isWildcard
+	renewals         map[string]int       // "domain:success"/"domain:failure" -> count
+	counts           []certCountSample
+	deferredRenewals int
 
 	cacheEvents     map[string]int // "service:result" -> count
 	cacheRefusals   map[string]int // "service:reason" -> count
@@ -208,6 +209,18 @@ func (f *fakeTracker) SetCertificateCount(total, wildcard, http01 int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.counts = append(f.counts, certCountSample{total, wildcard, http01})
+}
+
+func (f *fakeTracker) SetDeferredRenewals(count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deferredRenewals = count
+}
+
+func (f *fakeTracker) DeferredRenewals() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deferredRenewals
 }
 
 func (f *fakeTracker) lastCount() (certCountSample, bool) {
