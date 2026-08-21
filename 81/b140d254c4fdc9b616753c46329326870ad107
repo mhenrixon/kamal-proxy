@@ -1,0 +1,40 @@
+internal/cmd/run_providers_test.go
+  s_7b4c4eb718c5fe::t_2d5604ec7d29c4 23-34
+internal/cmd/run.go
+  s_7b4c4eb718c5fe::t_f87dca0d2705ef 70
+internal/server/san_cert_zones.go
+  s_7b4c4eb718c5fe::t_889a2ed2b476d4 41-53
+README.md
+  s_7b4c4eb718c5fe::t_7975e39d79b2e8 1139
+internal/server/acme/mapping_test.go
+  s_7b4c4eb718c5fe::t_8d228e82dd39f2 75-83
+internal/server/san_cert_zones_test.go
+  s_7b4c4eb718c5fe::t_742aaabe0fec18 112-131
+internal/server/acme/providers/docs_test.go
+  s_7b4c4eb718c5fe::t_b4788601d1a233 102-103
+internal/server/acme/provider.go
+  s_7b4c4eb718c5fe::t_249c103eb447bb 62,64-65
+  s_7b4c4eb718c5fe::t_c9f1335c4fa044 29-34
+internal/server/acme/providers/docs.go
+  s_7b4c4eb718c5fe::t_4b3b8a824d7045 34,36,40
+internal/server/acme/provider_test.go
+  s_7b4c4eb718c5fe::t_8be89af1b7c4c1 55,57-61
+internal/server/acme/mapping.go
+  s_7b4c4eb718c5fe::t_5cb8d7ed32fee8 92-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "81b140d254c4fdc9b616753c46329326870ad107",
+  "prompts": {},
+  "sessions": {
+    "s_7b4c4eb718c5fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "282da557-0d7d-4d78-83c7-4d8ef49a3150",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
