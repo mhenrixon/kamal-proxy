@@ -602,11 +602,16 @@ func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string
 	sortedDomains := m.planIssuanceDomains(domainsToProvision)
 	slices.Sort(sortedDomains)
 
-	// One order never spans DNS providers, and the handshake is waiting: issue
-	// only the requested domain's partition. The rest were pending already and
-	// return to pending for their own handshake or poll, instead of being
-	// ordered serially on this handshake's clock.
-	if partitions := m.splitByProviderZone(sortedDomains); len(partitions) > 1 {
+	// One order never spans DNS providers, and a wildcard never shares an
+	// order with names outside its zone (splitWildcardZones) — the handshake
+	// is waiting, so issue only the requested domain's partition. The rest
+	// were pending already and return to pending for their own handshake or
+	// poll, instead of being ordered serially on this handshake's clock.
+	composed := [][]string{}
+	for _, providerPartition := range m.splitByProviderZone(sortedDomains) {
+		composed = append(composed, splitWildcardZones(providerPartition)...)
+	}
+	if partitions := composed; len(partitions) > 1 {
 		chosen := partitions[0]
 		for _, partition := range partitions {
 			if identifiersCover(partition, domain) {

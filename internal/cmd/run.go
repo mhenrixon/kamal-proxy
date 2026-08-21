@@ -68,7 +68,11 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEEmail, "acme-email", getEnvString("ACME_EMAIL", ""), "Email address for ACME account registration (required for automatic TLS)")
 	runCommand.cmd.Flags().StringVar(&globalConfig.ACMEDirectory, "acme-directory", getEnvString("ACME_DIRECTORY", server.LetsEncryptProduction), "ACME directory URL")
 	runCommand.cmd.Flags().StringSliceVar(&runCommand.acmeDNSProviders, "acme-dns-provider", strings.Split(getEnvString("ACME_DNS_PROVIDER", "auto"), ","), "DNS provider for DNS-01 challenges (one of: "+providers.ProviderListForHelp()+"). Repeatable: zone=provider entries pin a zone to the DNS host that serves it, and one bare entry is the default for unmatched zones")
-	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEPreferWildcard, "acme-prefer-wildcard", getEnvBool("ACME_PREFER_WILDCARD", true), "Prefer wildcard certificates when DNS provider available")
+	// Wildcard preference is an explicit opt-in: with the "auto" provider
+	// default, a true default self-arms DNS-01 wildcard issuance the moment a
+	// served zone's nameservers move to a recognised provider — changing a
+	// running fleet's issuance behavior with no config change.
+	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEPreferWildcard, "acme-prefer-wildcard", getEnvBool("ACME_PREFER_WILDCARD", false), "Prefer wildcard certificates when DNS provider available")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEHTTPFallback, "acme-http-fallback", getEnvBool("ACME_HTTP_FALLBACK", true), "Fall back to HTTP-01 challenge if DNS-01 fails")
 
 	return runCommand

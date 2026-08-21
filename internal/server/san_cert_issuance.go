@@ -156,6 +156,66 @@ func wildcardParent(domain string) (string, bool) {
 	return "*." + domain[dot+1:], true
 }
 
+// splitWildcardZones partitions a planned identifier set so a wildcard never
+// shares an order with names outside its zone. A mixed order is unsatisfiable
+// by construction: DNS-01 cannot answer for zones the provider's credentials
+// do not control, and HTTP-01 cannot validate the wildcard — so every attempt
+// fails, every member lands on the quarantine ladder, and the retries burn
+// the CA's failed-authorization limits for domains that were individually
+// issuable the whole time.
+//
+// Each wildcard identifier anchors a partition holding the wildcard, its
+// zone's apex, and any same-zone hosts the wildcard does not cover
+// (multi-level subdomains). Everything else stays together in one trailing
+// partition that HTTP-01 can satisfy. Partition order follows first
+// appearance, so a sorted input yields deterministic output.
+func splitWildcardZones(domains []string) [][]string {
+	zones := []string{}
+	members := map[string][]string{}
+	for _, domain := range domains {
+		if zone, ok := strings.CutPrefix(domain, "*."); ok {
+			if _, seen := members[zone]; !seen {
+				zones = append(zones, zone)
+				members[zone] = nil
+			}
+		}
+	}
+	if len(zones) == 0 {
+		return [][]string{domains}
+	}
+
+	rest := []string{}
+	for _, domain := range domains {
+		zone := zoneOf(domain, zones)
+		if zone == "" {
+			rest = append(rest, domain)
+			continue
+		}
+		members[zone] = append(members[zone], domain)
+	}
+
+	partitions := make([][]string, 0, len(zones)+1)
+	for _, zone := range zones {
+		partitions = append(partitions, members[zone])
+	}
+	if len(rest) > 0 {
+		partitions = append(partitions, rest)
+	}
+	return partitions
+}
+
+// zoneOf returns the first zone a domain belongs to — the zone itself, any
+// subdomain of it, or its wildcard — and "" when none matches.
+func zoneOf(domain string, zones []string) string {
+	name := strings.TrimPrefix(domain, "*.")
+	for _, zone := range zones {
+		if name == zone || strings.HasSuffix(name, "."+zone) {
+			return zone
+		}
+	}
+	return ""
+}
+
 // identifiersCover reports whether an identifier set covers a domain, either
 // literally or via a wildcard member.
 func identifiersCover(identifiers []string, domain string) bool {
