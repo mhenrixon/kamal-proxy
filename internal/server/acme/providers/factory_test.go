@@ -109,6 +109,21 @@ func TestNewProvider_CloudflareCredentialSetsConstruct(t *testing.T) {
 	}
 }
 
+// lego resolves each cloudflare field independently, so a mixed-namespace
+// pair like CF_API_KEY + CLOUDFLARE_EMAIL would construct — but the registry
+// deliberately fails closed on it: the advertised sets stay canonical (one
+// namespace per set, matching the generated README table), and the boot error
+// names exactly what to set. This pins that divergence as a decision, not an
+// accident — the dangerous direction, passing the check while construction
+// fails, is what TestNewProvider_CloudflareCredentialSetsConstruct guards.
+func TestNewProvider_CloudflareMixedNamespaceFailsClosed(t *testing.T) {
+	t.Setenv("CF_API_KEY", "key")
+	t.Setenv("CLOUDFLARE_EMAIL", "cf@example.com")
+
+	_, err := NewProvider(acme.ProviderCloudflare)
+	require.ErrorIs(t, err, acme.ErrMissingCredentials)
+}
+
 // NewAutoProvider must report the provider the arming walk actually chose —
 // not what the looser detection sets would guess — so boot logging can name
 // the issuing provider truthfully.
