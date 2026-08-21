@@ -1,0 +1,32 @@
+internal/server/acme/providers/registry_test.go
+  s_7b4c4eb718c5fe::t_e5a989efb285eb 88
+  s_7b4c4eb718c5fe::t_41fd4910251dec 45,52,54
+internal/server/acme/providers/docs_test.go
+  s_7b4c4eb718c5fe::t_1247ae217ef2c5 35-36
+internal/server/acme/providers/factory_test.go
+  s_7b4c4eb718c5fe::t_b4e2a8a6635d92 93-111
+  s_7b4c4eb718c5fe::t_2a4c1d17fc2037 4
+  s_7b4c4eb718c5fe::t_8e7b159d976ee8 139
+  s_7b4c4eb718c5fe::t_1ae62dce50086b 44
+  s_7b4c4eb718c5fe::t_470e785e937b26 186
+internal/server/acme/providers/registry.go
+  s_7b4c4eb718c5fe::t_832e7fa2325346 68-74,77,79
+README.md
+  s_7b4c4eb718c5fe::t_1f239fa23ba0b9 1110,1152,1306,1315,1354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6a734444e52fdd9069e785f4bb84e92a19f1e7c8",
+  "prompts": {},
+  "sessions": {
+    "s_7b4c4eb718c5fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "282da557-0d7d-4d78-83c7-4d8ef49a3150",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
