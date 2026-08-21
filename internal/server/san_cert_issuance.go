@@ -46,6 +46,18 @@ func (m *SANCertManager) obtainCertificateAt(directory string, request certifica
 
 	wildcard := containsWildcard(request.Domains)
 
+	// Batching splits by solvability before ordering, so a wildcard order
+	// carrying an identifier outside every wildcard zone is an invariant
+	// violation — unsatisfiable by construction (DNS-01 cannot answer for the
+	// foreign zone, HTTP-01 cannot answer for the wildcard), so it is refused
+	// before it can burn the CA's failed-authorization limits.
+	if wildcard {
+		if outsider := outsideWildcardZones(request.Domains); outsider != "" {
+			return nil, fmt.Errorf("%w: wildcard order %v includes %q outside the wildcard's zone",
+				ErrProvisioningFailed, request.Domains, outsider)
+		}
+	}
+
 	if dnsObtainer != nil {
 		resource, err := dnsObtainer.Obtain(request)
 		if err == nil {

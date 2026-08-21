@@ -311,6 +311,184 @@ func TestCertRenewer_SplitsMixedZoneCertificateAcrossProviders(t *testing.T) {
 	}
 }
 
+// The single-provider case has nothing to split by provider, but a wildcard
+// order must still never include hosts outside the wildcard's zone: the
+// wildcard forbids the order's HTTP-01 fallback, so a foreign-zone rider
+// would make the whole order unsatisfiable (#108).
+func TestSANCertManager_SplitByProviderZone_WildcardIsolatedFromForeignZones(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.dnsObtainer = successfulObtainer(t)
+
+	partitions := manager.splitByProviderZone([]string{
+		"*.legacy.example", "legacy.example", "tenant.other.net",
+	})
+
+	require.Len(t, partitions, 2)
+	assert.Equal(t, []string{"*.legacy.example", "legacy.example"}, partitions[0])
+	assert.Equal(t, []string{"tenant.other.net"}, partitions[1])
+}
+
+// Zone membership, not wildcard coverage, decides who rides the wildcard
+// order: the apex and multi-level names live in the same DNS zone, so the
+// same credentials can answer for them.
+func TestSANCertManager_SplitByProviderZone_InZoneNamesJoinWildcardPartition(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.dnsObtainer = successfulObtainer(t)
+
+	partitions := manager.splitByProviderZone([]string{
+		"*.legacy.example", "deep.a.legacy.example", "legacy.example",
+	})
+
+	require.Len(t, partitions, 1)
+	assert.Equal(t, []string{"*.legacy.example", "deep.a.legacy.example", "legacy.example"}, partitions[0])
+}
+
+// One wildcard order per zone, even on the same provider: a second zone's
+// wildcard failing must not take the first zone's issuance down with it.
+func TestSANCertManager_SplitByProviderZone_OneWildcardOrderPerZone(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.dnsObtainer = successfulObtainer(t)
+
+	partitions := manager.splitByProviderZone([]string{
+		"*.legacy.example", "*.other.net", "legacy.example", "www.other.net",
+	})
+
+	require.Len(t, partitions, 2)
+	assert.Equal(t, []string{"*.legacy.example", "legacy.example"}, partitions[0])
+	assert.Equal(t, []string{"*.other.net", "www.other.net"}, partitions[1])
+}
+
+// A sub-zone mapped to a different provider cannot join the enclosing
+// wildcard's order: the order would span providers and be refused.
+func TestSANCertManager_SplitByProviderZone_MappedSubzoneStaysOutOfWildcardOrder(t *testing.T) {
+	manager := testZonedManager(t, acme.ProviderCloudflare, map[string]acme.ProviderName{
+		"tenants.legacy.example": acme.ProviderHetzner,
+	})
+	manager.dnsObtainer = successfulObtainer(t)
+	manager.dnsObtainers = map[acme.ProviderName]certObtainer{acme.ProviderHetzner: successfulObtainer(t)}
+
+	partitions := manager.splitByProviderZone([]string{
+		"*.legacy.example", "a.tenants.legacy.example", "www.legacy.example",
+	})
+
+	require.Len(t, partitions, 2)
+	assert.Equal(t, []string{"*.legacy.example", "www.legacy.example"}, partitions[0])
+	assert.Equal(t, []string{"a.tenants.legacy.example"}, partitions[1])
+}
+
+// A wildcard no DNS provider can solve is isolated alone, so its clear
+// refusal at order time cannot drag down concrete names that HTTP-01 could
+// have satisfied.
+func TestSANCertManager_SplitByProviderZone_UnsolvableWildcardIsolatedAlone(t *testing.T) {
+	manager := testSANCertManager(t)
+
+	partitions := manager.splitByProviderZone([]string{
+		"*.legacy.example", "www.legacy.example", "tenant.other.net",
+	})
+
+	require.Len(t, partitions, 2)
+	assert.Equal(t, []string{"*.legacy.example"}, partitions[0])
+	assert.Equal(t, []string{"www.legacy.example", "tenant.other.net"}, partitions[1])
+}
+
+// Nested wildcard zones: a name attaches to the longest enclosing wildcard
+// zone, and each wildcard still anchors its own order.
+func TestSANCertManager_SplitByProviderZone_NestedWildcardZonesLongestWins(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.dnsObtainer = successfulObtainer(t)
+
+	partitions := manager.splitByProviderZone([]string{
+		"*.legacy.example", "*.tenants.legacy.example", "a.tenants.legacy.example", "www.legacy.example",
+	})
+
+	require.Len(t, partitions, 2)
+	assert.Equal(t, []string{"*.legacy.example", "www.legacy.example"}, partitions[0])
+	assert.Equal(t, []string{"*.tenants.legacy.example", "a.tenants.legacy.example"}, partitions[1])
+}
+
+// Defense in depth: batching partitions by zone before ordering, so a
+// wildcard order carrying an identifier outside every wildcard zone is an
+// invariant violation, refused before it reaches a solver.
+func TestSANCertManager_ObtainCertificate_RefusesWildcardOrderWithForeignHost(t *testing.T) {
+	manager := testSANCertManager(t)
+	dnsObtainer := successfulObtainer(t)
+	httpObtainer := successfulObtainer(t)
+	manager.dnsObtainer = dnsObtainer
+	manager.httpObtainer = httpObtainer
+
+	_, err := manager.obtainCertificate(certificate.ObtainRequest{
+		Domains: []string{"*.legacy.example", "tenant.other.net"},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrProvisioningFailed)
+	assert.Empty(t, dnsObtainer.Calls())
+	assert.Empty(t, httpObtainer.Calls())
+}
+
+// With prefer-wildcard on and a single default provider, a foreign-zone host
+// pending alongside a collapsing zone must not ride the wildcard's order --
+// it returns to pending for an HTTP-01 batch of its own (#108).
+func TestSANCertManager_ProvisionCertificate_WildcardOrderExcludesForeignZones(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager, err := NewSANCertManager(SANCertManagerConfig{
+		Email:          "test@example.com",
+		Directory:      LetsEncryptStaging,
+		CachePath:      filepath.Join(tmpDir, "certs"),
+		StatePath:      filepath.Join(tmpDir, "acme.state"),
+		DNSProvider:    acme.ProviderCloudflare,
+		PreferWildcard: true,
+	})
+	require.NoError(t, err)
+	manager.ready = true
+	dnsObtainer := successfulObtainer(t)
+	httpObtainer := successfulObtainer(t)
+	manager.dnsObtainer = dnsObtainer
+	manager.httpObtainer = httpObtainer
+	manager.grouper.DNSProviderAvailable = true
+
+	manager.pendingDomains["b.legacy.example"] = ""
+	manager.pendingDomains["tenant.other.net"] = ""
+
+	cert, err := manager.provisionCertificate(context.Background(), "a.legacy.example")
+	require.NoError(t, err)
+	require.NotNil(t, cert)
+
+	calls := dnsObtainer.Calls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, []string{"*.legacy.example"}, calls[0].Domains)
+	assert.Empty(t, httpObtainer.Calls(), "the foreign partition must not be ordered on the handshake's clock")
+
+	manager.mu.RLock()
+	_, stillPending := manager.pendingDomains["tenant.other.net"]
+	manager.mu.RUnlock()
+	assert.True(t, stillPending, "the foreign-zone host returns to pending for an HTTP-01 batch")
+}
+
+// A certificate that already spans a wildcard and a foreign zone (issued by
+// the defective grouping) self-heals at renewal: one order for the wildcard's
+// zone, one for the foreign host.
+func TestCertRenewer_SplitsWildcardCertificateFromForeignZones(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.dnsObtainer = successfulObtainer(t)
+	manager.SetDynamicDomains("service1", []string{"a.legacy.example", "legacy.example", "tenant.other.net"})
+	old := adoptTestCert(t, manager, []string{"*.legacy.example", "legacy.example", "tenant.other.net"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	obtainer := successfulObtainer(t)
+	renewer := newCertRenewer(manager, newDomainQuarantine(), certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 2)
+	assert.Equal(t, []string{"*.legacy.example", "legacy.example"}, calls[0].Domains)
+	assert.Equal(t, []string{"tenant.other.net"}, calls[1].Domains)
+
+	// The spanning certificate is gone, replaced by one per partition.
+	for _, cert := range manager.ManagedCertificates() {
+		assert.NotEqual(t, old.Identifier, cert.Identifier)
+	}
+}
+
 func TestCertRenewer_MixedZoneSplitKeepsOldCertWhenAPartitionFails(t *testing.T) {
 	manager := testZonedManager(t, "", map[string]acme.ProviderName{
 		"legacy.example": acme.ProviderHetzner,

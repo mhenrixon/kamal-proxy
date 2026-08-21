@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/lego"
@@ -132,18 +133,32 @@ func (m *SANCertManager) providerPartitionKey(domain string) string {
 	return "zone:" + string(provider)
 }
 
-// splitByProviderZone partitions an identifier set so no ACME order spans
-// DNS providers. Partitions keep first-appearance order, so a sorted input
-// yields deterministic output.
+// splitByProviderZone partitions an identifier set by challenge solvability,
+// so every partition is an order some solver can actually satisfy: no order
+// spans DNS providers, and a wildcard order never includes an identifier
+// outside the wildcard's zone. A wildcard forbids the order's HTTP-01
+// fallback, so a foreign-zone rider would make the whole order unsatisfiable
+// by construction — DNS-01 cannot answer for the foreign zone, HTTP-01 cannot
+// answer for the wildcard (#108).
+//
+// Each wildcard anchors its own partition, keyed by its zone. Identifiers
+// inside a wildcard's zone (equal or below on a label boundary — membership
+// is the zone's, not the wildcard's single-label coverage) join it when the
+// same provider answers for them, longest zone winning. A wildcard no DNS
+// provider can solve is isolated alone, so its refusal at order time cannot
+// drag down names that HTTP-01 could have satisfied. Everything else keeps
+// its provider partition. Partitions keep first-appearance order, so a sorted
+// input yields deterministic output.
 func (m *SANCertManager) splitByProviderZone(domains []string) [][]string {
-	if !m.selection.HasZones() {
+	anchors := m.wildcardAnchors(domains)
+	if !m.selection.HasZones() && len(anchors) == 0 {
 		return [][]string{domains}
 	}
 
 	keys := []string{}
 	partitions := map[string][]string{}
 	for _, domain := range domains {
-		key := m.providerPartitionKey(domain)
+		key := m.solvabilityPartitionKey(domain, anchors)
 		if _, ok := partitions[key]; !ok {
 			keys = append(keys, key)
 		}
@@ -155,6 +170,113 @@ func (m *SANCertManager) splitByProviderZone(domains []string) [][]string {
 		split = append(split, partitions[key])
 	}
 	return split
+}
+
+// wildcardAnchor is a wildcard identifier's claim on a partition: the zone it
+// anchors, the provider partition it lives in, and the key its members share.
+// An unsolvable wildcard is a solo anchor — it attracts no members.
+type wildcardAnchor struct {
+	zone        string
+	providerKey string
+	key         string
+	solvable    bool
+}
+
+// wildcardAnchors collects the partitions anchored by the batch's wildcard
+// identifiers, longest zone first so nested zones resolve to the tightest
+// enclosing wildcard.
+func (m *SANCertManager) wildcardAnchors(domains []string) []wildcardAnchor {
+	anchors := []wildcardAnchor{}
+	seen := map[string]bool{}
+	for _, domain := range domains {
+		if !strings.HasPrefix(domain, "*.") {
+			continue
+		}
+		zone := normalizeDomainName(domain[2:])
+		if seen[zone] {
+			continue
+		}
+		seen[zone] = true
+
+		anchor := wildcardAnchor{zone: zone, providerKey: m.providerPartitionKey(domain)}
+		if m.hasDNSProviderFor(domain) {
+			anchor.key = "wildcard:" + zone + "|" + anchor.providerKey
+			anchor.solvable = true
+		} else {
+			anchor.key = "unsolvable-wildcard:" + zone
+		}
+		anchors = append(anchors, anchor)
+	}
+
+	slices.SortStableFunc(anchors, func(a, b wildcardAnchor) int {
+		return len(b.zone) - len(a.zone)
+	})
+	return anchors
+}
+
+// solvabilityPartitionKey keys one identifier: a wildcard keys by its own
+// anchor; a concrete name joins the longest enclosing solvable wildcard zone
+// whose provider also answers for it, else keeps its provider partition.
+func (m *SANCertManager) solvabilityPartitionKey(domain string, anchors []wildcardAnchor) string {
+	if strings.HasPrefix(domain, "*.") {
+		zone := normalizeDomainName(domain[2:])
+		for _, anchor := range anchors {
+			if anchor.zone == zone {
+				return anchor.key
+			}
+		}
+	}
+
+	providerKey := m.providerPartitionKey(domain)
+	for _, anchor := range anchors {
+		if anchor.solvable && anchor.providerKey == providerKey && zoneContains(anchor.zone, domain) {
+			return anchor.key
+		}
+	}
+	return providerKey
+}
+
+// zoneContains reports whether a domain sits inside a DNS zone: equal to it,
+// or below it on a label boundary.
+func zoneContains(zone, domain string) bool {
+	candidate := normalizeDomainName(domain)
+	return candidate == zone || strings.HasSuffix(candidate, "."+zone)
+}
+
+// normalizeDomainName lowercases a domain and strips any trailing dot, so
+// identifiers compare in the same space as configured zones.
+func normalizeDomainName(domain string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+}
+
+// outsideWildcardZones returns the first identifier that sits outside every
+// wildcard zone in an order, or "" when the order is zone-coherent. Batching
+// splits by solvability before ordering, so a violation here means a caller
+// bypassed the split.
+func outsideWildcardZones(domains []string) string {
+	zones := []string{}
+	for _, domain := range domains {
+		if strings.HasPrefix(domain, "*.") {
+			zones = append(zones, normalizeDomainName(domain[2:]))
+		}
+	}
+
+	for _, domain := range domains {
+		if strings.HasPrefix(domain, "*.") {
+			continue
+		}
+		covered := false
+		for _, zone := range zones {
+			if zoneContains(zone, domain) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return domain
+		}
+	}
+	return ""
 }
 
 // orderObtainer resolves the one DNS obtainer answering for an order's
