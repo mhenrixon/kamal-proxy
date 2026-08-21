@@ -1,0 +1,41 @@
+internal/server/domain_renewal.go
+  s_7b4c4eb718c5fe::t_c9a888700d53dc 489-512
+internal/server/san_cert_batch_guard.go
+  s_7b4c4eb718c5fe::t_75b9bd37567e5e 119-122,150-181
+internal/server/domain_renewal_test.go
+  s_7b4c4eb718c5fe::t_47ef682d3274f4 40-81
+internal/server/san_cert_batch_guard_test.go
+  s_7b4c4eb718c5fe::t_42251abdea34cb 224-292
+internal/server/domain_issuer.go
+  s_7b4c4eb718c5fe::t_a1621f4056e4df 421-463
+  s_7b4c4eb718c5fe::t_88b60336738f02 378-382
+internal/server/domain_failure_test.go
+  s_7b4c4eb718c5fe::t_5f962de0c5bedb 73-228
+  s_7b4c4eb718c5fe::t_d7d90a9a80e5cf 7,9
+internal/server/domain_quarantine_test.go
+  s_7b4c4eb718c5fe::t_c0531a42e5aa89 64-96
+internal/server/domain_failure.go
+  s_7b4c4eb718c5fe::t_9c96d9accdd817 4-5,8-10,14
+  s_7b4c4eb718c5fe::t_4980886adca7ca 76-189
+internal/server/domain_issuer_test.go
+  s_7b4c4eb718c5fe::t_2c6377e97fa6bc 222-329
+  s_7b4c4eb718c5fe::t_09fbc5b6867b07 6
+internal/server/domain_quarantine.go
+  s_7b4c4eb718c5fe::t_f1b11a659816b8 52,64-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "19bd29f331770001d15b3fa546ff40972238e357",
+  "prompts": {},
+  "sessions": {
+    "s_7b4c4eb718c5fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "282da557-0d7d-4d78-83c7-4d8ef49a3150",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
