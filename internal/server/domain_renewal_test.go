@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -35,6 +36,48 @@ func adoptTestCert(t testing.TB, manager *SANCertManager, domains []string, notB
 	managed, err := manager.adoptCertificate(resource, domains)
 	require.NoError(t, err)
 	return managed
+}
+
+func TestCertRenewer_RateLimitedMemberIsHeldAloneAndDroppedFromNextRenewal(t *testing.T) {
+	obtainer := &fakeObtainer{}
+	obtainer.respond = func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		for _, domain := range request.Domains {
+			if domain == "limited.example.com" {
+				return nil, rateLimitedProblem(`too many failed authorizations (5) for "limited.example.com", ` +
+					`retry after 2100-01-01 00:00:00 UTC: see docs`)
+			}
+		}
+		return testCertResource(t, request.Domains, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)), nil
+	}
+
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+	manager.SetDynamicDomains("service1", []string{"kept.example.com", "limited.example.com"})
+
+	// Inside the compaction window, so the next reconcile renews without the
+	// held member instead of waiting for it.
+	adoptTestCert(t, manager, []string{"kept.example.com", "limited.example.com"},
+		time.Now().Add(-85*24*time.Hour), time.Now().Add(5*24*time.Hour))
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	// Only the named identifier is held — until the advertised time — and the
+	// innocent member is not quarantined with it.
+	assert.True(t, quarantine.IsQuarantined("limited.example.com"))
+	assert.False(t, quarantine.IsQuarantined("kept.example.com"))
+	snapshot := quarantine.Snapshot()
+	expectedHold := time.Date(2100, 1, 1, 0, 1, 0, 0, time.UTC)
+	assert.True(t, snapshot["limited.example.com"].Until.Equal(expectedHold),
+		"hold must honor the advertised retry time, got %v", snapshot["limited.example.com"].Until)
+
+	// The next reconcile orders without the held member and succeeds.
+	renewer.reconcile()
+	calls := obtainer.Calls()
+	require.Len(t, calls, 2)
+	assert.Equal(t, []string{"kept.example.com", "limited.example.com"}, calls[0].Domains)
+	assert.Equal(t, []string{"kept.example.com"}, calls[1].Domains)
+	assert.True(t, manager.HasValidCertificate("kept.example.com"))
 }
 
 func TestCertRenewer_RenewsInsideFallbackWindow(t *testing.T) {
@@ -648,6 +691,77 @@ func TestCertRenewer_UnresolvedOwnerRenewsAtRecordedDirectory(t *testing.T) {
 	require.NotNil(t, renewed)
 	assert.Equal(t, LetsEncryptProduction, renewed.Directory,
 		"the replacement must record the directory that actually issued it")
+}
+
+func TestCertRenewer_AccountLevelRateLimitStopsThePartitionLoop(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.selection.Zones = map[string]acmeconfig.ProviderName{
+		"a.test": "cloudflare",
+		"b.test": "route53",
+	}
+
+	manager.SetDynamicDomains("service1", []string{"x.a.test", "y.b.test"})
+	adoptTestCert(t, manager, []string{"x.a.test", "y.b.test"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	quarantine := newDomainQuarantine()
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, rateLimitedProblem(`too many new orders recently, retry after 2100-01-01 00:00:00 UTC: see docs`)
+	}}
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	// The first partition's rejection proves every further order from this
+	// account is doomed until the advertised time: the second partition must
+	// not be submitted into the same limit in the same pass.
+	calls := obtainer.Calls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, []string{"x.a.test"}, calls[0].Domains)
+	assert.True(t, quarantine.IsQuarantined("x.a.test"))
+
+	// The unsubmitted partition waits out the same advertised window — a
+	// reconcile near expiry would otherwise compact the batch and submit it
+	// into the same account limit.
+	assert.True(t, quarantine.IsQuarantined("y.b.test"))
+	expectedHold := time.Date(2100, 1, 1, 0, 1, 0, 0, time.UTC)
+	snapshot := quarantine.Snapshot()
+	assert.True(t, snapshot["y.b.test"].Until.Equal(expectedHold),
+		"the unsubmitted partition must hold until the advertised retry time, got %v", snapshot["y.b.test"].Until)
+}
+
+func TestCertRenewer_AccountLevelRateLimitIsScopedToItsDirectory(t *testing.T) {
+	// An account-level limit belongs to one directory's ACME account; a
+	// mixed-directory certificate's other partitions renew under different
+	// accounts and must still be submitted.
+	obtainer := &fakeObtainer{}
+	obtainer.respond = func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		if slices.Contains(request.Domains, "plain.example.net") {
+			return nil, rateLimitedProblem(`too many new orders recently, retry after 2100-01-01 00:00:00 UTC: see docs`)
+		}
+		return testCertResource(t, request.Domains, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)), nil
+	}
+
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+	manager.SetDynamicDomains("plain-svc", []string{"plain.example.net"})
+	manager.SetDynamicDomains("staged-svc", []string{"staged.example.com"})
+
+	adoptTestCert(t, manager, []string{"plain.example.net", "staged.example.com"},
+		time.Now().Add(-24*time.Hour), time.Now().Add(89*24*time.Hour))
+	manager.SetServiceDirectory("staged-svc", LetsEncryptProduction)
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 2, "the staged directory's partition must still be submitted")
+	assert.Equal(t, []string{"plain.example.net"}, calls[0].Domains)
+	assert.Equal(t, []string{"staged.example.com"}, calls[1].Domains)
+
+	assert.True(t, quarantine.IsQuarantined("plain.example.net"))
+	assert.False(t, quarantine.IsQuarantined("staged.example.com"))
+	assert.True(t, manager.HasValidCertificate("staged.example.com"))
 }
 
 func TestCertRenewer_ARIMarkerSurvivesAFailedFirstPartition(t *testing.T) {

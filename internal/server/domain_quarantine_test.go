@@ -61,6 +61,39 @@ func TestDomainQuarantine_ExpiresAndClears(t *testing.T) {
 	assert.Equal(t, 15*time.Minute, q.RecordFailure("bad.example.com", quarantineACME))
 }
 
+func TestDomainQuarantine_RecordRateLimitedHoldsUntilAdvertisedTime(t *testing.T) {
+	start := time.Now()
+	q, current := testQuarantineAt(start)
+
+	retryAfter := start.Add(2 * time.Hour)
+	backoff := q.RecordRateLimited("limited.example.com", retryAfter)
+	assert.Equal(t, 2*time.Hour+time.Minute, backoff, "hold must include the safety margin")
+	assert.True(t, q.IsQuarantined("limited.example.com"))
+
+	// Held right up to the advertised time plus margin, then released.
+	*current = retryAfter.Add(30 * time.Second)
+	assert.True(t, q.IsQuarantined("limited.example.com"))
+	*current = retryAfter.Add(2 * time.Minute)
+	assert.False(t, q.IsQuarantined("limited.example.com"))
+
+	// The failure still counts toward the ladder history.
+	snapshot := q.Snapshot()
+	require.Contains(t, snapshot, "limited.example.com")
+	assert.Equal(t, 1, snapshot["limited.example.com"].Failures)
+	assert.Equal(t, time.Hour, q.RecordFailure("limited.example.com", quarantineACME))
+}
+
+func TestDomainQuarantine_RecordRateLimitedFallsBackToLadder(t *testing.T) {
+	start := time.Now()
+	q, _ := testQuarantineAt(start)
+
+	// No advertised time: first ACME ladder step.
+	assert.Equal(t, 15*time.Minute, q.RecordRateLimited("limited.example.com", time.Time{}))
+
+	// An advertised time already in the past is no better than none.
+	assert.Equal(t, time.Hour, q.RecordRateLimited("limited.example.com", start.Add(-time.Hour)))
+}
+
 func TestDomainQuarantine_Filter(t *testing.T) {
 	q, _ := testQuarantineAt(time.Now())
 
