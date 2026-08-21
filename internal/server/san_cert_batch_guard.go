@@ -116,6 +116,10 @@ func (m *SANCertManager) attributeBatchFailure(err error, ordered, requested []s
 		return requested
 	}
 
+	if limit, ok := parseRateLimited(err); ok {
+		return guard.attributeRateLimit(limit, ordered, requested)
+	}
+
 	culprits := failedDomainsFromError(err, ordered)
 	if len(culprits) == 0 {
 		culprits, _ = probeDomains(ordered, guard.preflight)
@@ -140,6 +144,41 @@ func (m *SANCertManager) attributeBatchFailure(err error, ordered, requested []s
 	}
 	if quarantined {
 		guard.notifyChange()
+	}
+	return survivors
+}
+
+// attributeRateLimit holds the requested hosts a rate-limited rejection names
+// until its advertised retry time, restoring the rest to pending. Nothing
+// named means an account-level limit: with an advertised time the whole batch
+// waits it out — retrying earlier burns the same budget — while without one
+// the unattributable-failure contract applies: restore everything, quarantine
+// nothing.
+func (g issuanceGuard) attributeRateLimit(limit acmeRateLimit, ordered, requested []string) []string {
+	culprits := rateLimitedDomains(limit, ordered)
+	if len(culprits) == 0 {
+		if limit.retryAfter.IsZero() {
+			return requested
+		}
+		culprits = ordered
+	}
+
+	// The order may contain planned identifiers (a wildcard collapsed from
+	// siblings); hold the requested hosts a culprit identifier covers.
+	survivors := []string{}
+	quarantined := false
+	for _, domain := range requested {
+		if identifiersCover(culprits, domain) {
+			backoff := g.quarantine.RecordRateLimited(domain, limit.retryAfter)
+			slog.Warn("Holding rate-limited member of failed handshake batch",
+				"domain", domain, "backoff", backoff, "retryAfter", limit.retryAfter)
+			quarantined = true
+			continue
+		}
+		survivors = append(survivors, domain)
+	}
+	if quarantined {
+		g.notifyChange()
 	}
 	return survivors
 }

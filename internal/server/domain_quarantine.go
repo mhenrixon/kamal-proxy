@@ -49,12 +49,7 @@ func (q *domainQuarantine) RecordFailure(domain string, kind quarantineKind) tim
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	entry := q.entries[domain]
-	if entry == nil {
-		entry = &quarantineEntry{}
-		q.entries[domain] = entry
-	}
-	entry.Failures++
+	entry := q.record(domain)
 
 	ladder := acmeBackoffLadder
 	if kind == quarantinePreflight {
@@ -64,6 +59,41 @@ func (q *domainQuarantine) RecordFailure(domain string, kind quarantineKind) tim
 	backoff := ladder[min(entry.Failures, len(ladder))-1]
 	entry.Until = q.now().Add(backoff)
 	return backoff
+}
+
+// RecordRateLimited holds a domain until an ACME server's advertised retry
+// time plus a safety margin — retrying earlier is a guaranteed failure that
+// burns more of the limit — and returns the applied hold. A zero or already
+// passed retry time falls back to the ACME ladder. The failure still counts
+// toward the ladder history either way.
+func (q *domainQuarantine) RecordRateLimited(domain string, retryAfter time.Time) time.Duration {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	entry := q.record(domain)
+
+	now := q.now()
+	until := retryAfter.Add(rateLimitHoldMargin)
+	if retryAfter.IsZero() || !until.After(now) {
+		backoff := acmeBackoffLadder[min(entry.Failures, len(acmeBackoffLadder))-1]
+		entry.Until = now.Add(backoff)
+		return backoff
+	}
+
+	entry.Until = until
+	return until.Sub(now)
+}
+
+// record fetches or creates a domain's entry and counts a failure against it.
+// Callers must hold q.mu.
+func (q *domainQuarantine) record(domain string) *quarantineEntry {
+	entry := q.entries[domain]
+	if entry == nil {
+		entry = &quarantineEntry{}
+		q.entries[domain] = entry
+	}
+	entry.Failures++
+	return entry
 }
 
 // Clear removes a domain's failure history (successful issuance, or the

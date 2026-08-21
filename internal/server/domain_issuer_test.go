@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -216,6 +217,114 @@ func TestDomainIssuer_Issue_RetriedSurvivorsAreNotReenqueuedAgain(t *testing.T) 
 	assert.True(t, quarantine.IsQuarantined("c.example.com"))
 	assert.Empty(t, issuer.nextBatch())
 	require.Len(t, obtainer.Calls(), 2)
+}
+
+func TestDomainIssuer_Issue_RateLimitedIdentifierIsPeeledAndSurvivorsResubmitted(t *testing.T) {
+	obtainer := &fakeObtainer{}
+	obtainer.respond = func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		if slices.Contains(request.Domains, "limited.example.com") {
+			return nil, rateLimitedProblem(`too many failed authorizations (5) for "limited.example.com", ` +
+				`retry after 2100-01-01 00:00:00 UTC: see docs`)
+		}
+		return testCertResource(t, request.Domains, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)), nil
+	}
+
+	issuer, manager, quarantine := testIssuer(t, obtainer, domainIssuerConfig{
+		BatchSize: func(service string) int { return 3 },
+		// Everything routes here — the probe must not get a say.
+		Preflight: func(domain string) error { return nil },
+	})
+	manager.SetDynamicDomains("service1", []string{"a.example.com", "b.example.com", "limited.example.com"})
+
+	issuer.Request("a.example.com", "service1")
+	issuer.Request("b.example.com", "service1")
+	issuer.Request("limited.example.com", "service1")
+
+	issuer.issue(issuer.nextBatch())
+
+	// Only the named identifier is held — until the advertised time, not the
+	// ladder's first step.
+	assert.True(t, quarantine.IsQuarantined("limited.example.com"))
+	assert.False(t, quarantine.IsQuarantined("a.example.com"))
+	assert.False(t, quarantine.IsQuarantined("b.example.com"))
+	snapshot := quarantine.Snapshot()
+	expectedHold := time.Date(2100, 1, 1, 0, 1, 0, 0, time.UTC)
+	assert.True(t, snapshot["limited.example.com"].Until.Equal(expectedHold),
+		"hold must honor the advertised retry time, got %v", snapshot["limited.example.com"].Until)
+
+	// The survivors go out again immediately, without the peel spending their
+	// once-only retry.
+	batch := issuer.nextBatch()
+	require.Len(t, batch, 2)
+	for _, request := range batch {
+		assert.False(t, request.retried, "a rate-limit peel must not consume the retry budget")
+	}
+
+	issuer.issue(batch)
+	assert.True(t, manager.HasValidCertificate("a.example.com"))
+	assert.True(t, manager.HasValidCertificate("b.example.com"))
+	assert.False(t, manager.HasValidCertificate("limited.example.com"))
+	require.Len(t, obtainer.Calls(), 2)
+}
+
+func TestDomainIssuer_Issue_SecondRateLimitedIdentifierIsPeeledToo(t *testing.T) {
+	obtainer := &fakeObtainer{}
+	obtainer.respond = func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		for _, limited := range []string{"l1.example.com", "l2.example.com"} {
+			if slices.Contains(request.Domains, limited) {
+				return nil, rateLimitedProblem(fmt.Sprintf(
+					`too many failed authorizations (5) for %q, retry after 2100-01-01 00:00:00 UTC: see docs`, limited))
+			}
+		}
+		return testCertResource(t, request.Domains, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)), nil
+	}
+
+	issuer, manager, quarantine := testIssuer(t, obtainer, domainIssuerConfig{
+		BatchSize: func(service string) int { return 3 },
+	})
+	manager.SetDynamicDomains("service1", []string{"l1.example.com", "l2.example.com", "good.example.com"})
+
+	issuer.Request("l1.example.com", "service1")
+	issuer.Request("l2.example.com", "service1")
+	issuer.Request("good.example.com", "service1")
+
+	issuer.issue(issuer.nextBatch()) // peels l1
+	issuer.issue(issuer.nextBatch()) // peels l2 — good's retry budget still intact
+	issuer.issue(issuer.nextBatch()) // good issues alone
+
+	assert.True(t, quarantine.IsQuarantined("l1.example.com"))
+	assert.True(t, quarantine.IsQuarantined("l2.example.com"))
+	assert.True(t, manager.HasValidCertificate("good.example.com"))
+	require.Len(t, obtainer.Calls(), 3)
+}
+
+func TestDomainIssuer_Issue_UnnamedRateLimitHoldsWholeBatchUntilAdvertisedTime(t *testing.T) {
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, rateLimitedProblem(`too many new orders recently, retry after 2100-01-01 00:00:00 UTC: see docs`)
+	}}
+
+	issuer, manager, quarantine := testIssuer(t, obtainer, domainIssuerConfig{
+		BatchSize: func(service string) int { return 2 },
+		// The probe passing everyone must not downgrade the hold to "innocent".
+		Preflight: func(domain string) error { return nil },
+	})
+	manager.SetDynamicDomains("service1", []string{"a.example.com", "b.example.com"})
+
+	issuer.Request("a.example.com", "service1")
+	issuer.Request("b.example.com", "service1")
+	issuer.issue(issuer.nextBatch())
+
+	// An account-level limit holds everyone until the advertised time; nothing
+	// is resubmitted to burn the budget further.
+	expectedHold := time.Date(2100, 1, 1, 0, 1, 0, 0, time.UTC)
+	snapshot := quarantine.Snapshot()
+	for _, domain := range []string{"a.example.com", "b.example.com"} {
+		assert.True(t, quarantine.IsQuarantined(domain))
+		assert.True(t, snapshot[domain].Until.Equal(expectedHold),
+			"%s must hold until the advertised retry time, got %v", domain, snapshot[domain].Until)
+	}
+	assert.Empty(t, issuer.nextBatch())
+	require.Len(t, obtainer.Calls(), 1)
 }
 
 func TestDomainIssuer_Issue_PreflightFailureQuarantinesWithoutBurningAnOrder(t *testing.T) {

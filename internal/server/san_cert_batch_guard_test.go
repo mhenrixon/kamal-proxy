@@ -221,6 +221,75 @@ func TestBatchGuard_UnattributableFailureRestoresEverythingUnquarantined(t *test
 	assert.Contains(t, pending, "other.example.com")
 }
 
+func TestBatchGuard_RateLimitedIdentifierIsHeldAndSurvivorsRestored(t *testing.T) {
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, rateLimitedProblem(`too many failed authorizations (5) for "limited.example.com", ` +
+			`retry after 2100-01-01 00:00:00 UTC: see docs`)
+	}}
+	manager, quarantine := testGuardedManager(t, obtainer)
+	// The probe passes everyone — attribution must come from the error alone.
+	manager.SetIssuanceGuard(func(domain string) error { return nil }, quarantine, nil)
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "service1"))
+	require.NoError(t, manager.RegisterDomain("limited.example.com", "service1"))
+
+	_, err := manager.provisionCertificate(context.Background(), "app.example.com")
+	require.Error(t, err)
+
+	assert.True(t, quarantine.IsQuarantined("limited.example.com"))
+	assert.False(t, quarantine.IsQuarantined("app.example.com"))
+	snapshot := quarantine.Snapshot()
+	expectedHold := time.Date(2100, 1, 1, 0, 1, 0, 0, time.UTC)
+	assert.True(t, snapshot["limited.example.com"].Until.Equal(expectedHold),
+		"hold must honor the advertised retry time, got %v", snapshot["limited.example.com"].Until)
+
+	// The survivor returns to pending for the next handshake; the held
+	// identifier waits out its advertised window instead.
+	pending := pendingDomainsOf(manager)
+	assert.Contains(t, pending, "app.example.com")
+	assert.NotContains(t, pending, "limited.example.com")
+}
+
+func TestBatchGuard_UnnamedRateLimitWithRetryTimeHoldsWholeBatch(t *testing.T) {
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, rateLimitedProblem(`too many new orders recently, retry after 2100-01-01 00:00:00 UTC: see docs`)
+	}}
+	manager, quarantine := testGuardedManager(t, obtainer)
+	manager.SetIssuanceGuard(func(domain string) error { return nil }, quarantine, nil)
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "service1"))
+	require.NoError(t, manager.RegisterDomain("other.example.com", "service1"))
+
+	_, err := manager.provisionCertificate(context.Background(), "app.example.com")
+	require.Error(t, err)
+
+	// An account-level limit with an advertised retry time holds everyone
+	// until then — retrying earlier only burns the account budget further.
+	assert.True(t, quarantine.IsQuarantined("app.example.com"))
+	assert.True(t, quarantine.IsQuarantined("other.example.com"))
+}
+
+func TestBatchGuard_UnnamedRateLimitWithoutRetryTimeRestoresEverything(t *testing.T) {
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, rateLimitedProblem(`too many new orders recently: see https://letsencrypt.org/docs/rate-limits/`)
+	}}
+	manager, quarantine := testGuardedManager(t, obtainer)
+	manager.SetIssuanceGuard(func(domain string) error { return nil }, quarantine, nil)
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "service1"))
+	require.NoError(t, manager.RegisterDomain("other.example.com", "service1"))
+
+	_, err := manager.provisionCertificate(context.Background(), "app.example.com")
+	require.Error(t, err)
+
+	// Nothing named, nothing advertised: same contract as any unattributable
+	// failure — deploy-registered hosts stay off the quarantine ladder.
+	assert.Equal(t, 0, quarantine.Len())
+	pending := pendingDomainsOf(manager)
+	assert.Contains(t, pending, "app.example.com")
+	assert.Contains(t, pending, "other.example.com")
+}
+
 func TestBatchGuard_NoGuardInstalledPreservesBehavior(t *testing.T) {
 	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
 		return nil, errors.New("acme: internal error")

@@ -375,6 +375,11 @@ func (i *domainIssuer) issue(batch []*issueRequest) {
 // quarantined too, so a failing batch cannot loop against ACME rate limits;
 // the poller re-requests them after the backoff expires.
 func (i *domainIssuer) handleObtainFailure(batch []*issueRequest, domains []string, requests map[string]*issueRequest, err error) {
+	if limit, ok := parseRateLimited(err); ok {
+		i.handleRateLimited(batch, domains, requests, limit, err)
+		return
+	}
+
 	failed := identifyFailedDomains(err, domains, i.config.Preflight)
 
 	slog.Warn("Certificate order failed", "domains", domains, "failed", failed, "error", err)
@@ -405,6 +410,49 @@ func (i *domainIssuer) handleObtainFailure(batch []*issueRequest, domains []stri
 	for _, request := range survivors {
 		if _, ok := i.queued[request.domain]; !ok {
 			i.queue = append(i.queue, &issueRequest{domain: request.domain, service: request.service, retried: true})
+			i.queued[request.domain] = struct{}{}
+		}
+	}
+	i.mu.Unlock()
+
+	i.notify()
+}
+
+// handleRateLimited peels the rate-limited identifiers out of a rejected
+// order: the named culprits hold until the server's advertised retry time,
+// and every other member is re-submitted immediately WITHOUT spending its
+// once-only retry — each round removes at least one identifier, so the loop
+// is bounded by the batch size. A rejection naming no member is account-level:
+// the whole batch holds, until the advertised time when one was given, on the
+// ladder otherwise, because any retry before then burns the same budget.
+func (i *domainIssuer) handleRateLimited(batch []*issueRequest, domains []string, requests map[string]*issueRequest, limit acmeRateLimit, err error) {
+	failed := rateLimitedDomains(limit, domains)
+	if len(failed) == 0 {
+		failed = domains
+	}
+
+	slog.Warn("Certificate order rate-limited", "domains", domains, "failed", failed,
+		"retryAfter", limit.retryAfter, "error", err)
+
+	for _, domain := range failed {
+		i.quarantine.RecordRateLimited(domain, limit.retryAfter)
+	}
+
+	survivors := []*issueRequest{}
+	for _, domain := range domains {
+		if !slices.Contains(failed, domain) {
+			survivors = append(survivors, requests[domain])
+		}
+	}
+
+	// Outcomes are recorded; release the in-flight hold before re-enqueueing
+	// so the survivors are not dropped as in-flight at the next dequeue.
+	i.finishBatch(batch)
+
+	i.mu.Lock()
+	for _, request := range survivors {
+		if _, ok := i.queued[request.domain]; !ok {
+			i.queue = append(i.queue, &issueRequest{domain: request.domain, service: request.service, retried: request.retried})
 			i.queued[request.domain] = struct{}{}
 		}
 	}

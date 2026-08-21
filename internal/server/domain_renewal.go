@@ -486,6 +486,30 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 		return
 	}
 
+	// A rate-limited rejection names its own culprits: hold them until the
+	// server's advertised retry time — nothing else in the set deserves the
+	// ladder, and the next reconcile renews without the held members. Nothing
+	// named means an account-level limit; then everyone waits it out.
+	if limit, ok := parseRateLimited(err); ok {
+		failed := rateLimitedDomains(limit, domains)
+		if len(failed) == 0 {
+			failed = domains
+		}
+
+		slog.Warn("Certificate renewal rate-limited", "certificate", cert.Identifier,
+			"domains", domains, "failed", failed, "retryAfter", limit.retryAfter, "error", err)
+
+		for _, domain := range failed {
+			r.quarantine.RecordRateLimited(domain, limit.retryAfter)
+		}
+		for _, domain := range domains {
+			metrics.Tracker.IncCertificateRenewals(domain, false)
+		}
+
+		r.notifyChange()
+		return
+	}
+
 	// Probe only dynamic members when attributing the failure: a registered
 	// host may be DNS-01-only and unreachable over HTTP by design.
 	probe := r.config.Preflight

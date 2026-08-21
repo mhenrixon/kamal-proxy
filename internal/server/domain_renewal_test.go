@@ -37,6 +37,48 @@ func adoptTestCert(t testing.TB, manager *SANCertManager, domains []string, notB
 	return managed
 }
 
+func TestCertRenewer_RateLimitedMemberIsHeldAloneAndDroppedFromNextRenewal(t *testing.T) {
+	obtainer := &fakeObtainer{}
+	obtainer.respond = func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		for _, domain := range request.Domains {
+			if domain == "limited.example.com" {
+				return nil, rateLimitedProblem(`too many failed authorizations (5) for "limited.example.com", ` +
+					`retry after 2100-01-01 00:00:00 UTC: see docs`)
+			}
+		}
+		return testCertResource(t, request.Domains, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)), nil
+	}
+
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+	manager.SetDynamicDomains("service1", []string{"kept.example.com", "limited.example.com"})
+
+	// Inside the compaction window, so the next reconcile renews without the
+	// held member instead of waiting for it.
+	adoptTestCert(t, manager, []string{"kept.example.com", "limited.example.com"},
+		time.Now().Add(-85*24*time.Hour), time.Now().Add(5*24*time.Hour))
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	// Only the named identifier is held — until the advertised time — and the
+	// innocent member is not quarantined with it.
+	assert.True(t, quarantine.IsQuarantined("limited.example.com"))
+	assert.False(t, quarantine.IsQuarantined("kept.example.com"))
+	snapshot := quarantine.Snapshot()
+	expectedHold := time.Date(2100, 1, 1, 0, 1, 0, 0, time.UTC)
+	assert.True(t, snapshot["limited.example.com"].Until.Equal(expectedHold),
+		"hold must honor the advertised retry time, got %v", snapshot["limited.example.com"].Until)
+
+	// The next reconcile orders without the held member and succeeds.
+	renewer.reconcile()
+	calls := obtainer.Calls()
+	require.Len(t, calls, 2)
+	assert.Equal(t, []string{"kept.example.com", "limited.example.com"}, calls[0].Domains)
+	assert.Equal(t, []string{"kept.example.com"}, calls[1].Domains)
+	assert.True(t, manager.HasValidCertificate("kept.example.com"))
+}
+
 func TestCertRenewer_RenewsInsideFallbackWindow(t *testing.T) {
 	obtainer := successfulObtainer(t)
 	manager := testSANCertManager(t)
