@@ -1,0 +1,31 @@
+internal/server/san_cert_batch_guard.go
+  s_7b4c4eb718c5fe::t_5951c4ec82ff9c 163-166
+internal/server/domain_renewal.go
+  s_7b4c4eb718c5fe::t_0904b91703e5ec 354,360,368
+  s_7b4c4eb718c5fe::t_6c7602772e0cfa 491-496,500,509-510,525
+  s_7b4c4eb718c5fe::t_f06b35f0ef96a2 554
+  s_7b4c4eb718c5fe::t_aee56e9b403123 282
+  s_7b4c4eb718c5fe::t_03c79e71486332 328-331,334
+  s_7b4c4eb718c5fe::t_0bd30b49cdeb90 290,298-304
+internal/server/san_cert_batch_guard_test.go
+  s_7b4c4eb718c5fe::t_a6102bb8cbfe18 13-14
+  s_7b4c4eb718c5fe::t_9c89ed7d7d2649 274-299
+internal/server/domain_renewal_test.go
+  s_7b4c4eb718c5fe::t_76c3cb4980c59f 695-722
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a926b121705eb02a6462a6fce6a015ee89a6466d",
+  "prompts": {},
+  "sessions": {
+    "s_7b4c4eb718c5fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "282da557-0d7d-4d78-83c7-4d8ef49a3150",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
