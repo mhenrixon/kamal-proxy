@@ -95,8 +95,8 @@ func TestRateLimitedDomains(t *testing.T) {
 		expected []string
 	}{
 		{
-			name: "quoted batch member is attributed",
-			err: errors.New(`urn:ietf:params:acme:error:rateLimited :: too many failed authorizations (5) for "www.example.net" in the last 1h0m0s`),
+			name:     "quoted batch member is attributed",
+			err:      errors.New(`urn:ietf:params:acme:error:rateLimited :: too many failed authorizations (5) for "www.example.net" in the last 1h0m0s`),
 			expected: []string{"www.example.net"},
 		},
 		{
