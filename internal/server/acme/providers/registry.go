@@ -65,12 +65,18 @@ func (p Provider) detectSets() [][]string {
 var registry = map[acme.ProviderName]Provider{
 	acme.ProviderCloudflare: {
 		DisplayName: "Cloudflare",
-		Required:    []string{"CF_API_TOKEN"},
-		Optional:    []string{"CF_API_EMAIL", "CF_API_KEY", "CF_DNS_API_TOKEN", "CF_ZONE_API_TOKEN"},
+		// Exactly the sets lego's constructor accepts: a DNS API token, or
+		// key + email, in either env namespace. TestNewProvider_
+		// CloudflareCredentialSetsConstruct pins each set to the constructor,
+		// so this rule cannot drift into vouching for a broken configuration
+		// again (CF_API_TOKEN, which lego never read, did — #115).
+		Required: []string{"CF_DNS_API_TOKEN"},
+		Optional: []string{"CF_ZONE_API_TOKEN", "CLOUDFLARE_ZONE_API_TOKEN"},
 		Alternatives: [][]string{
-			{"CF_API_TOKEN"},
 			{"CF_DNS_API_TOKEN"},
+			{"CLOUDFLARE_DNS_API_TOKEN"},
 			{"CF_API_KEY", "CF_API_EMAIL"},
+			{"CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL"},
 		},
 		Docs: "https://go-acme.github.io/lego/dns/cloudflare/",
 		New:  func() (challenge.Provider, error) { return cloudflare.NewDNSProvider() },

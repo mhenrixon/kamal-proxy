@@ -42,15 +42,16 @@ func TestRegistry_EntriesAreComplete(t *testing.T) {
 }
 
 // Cloudflare is the one provider whose credential rule is not a flat AND:
-// CF_API_TOKEN or CF_DNS_API_TOKEN or (CF_API_KEY + CF_API_EMAIL).
+// a DNS API token, or key + email, in either env namespace.
 func TestDetectProviderName_CloudflareAlternatives(t *testing.T) {
 	tests := []struct {
 		name string
 		env  map[string]string
 	}{
-		{"api token", map[string]string{"CF_API_TOKEN": "token"}},
 		{"dns api token", map[string]string{"CF_DNS_API_TOKEN": "token"}},
+		{"dns api token, long namespace", map[string]string{"CLOUDFLARE_DNS_API_TOKEN": "token"}},
 		{"key and email", map[string]string{"CF_API_KEY": "key", "CF_API_EMAIL": "cf@example.com"}},
+		{"key and email, long namespace", map[string]string{"CLOUDFLARE_API_KEY": "key", "CLOUDFLARE_EMAIL": "cf@example.com"}},
 	}
 
 	for _, tt := range tests {
@@ -84,7 +85,7 @@ func TestNewProvider_ErrorNamesMissingVariables(t *testing.T) {
 		provider acme.ProviderName
 		expect   []string
 	}{
-		{acme.ProviderCloudflare, []string{"CF_API_TOKEN", "CF_API_KEY", "CF_API_EMAIL"}},
+		{acme.ProviderCloudflare, []string{"CF_DNS_API_TOKEN", "CF_API_KEY", "CF_API_EMAIL"}},
 		{acme.ProviderDigitalOcean, []string{"DO_AUTH_TOKEN"}},
 		{acme.ProviderNamecheap, []string{"NAMECHEAP_API_USER", "NAMECHEAP_API_KEY"}},
 		{acme.ProviderGoDaddy, []string{"GODADDY_API_KEY", "GODADDY_API_SECRET"}},

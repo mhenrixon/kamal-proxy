@@ -1091,7 +1091,7 @@ needs access to your DNS provider's API.
 <!-- BEGIN GENERATED: dns-provider-table (go generate ./internal/server/acme/providers) -->
 | Name | Provider | Credentials | Optional |
 |------|----------|-------------|----------|
-| `cloudflare` | [Cloudflare](https://go-acme.github.io/lego/dns/cloudflare/) | `CF_API_TOKEN` or `CF_DNS_API_TOKEN` or (`CF_API_KEY` + `CF_API_EMAIL`) | `CF_API_EMAIL`, `CF_API_KEY`, `CF_DNS_API_TOKEN`, `CF_ZONE_API_TOKEN` |
+| `cloudflare` | [Cloudflare](https://go-acme.github.io/lego/dns/cloudflare/) | `CF_DNS_API_TOKEN` or `CLOUDFLARE_DNS_API_TOKEN` or (`CF_API_KEY` + `CF_API_EMAIL`) or (`CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL`) | `CF_ZONE_API_TOKEN`, `CLOUDFLARE_ZONE_API_TOKEN` |
 | `digitalocean` | [DigitalOcean](https://go-acme.github.io/lego/dns/digitalocean/) | `DO_AUTH_TOKEN` | — |
 | `gcloud` | [Google Cloud DNS](https://go-acme.github.io/lego/dns/gcloud/) | `GCE_PROJECT` | `GCE_SERVICE_ACCOUNT_FILE`, `GOOGLE_APPLICATION_CREDENTIALS` |
 | `godaddy` | [GoDaddy](https://go-acme.github.io/lego/dns/godaddy/) | (`GODADDY_API_KEY` + `GODADDY_API_SECRET`) | — |
@@ -1107,7 +1107,7 @@ needs access to your DNS provider's API.
 2. Start kamal-proxy with ACME email configured:
 
 ```bash
-export CF_API_TOKEN=your-cloudflare-token
+export CF_DNS_API_TOKEN=your-cloudflare-token
 kamal-proxy run --acme-email admin@example.com --acme-dns-provider cloudflare
 ```
 
@@ -1149,7 +1149,7 @@ entries pin a zone to the DNS host that serves it, and one bare entry is the
 default for anything no zone matches.
 
 ```bash
-export CF_API_TOKEN=your-cloudflare-token
+export CF_DNS_API_TOKEN=your-cloudflare-token
 export HETZNER_API_KEY=your-hetzner-key
 kamal-proxy run --acme-email admin@example.com \
   --acme-dns-provider platform.example=cloudflare \
@@ -1303,7 +1303,7 @@ env:
 
   secret:
     # DNS provider credentials (from .kamal/secrets)
-    - CF_API_TOKEN
+    - CF_DNS_API_TOKEN
 ```
 
 ### Setting up secrets
@@ -1312,7 +1312,7 @@ Create or update `.kamal/secrets` with your DNS provider credentials:
 
 ```bash
 # .kamal/secrets
-CF_API_TOKEN=your-cloudflare-api-token
+CF_DNS_API_TOKEN=your-cloudflare-api-token
 ```
 
 For AWS Route53:
@@ -1351,7 +1351,7 @@ env:
     ACME_PREFER_WILDCARD: true
 
   secret:
-    - CF_API_TOKEN
+    - CF_DNS_API_TOKEN
 ```
 
 With this configuration:
