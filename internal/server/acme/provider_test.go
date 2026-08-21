@@ -52,9 +52,13 @@ func TestParseProviderName(t *testing.T) {
 		{"vultr", ProviderVultr, false},
 		{"vr", ProviderVultr, false},
 
-		// Auto
+		// Auto is an explicit choice, never a default
 		{"auto", ProviderAuto, false},
-		{"", ProviderAuto, false},
+
+		// Off: DNS-01 requires explicit opt-in, so empty means none
+		{"", ProviderNone, false},
+		{"none", ProviderNone, false},
+		{"off", ProviderNone, false},
 
 		// Invalid
 		{"invalid", "", true},

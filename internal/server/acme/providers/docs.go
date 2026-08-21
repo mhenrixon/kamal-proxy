@@ -31,13 +31,13 @@ func Names() []acme.ProviderName {
 }
 
 // ProviderListForHelp renders the provider names for the --acme-dns-provider
-// flag help: the registry, sorted, plus the auto pseudo-provider.
+// flag help: the registry, sorted, plus the auto and none pseudo-providers.
 func ProviderListForHelp() string {
-	parts := make([]string, 0, len(registry)+1)
+	parts := make([]string, 0, len(registry)+2)
 	for _, name := range Names() {
 		parts = append(parts, string(name))
 	}
-	parts = append(parts, string(acme.ProviderAuto))
+	parts = append(parts, string(acme.ProviderAuto), "none")
 	return strings.Join(parts, ", ")
 }
 

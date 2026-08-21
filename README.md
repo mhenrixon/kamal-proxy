@@ -1136,7 +1136,7 @@ rate limits (50 certificates per registered domain per week).
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
 | `--acme-email` | `ACME_EMAIL` | (required) | Contact email for Let's Encrypt |
-| `--acme-dns-provider` | `ACME_DNS_PROVIDER` | `auto` | DNS provider for DNS-01 challenges — any name from the supported-providers table above, or `auto`. Repeatable; `zone=provider` entries pin a zone to its DNS host |
+| `--acme-dns-provider` | `ACME_DNS_PROVIDER` | none | DNS provider for DNS-01 challenges — any name from the supported-providers table above, `auto` to detect from environment credentials, or `none`. DNS-01 activates only when this is set explicitly; `auto` logs the provider it resolved at boot. Repeatable; `zone=provider` entries pin a zone to its DNS host |
 | `--acme-directory` | `ACME_DIRECTORY` | Let's Encrypt production | ACME directory URL |
 | `--acme-prefer-wildcard` | `ACME_PREFER_WILDCARD` | `true` | Prefer wildcard certificates when DNS provider available |
 | `--acme-http-fallback` | `ACME_HTTP_FALLBACK` | `true` | Fall back to HTTP-01 challenge if DNS-01 fails |

@@ -20,4 +20,16 @@ func TestRunCommand_DNSProviderHelpMatchesRegistry(t *testing.T) {
 		assert.Contains(t, flag.Usage, string(name))
 	}
 	assert.Contains(t, flag.Usage, string(acme.ProviderAuto))
+	assert.Contains(t, flag.Usage, "none")
+}
+
+// DNS-01 is explicit opt-in: with no configuration, no provider is selected —
+// credentials visible in the environment must never arm DNS-01 on their own.
+func TestRunCommand_DNSProviderDefaultsOff(t *testing.T) {
+	t.Setenv("ACME_DNS_PROVIDER", "")
+
+	selection, err := acme.ParseProviderEntries(newRunCommand().acmeDNSProviders)
+	require.NoError(t, err)
+	assert.Equal(t, acme.ProviderNone, selection.Default)
+	assert.Empty(t, selection.Zones)
 }

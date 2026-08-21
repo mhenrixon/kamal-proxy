@@ -38,7 +38,19 @@ func (m *SANCertManager) initDNSClients() error {
 
 	if def != nil {
 		m.dnsObtainer = def
-		slog.Info("DNS-01 challenge solver initialized", "provider", m.config.DNSProvider)
+		provider := m.config.DNSProvider
+		if provider == acme.ProviderAuto {
+			// Auto resolves from whatever credentials the environment holds;
+			// say which provider that armed, loudly — an operator who did not
+			// expect DNS-01 here should see it at boot, not at order time.
+			if detected, ok := providers.DetectProviderName(); ok {
+				provider = detected
+			}
+			slog.Warn("DNS-01 provider auto-detected from environment credentials; "+
+				"set an explicit --acme-dns-provider to pin issuance behavior",
+				"provider", provider)
+		}
+		slog.Info("DNS-01 challenge solver initialized", "provider", provider)
 	}
 
 	if m.dnsObtainer != nil || len(m.dnsObtainers) > 0 {
