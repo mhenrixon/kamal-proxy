@@ -32,7 +32,8 @@ func TestProviderTableMarkdown_RendersEveryRegistryEntry(t *testing.T) {
 	// The credential column renders the full OR-of-ANDs rule, not prose:
 	// Cloudflare's third alternative was exactly what the hand-written table
 	// had already lost.
-	assert.Contains(t, table, "`CF_API_TOKEN` or `CF_DNS_API_TOKEN` or (`CF_API_KEY` + `CF_API_EMAIL`)")
+	assert.Contains(t, table,
+		"`CF_DNS_API_TOKEN` or `CLOUDFLARE_DNS_API_TOKEN` or (`CF_API_KEY` + `CF_API_EMAIL`) or (`CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL`)")
 	assert.Contains(t, table, "`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`")
 
 	// Optional vars come from the registry entry, not prose.

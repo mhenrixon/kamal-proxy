@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/basecamp/kamal-proxy/internal/server/acme"
@@ -40,7 +41,7 @@ func TestGetProviderInfo_Cloudflare(t *testing.T) {
 	cf := info[acme.ProviderCloudflare]
 
 	assert.Equal(t, "Cloudflare", cf.DisplayName)
-	assert.Contains(t, cf.RequiredEnvVars, "CF_API_TOKEN")
+	assert.Contains(t, cf.RequiredEnvVars, "CF_DNS_API_TOKEN")
 	assert.Contains(t, cf.Documentation, "cloudflare")
 }
 
@@ -89,6 +90,25 @@ func TestNewProvider_MissingCredentials(t *testing.T) {
 	}
 }
 
+// Every credential set the registry advertises for cloudflare must satisfy
+// lego's constructor: a set that passes the boot check but cannot construct
+// vouches for a broken configuration at exactly the moment the check exists
+// to catch it (#115). Cloudflare's constructor is offline, so constructing
+// with fake values is safe.
+func TestNewProvider_CloudflareCredentialSetsConstruct(t *testing.T) {
+	for _, set := range registry[acme.ProviderCloudflare].credentialSets() {
+		t.Run(strings.Join(set, "+"), func(t *testing.T) {
+			for _, envVar := range set {
+				t.Setenv(envVar, "test-value")
+			}
+
+			provider, err := NewProvider(acme.ProviderCloudflare)
+			require.NoError(t, err)
+			assert.NotNil(t, provider)
+		})
+	}
+}
+
 // NewAutoProvider must report the provider the arming walk actually chose —
 // not what the looser detection sets would guess — so boot logging can name
 // the issuing provider truthfully.
@@ -116,7 +136,7 @@ func TestDetectProviderName_NoCredentials(t *testing.T) {
 }
 
 func TestDetectProviderName_CloudflareToken(t *testing.T) {
-	t.Setenv("CF_API_TOKEN", "test-token")
+	t.Setenv("CF_DNS_API_TOKEN", "test-token")
 
 	name, found := DetectProviderName()
 
@@ -163,7 +183,7 @@ func TestDetectProviderName_Vultr(t *testing.T) {
 
 func TestDetectProviderName_Priority(t *testing.T) {
 	// Set multiple provider credentials - Cloudflare should win (first in order)
-	t.Setenv("CF_API_TOKEN", "cf-token")
+	t.Setenv("CF_DNS_API_TOKEN", "cf-token")
 	t.Setenv("DO_AUTH_TOKEN", "do-token")
 
 	name, found := DetectProviderName()
