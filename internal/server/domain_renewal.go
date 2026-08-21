@@ -279,6 +279,7 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	renewedAll := true
 	ariConsumed := false
 	newIdentifiers := []string{}
+partitionLoop:
 	for _, directoryPart := range r.manager.splitByDesiredDirectory(cert, domains) {
 		for _, partition := range r.manager.splitByProviderZone(directoryPart.domains) {
 			partitionReplaces := ""
@@ -286,13 +287,21 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 				partitionReplaces = replaces
 			}
 
-			renewed, adopted, ordered := r.renewPartition(cert, partition, partitionReplaces, directoryPart.directory)
+			renewed, adopted, ordered, halt := r.renewPartition(cert, partition, partitionReplaces, directoryPart.directory)
 			// The marker is spent once the CA accepted an order carrying it —
 			// adoption can still fail locally, but re-sending an identifier
 			// the CA already honored would have the next order rejected. An
 			// order the CA refused leaves the marker for a later partition.
 			if partitionReplaces != "" && ordered {
 				ariConsumed = true
+			}
+			if halt {
+				// An account-level rate limit dooms every further order from
+				// this account until its advertised retry time; the remaining
+				// partitions wait for the next reconcile instead of being
+				// submitted into the same limit now.
+				renewedAll = false
+				break partitionLoop
 			}
 			if !adopted {
 				renewedAll = false
@@ -316,12 +325,13 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 // renewPartition runs one renewal order at the partition's directory and
 // adopts its certificate. adopted reports end-to-end success; ordered reports
 // that the CA accepted the order (which spends an ARI replaces marker even if
-// adoption then fails locally). Failures quarantine or log exactly as a
-// whole-certificate renewal did.
-func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replaces, directory string) (renewed *ManagedCert, adopted, ordered bool) {
+// adoption then fails locally); halt reports an account-level rate limit that
+// dooms the certificate's remaining partitions in this pass. Failures
+// quarantine or log exactly as a whole-certificate renewal did.
+func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replaces, directory string) (renewed *ManagedCert, adopted, ordered, halt bool) {
 	if r.config.Bucket != nil {
 		if err := r.config.Bucket.Take(r.ctx); err != nil {
-			return nil, false, false
+			return nil, false, false, false
 		}
 	}
 
@@ -341,14 +351,13 @@ func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replac
 		resource, err = r.config.Obtainer.Obtain(request)
 	}
 	if err != nil {
-		r.handleRenewalFailure(cert, domains, err)
-		return nil, false, false
+		return nil, false, false, r.handleRenewalFailure(cert, domains, err)
 	}
 
 	renewed, err = r.manager.adoptCertificateAt(resource, domains, directory)
 	if err != nil {
 		slog.Error("Failed to adopt renewed certificate", "certificate", cert.Identifier, "error", err)
-		return nil, false, true
+		return nil, false, true, false
 	}
 
 	for _, domain := range domains {
@@ -356,7 +365,7 @@ func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replac
 		metrics.Tracker.IncCertificateRenewals(domain, true)
 	}
 
-	return renewed, true, true
+	return renewed, true, true, false
 }
 
 // retireCertificate disposes of a certificate with no renewable domains. A
@@ -479,11 +488,16 @@ func (r *certRenewer) dynamicServiceFor(domains []string) (string, bool) {
 	return "", false
 }
 
-func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, err error) {
+// handleRenewalFailure attributes a failed renewal order and quarantines the
+// culprits. It reports halt when the failure was an account-level rate limit:
+// every further order from this account is doomed until the advertised retry
+// time, so the caller must stop submitting the certificate's remaining
+// partitions in this pass.
+func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, err error) (halt bool) {
 	if r.ctx.Err() != nil {
 		// The shutdown broke the order; do not hold that against the domains.
 		slog.Info("Certificate renewal aborted by shutdown", "certificate", cert.Identifier)
-		return
+		return false
 	}
 
 	// A rate-limited rejection names its own culprits: hold them until the
@@ -492,7 +506,8 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 	// named means an account-level limit; then everyone waits it out.
 	if limit, ok := parseRateLimited(err); ok {
 		failed := rateLimitedDomains(limit, domains)
-		if len(failed) == 0 {
+		accountLevel := len(failed) == 0
+		if accountLevel {
 			failed = domains
 		}
 
@@ -507,7 +522,7 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 		}
 
 		r.notifyChange()
-		return
+		return accountLevel
 	}
 
 	// Probe only dynamic members when attributing the failure: a registered
@@ -536,6 +551,7 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 	}
 
 	r.notifyChange()
+	return false
 }
 
 func (r *certRenewer) reportMetrics() {

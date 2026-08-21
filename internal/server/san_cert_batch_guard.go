@@ -160,7 +160,10 @@ func (g issuanceGuard) attributeRateLimit(limit acmeRateLimit, ordered, requeste
 		if limit.retryAfter.IsZero() {
 			return requested
 		}
-		culprits = ordered
+		// An account-level limit throttles every order from this account, not
+		// just the one submitted — hold the full requested set, including
+		// members deferred to another provider partition before the order.
+		culprits = requested
 	}
 
 	// The order may contain planned identifiers (a wildcard collapsed from

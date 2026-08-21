@@ -692,6 +692,34 @@ func TestCertRenewer_UnresolvedOwnerRenewsAtRecordedDirectory(t *testing.T) {
 		"the replacement must record the directory that actually issued it")
 }
 
+func TestCertRenewer_AccountLevelRateLimitStopsThePartitionLoop(t *testing.T) {
+	manager := testSANCertManager(t)
+	manager.selection.Zones = map[string]acmeconfig.ProviderName{
+		"a.test": "cloudflare",
+		"b.test": "route53",
+	}
+
+	manager.SetDynamicDomains("service1", []string{"x.a.test", "y.b.test"})
+	adoptTestCert(t, manager, []string{"x.a.test", "y.b.test"},
+		time.Now().Add(-70*24*time.Hour), time.Now().Add(20*24*time.Hour))
+
+	quarantine := newDomainQuarantine()
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, rateLimitedProblem(`too many new orders recently, retry after 2100-01-01 00:00:00 UTC: see docs`)
+	}}
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	// The first partition's rejection proves every further order from this
+	// account is doomed until the advertised time: the second partition must
+	// not be submitted into the same limit in the same pass.
+	calls := obtainer.Calls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, []string{"x.a.test"}, calls[0].Domains)
+	assert.True(t, quarantine.IsQuarantined("x.a.test"))
+}
+
 func TestCertRenewer_ARIMarkerSurvivesAFailedFirstPartition(t *testing.T) {
 	manager := testSANCertManager(t)
 	manager.selection.Zones = map[string]acmeconfig.ProviderName{

@@ -10,6 +10,8 @@ import (
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	acmeconfig "github.com/basecamp/kamal-proxy/internal/server/acme"
 )
 
 func testGuardedManager(t testing.TB, obtainer certObtainer) (*SANCertManager, *domainQuarantine) {
@@ -267,6 +269,32 @@ func TestBatchGuard_UnnamedRateLimitWithRetryTimeHoldsWholeBatch(t *testing.T) {
 	// until then — retrying earlier only burns the account budget further.
 	assert.True(t, quarantine.IsQuarantined("app.example.com"))
 	assert.True(t, quarantine.IsQuarantined("other.example.com"))
+}
+
+func TestBatchGuard_UnnamedRateLimitHoldsDeferredPartitionMembersToo(t *testing.T) {
+	obtainer := &fakeObtainer{respond: func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		return nil, rateLimitedProblem(`too many new orders recently, retry after 2100-01-01 00:00:00 UTC: see docs`)
+	}}
+	manager, quarantine := testGuardedManager(t, obtainer)
+	manager.SetIssuanceGuard(func(domain string) error { return nil }, quarantine, nil)
+
+	// Two DNS provider partitions: the handshake order narrows to the
+	// trigger's partition, deferring the other member before the order.
+	manager.selection.Zones = map[string]acmeconfig.ProviderName{
+		"a.test": "cloudflare",
+		"b.test": "route53",
+	}
+	require.NoError(t, manager.RegisterDomain("x.a.test", "service1"))
+	require.NoError(t, manager.RegisterDomain("y.b.test", "service1"))
+
+	_, err := manager.provisionCertificate(context.Background(), "x.a.test")
+	require.Error(t, err)
+
+	// The account-level limit throttles every order from this account, so the
+	// deferred member must wait out the advertised window too — its own
+	// handshake would otherwise submit a doomed order immediately.
+	assert.True(t, quarantine.IsQuarantined("x.a.test"))
+	assert.True(t, quarantine.IsQuarantined("y.b.test"))
 }
 
 func TestBatchGuard_UnnamedRateLimitWithoutRetryTimeRestoresEverything(t *testing.T) {
