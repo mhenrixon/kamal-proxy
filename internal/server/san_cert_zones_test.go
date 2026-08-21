@@ -109,6 +109,26 @@ func TestSANCertManager_InitDNSClients_DefaultProviderFallbackStaysSoft(t *testi
 	assert.Nil(t, manager.dnsObtainer)
 }
 
+// DNS-01 is explicit opt-in: an unconfigured provider builds no DNS solver
+// and leaves wildcard grouping off, whatever credentials the environment
+// happens to hold.
+func TestSANCertManager_InitDNSClients_NoProviderConfiguredStaysHTTP01(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager, err := NewSANCertManager(SANCertManagerConfig{
+		Email:        "test@example.com",
+		Directory:    LetsEncryptStaging,
+		CachePath:    filepath.Join(tmpDir, "certs"),
+		DNSProvider:  acme.ProviderNone,
+		HTTPFallback: true,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, manager.initDNSClients())
+	assert.Nil(t, manager.dnsObtainer)
+	assert.Empty(t, manager.dnsObtainers)
+	assert.False(t, manager.grouper.DNSProviderAvailable)
+}
+
 func TestSANCertManager_ObtainCertificate_RoutesOrderByZone(t *testing.T) {
 	manager := testZonedManager(t, "", map[string]acme.ProviderName{
 		"legacy.example": acme.ProviderHetzner,

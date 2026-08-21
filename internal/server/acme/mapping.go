@@ -89,6 +89,9 @@ func ParseProviderEntries(entries []string) (ProviderSelection, error) {
 		if name == ProviderAuto {
 			return ProviderSelection{}, fmt.Errorf("zone %q: mappings are always explicit; %q cannot be mapped to a zone", zone, "auto")
 		}
+		if name == ProviderNone {
+			return ProviderSelection{}, fmt.Errorf("zone %q: mappings need a concrete provider", zone)
+		}
 
 		if _, ok := selection.Zones[zone]; ok {
 			return ProviderSelection{}, fmt.Errorf("duplicate zone in DNS provider mappings: %q", zone)

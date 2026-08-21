@@ -99,5 +99,6 @@ func TestProviderListForHelp_MatchesRegistry(t *testing.T) {
 	for name := range registry {
 		assert.Contains(t, help, string(name))
 	}
-	assert.True(t, strings.HasSuffix(help, ", "+string(acme.ProviderAuto)))
+	assert.True(t, strings.HasSuffix(help, ", "+string(acme.ProviderAuto)+", none"),
+		"the auto and none pseudo-providers follow the registry names")
 }

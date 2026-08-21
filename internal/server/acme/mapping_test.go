@@ -72,6 +72,16 @@ func TestParseProviderEntries(t *testing.T) {
 			expectError: "auto",
 		},
 		{
+			name:          "none is an explicit off for the default",
+			entries:       []string{"none"},
+			expectDefault: ProviderNone,
+		},
+		{
+			name:        "none cannot be mapped to a zone",
+			entries:     []string{"platform.example=none"},
+			expectError: "concrete",
+		},
+		{
 			name:        "unknown provider in a mapping fails",
 			entries:     []string{"platform.example=clodflare"},
 			expectError: "clodflare",

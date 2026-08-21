@@ -54,14 +54,25 @@ func NewProvider(name acme.ProviderName) (challenge.Provider, error) {
 
 // autoDetectProvider attempts to auto-detect the DNS provider from environment variables
 func autoDetectProvider() (challenge.Provider, error) {
+	provider, _, err := NewAutoProvider()
+	return provider, err
+}
+
+// NewAutoProvider resolves the auto pseudo-provider and reports which
+// provider it actually armed: the first entry in detectionOrder whose
+// construction succeeds. This is the arming walk itself — unlike
+// DetectProviderName's detection sets, which can name a provider whose
+// construction would fail — so a caller logging the result names the
+// provider that will answer orders.
+func NewAutoProvider() (challenge.Provider, acme.ProviderName, error) {
 	for _, name := range detectionOrder {
 		provider, err := NewProvider(name)
 		if err == nil {
-			return provider, nil
+			return provider, name, nil
 		}
 	}
 
-	return nil, fmt.Errorf("%w: could not auto-detect DNS provider from environment", acme.ErrProviderNotConfigured)
+	return nil, "", fmt.Errorf("%w: could not auto-detect DNS provider from environment", acme.ErrProviderNotConfigured)
 }
 
 // DetectProviderName detects which provider is configured from environment variables

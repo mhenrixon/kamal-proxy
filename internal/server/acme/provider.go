@@ -26,6 +26,12 @@ const (
 	ProviderHetzner      ProviderName = "hetzner"
 	ProviderVultr        ProviderName = "vultr"
 	ProviderAuto         ProviderName = "auto"
+
+	// ProviderNone is the parsed form of "" and "none": no DNS-01 provider.
+	// It is the default — DNS-01 activates only on explicit configuration,
+	// so credentials visible in the environment can never arm it on their
+	// own.
+	ProviderNone ProviderName = ""
 )
 
 // DefaultProductionDirectory is the Let's Encrypt production ACME directory
@@ -53,8 +59,10 @@ func ParseProviderName(s string) (ProviderName, error) {
 		return ProviderHetzner, nil
 	case "vultr", "vr":
 		return ProviderVultr, nil
-	case "auto", "":
+	case "auto":
 		return ProviderAuto, nil
+	case "", "none":
+		return ProviderNone, nil
 	default:
 		return "", fmt.Errorf("%w: %s", ErrProviderNotSupported, s)
 	}

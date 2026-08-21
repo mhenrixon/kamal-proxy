@@ -89,6 +89,20 @@ func TestNewProvider_MissingCredentials(t *testing.T) {
 	}
 }
 
+// NewAutoProvider must report the provider the arming walk actually chose —
+// not what the looser detection sets would guess — so boot logging can name
+// the issuing provider truthfully.
+func TestNewAutoProvider_ReportsTheArmedProvider(t *testing.T) {
+	// CF_DNS_API_TOKEN satisfies the registry's credential rule AND lego's
+	// constructor, so cloudflare — first in detectionOrder — actually arms.
+	t.Setenv("CF_DNS_API_TOKEN", "test-token")
+
+	provider, name, err := NewAutoProvider()
+	require.NoError(t, err)
+	assert.NotNil(t, provider)
+	assert.Equal(t, acme.ProviderCloudflare, name)
+}
+
 func TestDetectProviderName_NoCredentials(t *testing.T) {
 	// With no env vars set, should return empty
 	name, found := DetectProviderName()
