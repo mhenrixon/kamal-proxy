@@ -1,0 +1,31 @@
+internal/server/acme/providers/factory_test.go
+  s_7b4c4eb718c5fe::t_72d84d4d833ca1 92-95,99-105
+  s_7b4c4eb718c5fe::t_f8f372e81ddf86 96-98
+internal/server/acme/providers/factory.go
+  s_7b4c4eb718c5fe::t_6b7c77a91cb851 57-67,71,75
+internal/server/san_cert_zones.go
+  s_7b4c4eb718c5fe::t_a841f3a1f21485 46-49
+internal/cmd/run_providers_test.go
+  s_7b4c4eb718c5fe::t_529bc4e3e7c84d 22-24
+internal/server/acme/provider_test.go
+  s_7b4c4eb718c5fe::t_4ab879899a29b7 61
+internal/server/acme/provider.go
+  s_7b4c4eb718c5fe::t_95c610436a2ddc 30-33
+  s_7b4c4eb718c5fe::t_fad78533469f95 64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1c1dc90166b61af51fedb039b41d2471666e0561",
+  "prompts": {},
+  "sessions": {
+    "s_7b4c4eb718c5fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "282da557-0d7d-4d78-83c7-4d8ef49a3150",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
