@@ -19,8 +19,9 @@ func TestRunCommand_DNSProviderHelpMatchesRegistry(t *testing.T) {
 	for _, name := range providers.Names() {
 		assert.Contains(t, flag.Usage, string(name))
 	}
-	assert.Contains(t, flag.Usage, string(acme.ProviderAuto))
-	assert.Contains(t, flag.Usage, "none")
+	// The pseudo-providers close the registry-derived list; matching the pair
+	// keeps this from passing on prose that merely mentions "none".
+	assert.Contains(t, flag.Usage, string(acme.ProviderAuto)+", none")
 }
 
 // DNS-01 is explicit opt-in: with no configuration, no provider is selected —

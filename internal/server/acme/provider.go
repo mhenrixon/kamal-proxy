@@ -27,10 +27,10 @@ const (
 	ProviderVultr        ProviderName = "vultr"
 	ProviderAuto         ProviderName = "auto"
 
-	// ProviderNone is the parsed form of "", "none", and "off": no DNS-01
-	// provider. It is the default — DNS-01 activates only on explicit
-	// configuration, so credentials visible in the environment can never arm
-	// it on their own.
+	// ProviderNone is the parsed form of "" and "none": no DNS-01 provider.
+	// It is the default — DNS-01 activates only on explicit configuration,
+	// so credentials visible in the environment can never arm it on their
+	// own.
 	ProviderNone ProviderName = ""
 )
 
@@ -61,7 +61,7 @@ func ParseProviderName(s string) (ProviderName, error) {
 		return ProviderVultr, nil
 	case "auto":
 		return ProviderAuto, nil
-	case "", "none", "off":
+	case "", "none":
 		return ProviderNone, nil
 	default:
 		return "", fmt.Errorf("%w: %s", ErrProviderNotSupported, s)

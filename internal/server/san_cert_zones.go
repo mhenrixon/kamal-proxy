@@ -43,8 +43,10 @@ func (m *SANCertManager) initDNSClients() error {
 			// Auto resolves from whatever credentials the environment holds;
 			// say which provider that armed, loudly — an operator who did not
 			// expect DNS-01 here should see it at boot, not at order time.
-			if detected, ok := providers.DetectProviderName(); ok {
-				provider = detected
+			// Re-running the arming walk here is deterministic: the default
+			// obtainer was just built from the same environment.
+			if _, armed, err := providers.NewAutoProvider(); err == nil {
+				provider = armed
 			}
 			slog.Warn("DNS-01 provider auto-detected from environment credentials; "+
 				"set an explicit --acme-dns-provider to pin issuance behavior",

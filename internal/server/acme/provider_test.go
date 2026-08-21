@@ -58,7 +58,7 @@ func TestParseProviderName(t *testing.T) {
 		// Off: DNS-01 requires explicit opt-in, so empty means none
 		{"", ProviderNone, false},
 		{"none", ProviderNone, false},
-		{"off", ProviderNone, false},
+		{"off", "", true},
 
 		// Invalid
 		{"invalid", "", true},
