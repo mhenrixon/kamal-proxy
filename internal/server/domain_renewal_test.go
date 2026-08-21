@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -718,6 +719,49 @@ func TestCertRenewer_AccountLevelRateLimitStopsThePartitionLoop(t *testing.T) {
 	require.Len(t, calls, 1)
 	assert.Equal(t, []string{"x.a.test"}, calls[0].Domains)
 	assert.True(t, quarantine.IsQuarantined("x.a.test"))
+
+	// The unsubmitted partition waits out the same advertised window — a
+	// reconcile near expiry would otherwise compact the batch and submit it
+	// into the same account limit.
+	assert.True(t, quarantine.IsQuarantined("y.b.test"))
+	expectedHold := time.Date(2100, 1, 1, 0, 1, 0, 0, time.UTC)
+	snapshot := quarantine.Snapshot()
+	assert.True(t, snapshot["y.b.test"].Until.Equal(expectedHold),
+		"the unsubmitted partition must hold until the advertised retry time, got %v", snapshot["y.b.test"].Until)
+}
+
+func TestCertRenewer_AccountLevelRateLimitIsScopedToItsDirectory(t *testing.T) {
+	// An account-level limit belongs to one directory's ACME account; a
+	// mixed-directory certificate's other partitions renew under different
+	// accounts and must still be submitted.
+	obtainer := &fakeObtainer{}
+	obtainer.respond = func(request certificate.ObtainRequest) (*certificate.Resource, error) {
+		if slices.Contains(request.Domains, "plain.example.net") {
+			return nil, rateLimitedProblem(`too many new orders recently, retry after 2100-01-01 00:00:00 UTC: see docs`)
+		}
+		return testCertResource(t, request.Domains, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)), nil
+	}
+
+	manager := testSANCertManager(t)
+	quarantine := newDomainQuarantine()
+	manager.SetDynamicDomains("plain-svc", []string{"plain.example.net"})
+	manager.SetDynamicDomains("staged-svc", []string{"staged.example.com"})
+
+	adoptTestCert(t, manager, []string{"plain.example.net", "staged.example.com"},
+		time.Now().Add(-24*time.Hour), time.Now().Add(89*24*time.Hour))
+	manager.SetServiceDirectory("staged-svc", LetsEncryptProduction)
+
+	renewer := newCertRenewer(manager, quarantine, certRenewerConfig{Obtainer: obtainer})
+	renewer.reconcile()
+
+	calls := obtainer.Calls()
+	require.Len(t, calls, 2, "the staged directory's partition must still be submitted")
+	assert.Equal(t, []string{"plain.example.net"}, calls[0].Domains)
+	assert.Equal(t, []string{"staged.example.com"}, calls[1].Domains)
+
+	assert.True(t, quarantine.IsQuarantined("plain.example.net"))
+	assert.False(t, quarantine.IsQuarantined("staged.example.com"))
+	assert.True(t, manager.HasValidCertificate("staged.example.com"))
 }
 
 func TestCertRenewer_ARIMarkerSurvivesAFailedFirstPartition(t *testing.T) {

@@ -279,15 +279,15 @@ func (r *certRenewer) renew(cert *ManagedCert) {
 	renewedAll := true
 	ariConsumed := false
 	newIdentifiers := []string{}
-partitionLoop:
 	for _, directoryPart := range r.manager.splitByDesiredDirectory(cert, domains) {
-		for _, partition := range r.manager.splitByProviderZone(directoryPart.domains) {
+		partitions := r.manager.splitByProviderZone(directoryPart.domains)
+		for idx, partition := range partitions {
 			partitionReplaces := ""
 			if !ariConsumed && directoryPart.directory == recorded {
 				partitionReplaces = replaces
 			}
 
-			renewed, adopted, ordered, halt := r.renewPartition(cert, partition, partitionReplaces, directoryPart.directory)
+			renewed, adopted, ordered, accountLimit := r.renewPartition(cert, partition, partitionReplaces, directoryPart.directory)
 			// The marker is spent once the CA accepted an order carrying it —
 			// adoption can still fail locally, but re-sending an identifier
 			// the CA already honored would have the next order rejected. An
@@ -295,13 +295,15 @@ partitionLoop:
 			if partitionReplaces != "" && ordered {
 				ariConsumed = true
 			}
-			if halt {
+			if accountLimit != nil {
 				// An account-level rate limit dooms every further order from
-				// this account until its advertised retry time; the remaining
-				// partitions wait for the next reconcile instead of being
-				// submitted into the same limit now.
+				// this directory's ACME account until its advertised retry
+				// time: hold the unsubmitted partitions so the next reconcile
+				// waits the window out too, and move on to the next directory
+				// — its account is a separate bucket.
 				renewedAll = false
-				break partitionLoop
+				r.holdPartitions(partitions[idx+1:], accountLimit.retryAfter)
+				break
 			}
 			if !adopted {
 				renewedAll = false
@@ -322,16 +324,33 @@ partitionLoop:
 	}
 }
 
+// holdPartitions quarantines partitions that were never submitted because an
+// account-level rate limit doomed them, so the next reconcile waits out the
+// advertised window instead of compacting the batch and submitting them into
+// the same limit.
+func (r *certRenewer) holdPartitions(partitions [][]string, retryAfter time.Time) {
+	held := false
+	for _, partition := range partitions {
+		for _, domain := range partition {
+			r.quarantine.RecordRateLimited(domain, retryAfter)
+			held = true
+		}
+	}
+	if held {
+		r.notifyChange()
+	}
+}
+
 // renewPartition runs one renewal order at the partition's directory and
 // adopts its certificate. adopted reports end-to-end success; ordered reports
 // that the CA accepted the order (which spends an ARI replaces marker even if
-// adoption then fails locally); halt reports an account-level rate limit that
-// dooms the certificate's remaining partitions in this pass. Failures
-// quarantine or log exactly as a whole-certificate renewal did.
-func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replaces, directory string) (renewed *ManagedCert, adopted, ordered, halt bool) {
+// adoption then fails locally); accountLimit is the parsed rate limit when an
+// account-level rejection dooms the directory's remaining partitions this
+// pass. Failures quarantine or log exactly as a whole-certificate renewal did.
+func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replaces, directory string) (renewed *ManagedCert, adopted, ordered bool, accountLimit *acmeRateLimit) {
 	if r.config.Bucket != nil {
 		if err := r.config.Bucket.Take(r.ctx); err != nil {
-			return nil, false, false, false
+			return nil, false, false, nil
 		}
 	}
 
@@ -357,7 +376,7 @@ func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replac
 	renewed, err = r.manager.adoptCertificateAt(resource, domains, directory)
 	if err != nil {
 		slog.Error("Failed to adopt renewed certificate", "certificate", cert.Identifier, "error", err)
-		return nil, false, true, false
+		return nil, false, true, nil
 	}
 
 	for _, domain := range domains {
@@ -365,7 +384,7 @@ func (r *certRenewer) renewPartition(cert *ManagedCert, domains []string, replac
 		metrics.Tracker.IncCertificateRenewals(domain, true)
 	}
 
-	return renewed, true, true, false
+	return renewed, true, true, nil
 }
 
 // retireCertificate disposes of a certificate with no renewable domains. A
@@ -489,15 +508,15 @@ func (r *certRenewer) dynamicServiceFor(domains []string) (string, bool) {
 }
 
 // handleRenewalFailure attributes a failed renewal order and quarantines the
-// culprits. It reports halt when the failure was an account-level rate limit:
-// every further order from this account is doomed until the advertised retry
-// time, so the caller must stop submitting the certificate's remaining
-// partitions in this pass.
-func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, err error) (halt bool) {
+// culprits. It returns the parsed rate limit when the failure was
+// account-level: every further order from that directory's ACME account is
+// doomed until the advertised retry time, so the caller must hold and stop
+// submitting the certificate's remaining same-directory partitions this pass.
+func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, err error) (accountLimit *acmeRateLimit) {
 	if r.ctx.Err() != nil {
 		// The shutdown broke the order; do not hold that against the domains.
 		slog.Info("Certificate renewal aborted by shutdown", "certificate", cert.Identifier)
-		return false
+		return nil
 	}
 
 	// A rate-limited rejection names its own culprits: hold them until the
@@ -522,7 +541,10 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 		}
 
 		r.notifyChange()
-		return accountLevel
+		if accountLevel {
+			return &limit
+		}
+		return nil
 	}
 
 	// Probe only dynamic members when attributing the failure: a registered
@@ -551,7 +573,7 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 	}
 
 	r.notifyChange()
-	return false
+	return nil
 }
 
 func (r *certRenewer) reportMetrics() {
