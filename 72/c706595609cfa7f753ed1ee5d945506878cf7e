@@ -1,0 +1,19 @@
+internal/server/acme/providers/factory_test.go
+  s_7b4c4eb718c5fe::t_0cd9043d67ad6c 112-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "72c706595609cfa7f753ed1ee5d945506878cf7e",
+  "prompts": {},
+  "sessions": {
+    "s_7b4c4eb718c5fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "282da557-0d7d-4d78-83c7-4d8ef49a3150",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
