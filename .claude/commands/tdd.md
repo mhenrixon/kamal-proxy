@@ -70,7 +70,7 @@ class CommandsDashTest < ActiveSupport::TestCase
   test "release image before gem enforces minimum version" do
     command = Kamal::Commands::Dash.new(config)
 
-    assert_equal "ghcr.io/mhenrixon/kamal-proxy:v0.9.2.1", command.minimum_version_image
+    assert_equal "ghcr.io/zoolutions/dash-proxy:v0.9.2.1", command.minimum_version_image
   end
 end
 ```

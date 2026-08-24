@@ -57,9 +57,10 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          # kamal prunes proxy images by this label - it must match upstream's.
+          # The dash gem prunes proxy images by this label - keep it kamal-proxy
+          # until the server-artifact rename ships a migration bridge.
           labels: |
             org.opencontainers.image.title=kamal-proxy
           tags: |
-            ghcr.io/zoolutions/kamal-proxy:latest
-            ghcr.io/zoolutions/kamal-proxy:${{ steps.version-tag.outputs.value }}
+            ghcr.io/zoolutions/dash-proxy:latest
+            ghcr.io/zoolutions/dash-proxy:${{ steps.version-tag.outputs.value }}

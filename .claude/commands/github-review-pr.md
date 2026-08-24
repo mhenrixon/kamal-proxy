@@ -7,7 +7,7 @@ allowed-tools: Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bas
 
 # Review GitHub PR (full pass): $ARGUMENTS
 
-You are running a full review pass on a **dash-proxy** (`mhenrixon/kamal-proxy`) pull request. The pass has three phases that MUST run in this order:
+You are running a full review pass on a **dash-proxy** (`zoolutions/dash-proxy`) pull request. The pass has three phases that MUST run in this order:
 
 1. **Phase A0: merge conflicts** — bring the branch up to date with its base and resolve any conflicts before anything else.
 2. **Phase A: CI failures** — fix anything red before touching review comments.
@@ -48,7 +48,7 @@ The user may provide a PR number as `$ARGUMENTS`. Parse it flexibly:
 **If no PR number is provided**, detect it automatically:
 
 ```bash
-gh pr list --repo mhenrixon/kamal-proxy --author=@me --head="$(git branch --show-current)" --state=open --json number,title
+gh pr list --repo zoolutions/dash-proxy --author=@me --head="$(git branch --show-current)" --state=open --json number,title
 ```
 
 If exactly one open PR exists for the current branch, use it. If none or multiple, ask the user.
@@ -56,7 +56,7 @@ If exactly one open PR exists for the current branch, use it. If none or multipl
 Once you have the PR number, confirm it and its base branch:
 
 ```bash
-gh pr view <PR_NUMBER> --repo mhenrixon/kamal-proxy --json title,state,url,baseRefName
+gh pr view <PR_NUMBER> --repo zoolutions/dash-proxy --json title,state,url,baseRefName
 ```
 
 ---
@@ -66,7 +66,7 @@ gh pr view <PR_NUMBER> --repo mhenrixon/kamal-proxy --json title,state,url,baseR
 Check whether the branch merges cleanly into its base:
 
 ```bash
-gh pr view <PR_NUMBER> --repo mhenrixon/kamal-proxy --json mergeable,mergeStateStatus,baseRefName
+gh pr view <PR_NUMBER> --repo zoolutions/dash-proxy --json mergeable,mergeStateStatus,baseRefName
 ```
 
 | `mergeable` | Action |
@@ -80,7 +80,7 @@ gh pr view <PR_NUMBER> --repo mhenrixon/kamal-proxy --json mergeable,mergeStateS
 `dash` is this fork's main branch and feature branches root off it, so the answer is normally simple:
 
 1. **Merge `origin/dash`** — this is the sanctioned forward merge. Branches are no longer kept upstream-PR-able, so there is nothing to contaminate.
-2. **Only reach for `git merge origin/main`** on an old branch that still roots off `main`, or when you specifically want upstream fixes that have not yet reached `dash`. Re-check mergeability against `dash` afterwards.
+2. **Only reach for `git merge origin/main`** on an old branch that still roots off `main`, or when you specifically want upstream fixes that have not yet reached `dash`. Re-check mergeability against `main` afterwards.
 
 Note `git rerere` is enabled: previously-seen conflicts auto-replay their resolutions — review what rerere staged before trusting it.
 
@@ -158,7 +158,7 @@ The slash command is at `.claude/commands/github-review-comments.md`. Its workfl
 
 ## Phase C: Final report
 
-Before reporting, re-check mergeability once more (`gh pr view <PR> --repo mhenrixon/kamal-proxy --json mergeable`, or the local `git merge-tree` check if UNKNOWN) — the base can move underneath a long pass. If a NEW conflict appeared, loop back to Phase A0.
+Before reporting, re-check mergeability once more (`gh pr view <PR> --repo zoolutions/dash-proxy --json mergeable`, or the local `git merge-tree` check if UNKNOWN) — the base can move underneath a long pass. If a NEW conflict appeared, loop back to Phase A0.
 
 After all phases complete, report:
 

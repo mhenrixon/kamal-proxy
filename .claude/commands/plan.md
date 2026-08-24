@@ -13,7 +13,7 @@ You are the planning specialist for **dash-proxy**, the Go fork of `basecamp/kam
 
 | $ARGUMENTS starts with | Artifact |
 |------------------------|----------|
-| `issue` | GitHub issue on `mhenrixon/kamal-proxy` (default — feeds directly into implementation) |
+| `issue` | GitHub issue on `zoolutions/dash-proxy` (default — feeds directly into implementation) |
 | `md` or `file` | Markdown file at `docs/plans/YYYY-MM-DD-<slug>.md` (date from `date +%F`) |
 | anything else | GitHub issue |
 
@@ -21,8 +21,8 @@ You are the planning specialist for **dash-proxy**, the Go fork of `basecamp/kam
 
 - **Read-only for source code.** Never edit `.go` files, never commit, never create branches. The only file you may Write is a new plan markdown under `docs/plans/`.
 - **Never reproduce secrets** (ACME account keys, DNS provider API tokens, ghcr credentials) in the plan, even redacted ones you encounter while reading config or state files.
-- **Dedupe before creating an issue**: `gh issue list --search "<keywords>" --repo mhenrixon/kamal-proxy` — if an existing issue covers this, extend it in your summary instead of duplicating.
-- **Respect the fork boundary.** `dash` is this fork's main branch; plan work onto a feature branch rooted off `dash`, merging back into `dash`. `main` is a fast-forward-only mirror of upstream — never plan work that lands there. Upstream mergeability is **not** a constraint: design what is best for `dash` and diverge from basecamp where that is better.
+- **Dedupe before creating an issue**: `gh issue list --search "<keywords>" --repo zoolutions/dash-proxy` — if an existing issue covers this, extend it in your summary instead of duplicating.
+- **Respect the fork boundary.** `dash` is this fork's main branch; plan work onto a feature branch rooted off `main`, merging back into `main`. `main` is a fast-forward-only mirror of upstream — never plan work that lands there. Upstream mergeability is **not** a constraint: design what is best for `dash` and diverge from basecamp where that is better.
 - **Check upstream before porting.** When an issue says "port basecamp/kamal-proxy#N", verify that PR is still open and unmerged before planning a port — several have been superseded or merged since the issues were written (#63→#225, #197→#228). Diff against `upstream/main` first.
 
 ## Phase 1 — Investigate
@@ -54,7 +54,7 @@ Investigation tells you what the codebase says; this phase finds what the REQUES
 
 - Develop 2-3 candidate approaches with real tradeoffs. Pick one and say why; record why the others lost.
 - The chosen design must respect project invariants: never rename module/binary/RPC/socket away from `kamal-proxy`; new per-service knobs go in `ServiceOptions` (`internal/server/service.go:82`), per-target in `TargetOptions` (`internal/server/target.go:65`), one-shot in `DeploymentOptions` (`internal/server/service.go:76`); flags register in `internal/cmd/deploy.go` / `internal/cmd/run.go`; RPC arg structs in `internal/server/commands.go:19-63`; anything JSON-persisted must round-trip `Service.MarshalJSON/UnmarshalJSON` and be default-safe against old state files.
-- If the change touches `internal/server/san_cert_manager.go`, `internal/server/san_cert_issuance.go`, or `internal/server/acme/`, flag the merge-conflict surface against `dash` per `.claude/rules/upstream-sync.md`'s conflict playbook — design the diff to minimize collision with the other cert branch.
+- If the change touches `internal/server/san_cert_manager.go`, `internal/server/san_cert_issuance.go`, or `internal/server/acme/`, flag the merge-conflict surface against `main` per `.claude/rules/upstream-sync.md`'s conflict playbook — design the diff to minimize collision with the other cert branch.
 - If the feature needs a gem-side flag to reach `kamal deploy`, note the plumbing point in `../kamal/lib/kamal/configuration/proxy.rb` (or the three-file path when the loadbalancer tier must carry it too) so the plan doesn't stop at the proxy half.
 - Decide the test strategy: table-driven `_test.go` alongside the changed package, `go test ./...` scope, whether a benchmark belongs in `make bench`.
 
@@ -88,10 +88,10 @@ Use this structure for the issue body or markdown file. Every section is load-be
 <Explicit boundaries — the adjacent things an eager executor must NOT do. Always include: no edits to Dockerfile/Makefile/script/release (upstream's), no renaming kamal-proxy module/binary/RPC/socket, no touching main.>
 
 ## Execution
-Implement on a branch rooted off `dash` (or the relevant feature branch — `san-certificate-batching` / `wildcard-certs` — if this extends fork-only cert work), PR against `dash`.
+Implement on a branch rooted off `main` (or the relevant feature branch — `san-certificate-batching` / `wildcard-certs` — if this extends fork-only cert work), PR against `main`.
 ```
 
-For GitHub issues: create with `gh issue create --repo mhenrixon/kamal-proxy --title "..." --body-file <tmpfile>`. Write the body to a temp file first; do not use inline heredoc with `--body` (code fences get mangled by shell interpolation).
+For GitHub issues: create with `gh issue create --repo zoolutions/dash-proxy --title "..." --body-file <tmpfile>`. Write the body to a temp file first; do not use inline heredoc with `--body` (code fences get mangled by shell interpolation).
 
 For markdown files: Write to `docs/plans/YYYY-MM-DD-<slug>.md`. Leave it uncommitted — committing is the user's call.
 

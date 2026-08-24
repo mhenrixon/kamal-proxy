@@ -7,7 +7,7 @@ allowed-tools: Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bas
 
 # Finish PRs (ordered merge-ready loop): $ARGUMENTS
 
-You are driving a set of open pull requests on `mhenrixon/kamal-proxy` (**dash-proxy**) to **merge-ready** state, one at a time, in a defined order, minimizing the manual sync/CI back-and-forth that stacked or parallel PRs create.
+You are driving a set of open pull requests on `zoolutions/dash-proxy` (**dash-proxy**) to **merge-ready** state, one at a time, in a defined order, minimizing the manual sync/CI back-and-forth that stacked or parallel PRs create.
 
 ## The fork constraints that shape this loop
 
@@ -37,7 +37,7 @@ This is a fork, and its branch model changes what "sync the PR" means. Read `.cl
 - Empty → auto-discover:
 
   ```bash
-  gh pr list --repo mhenrixon/kamal-proxy --author=@me --base dash --state=open --limit 100 \
+  gh pr list --repo zoolutions/dash-proxy --author=@me --base main --state=open --limit 100 \
     --json number,title,headRefName,baseRefName,createdAt
   ```
 
@@ -45,7 +45,7 @@ This is a fork, and its branch model changes what "sync the PR" means. Read `.cl
 
 **Verify every PR's base is `dash`.** Any PR based on `main` is a mistake in the fork model — surface it immediately and exclude it from the queue rather than processing it.
 
-**Order matters.** Each merge into `dash` invalidates the others' merge base against `dash`. Processing in a fixed order means you merge the base forward into each remaining PR exactly once per upstream merge, not repeatedly. If the user gave an explicit order, honor it exactly — they may know a dependency the metadata doesn't show. When PRs descend from `san-certificate-batching` and `wildcard-certs`, order them deliberately: whichever lands first defines the shape the other must union into.
+**Order matters.** Each merge into `main` invalidates the others' merge base against `main`. Processing in a fixed order means you merge the base forward into each remaining PR exactly once per upstream merge, not repeatedly. If the user gave an explicit order, honor it exactly — they may know a dependency the metadata doesn't show. When PRs descend from `san-certificate-batching` and `wildcard-certs`, order them deliberately: whichever lands first defines the shape the other must union into.
 
 Create a task list (TaskCreate) with one task per PR, in order, so progress is visible. Mark the current PR `in_progress`.
 
@@ -71,7 +71,7 @@ Process PRs strictly in order. For the current PR:
 ### 2a. Sync the branch onto the latest `dash`
 
 ```bash
-git fetch origin dash --quiet
+git fetch origin main --quiet
 cd <worktree>
 git merge origin/dash
 ```
@@ -137,7 +137,7 @@ Mark the PR's task `completed` (merge-ready) — or `needs-user` via a metadata 
 
 ## Phase 3: Wait for the merge, then advance
 
-The loop is **gated on the target PR merging**, because each merge into `dash` is what the next PR needs to absorb.
+The loop is **gated on the target PR merging**, because each merge into `main` is what the next PR needs to absorb.
 
 - **automerge mode:** poll `gh pr view <PR> --json state --jq .state` until `MERGED`. Use `ScheduleWakeup` with a delay matched to CI duration (Go builds + `go test ./...` run a few minutes; poll ~240s) rather than a busy sleep. When merged, advance.
 - **default mode:** the user merges manually and will tell you (or you are re-invoked). On the next turn, re-check `gh pr view <PR> --json state`. If `MERGED`, advance to the next PR and repeat Phase 2 (its re-sync now picks up the just-merged changes). If not yet merged, report current status and stop — do not spin.
@@ -152,7 +152,7 @@ If the user merges a PR **out of the planned order**, adapt: drop it from the re
 
 Two fork-specific things worth surfacing once, at the end, rather than fixing mid-queue:
 
-- **Upstream drift.** If several PRs in the queue conflicted against `dash` in the same file, `main` may have moved and `dash` may be behind it. The durable fix is the routine sync in `.claude/rules/upstream-sync.md` (`git checkout main && git merge --ff-only upstream/main`, then merge `main` forward into the cert branches and `dash`) — commits to shared branches, so mention it, don't do it unprompted.
+- **Upstream drift.** If several PRs in the queue conflicted against `main` in the same file, `main` may have moved and `dash` may be behind it. The durable fix is the routine sync in `.claude/rules/upstream-sync.md` (`git checkout main && git merge --ff-only upstream/main`, then merge `main` forward into the cert branches and `dash`) — commits to shared branches, so mention it, don't do it unprompted.
 - **Release ordering.** If the merged work changes proxy behavior the gem depends on, the proxy image releases **first** and the gem's `MINIMUM_VERSION` names an already-published tag second. The image has no version command — the tag IS the version. Flag this when the queue contains anything the `dash` gem will need to pin.
 
 ---

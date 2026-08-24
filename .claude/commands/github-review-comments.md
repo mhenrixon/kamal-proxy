@@ -7,7 +7,7 @@ allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr comment:*), Ba
 
 # Review GitHub PR Comments: $ARGUMENTS
 
-You are reviewing and responding to all unresolved review comments on a GitHub pull request against `mhenrixon/kamal-proxy`. Apply technical rigour -- evaluate each comment against the actual codebase before accepting or rejecting it.
+You are reviewing and responding to all unresolved review comments on a GitHub pull request against `zoolutions/dash-proxy`. Apply technical rigour -- evaluate each comment against the actual codebase before accepting or rejecting it.
 
 **Fork context first.** This repo is a fork of `basecamp/kamal-proxy`, not a normal project. Before evaluating anything, know:
 
@@ -51,7 +51,7 @@ Retrieve all review comments and identify unresolved ones:
 
 ```bash
 # Get all review comments (not resolved)
-gh api "repos/mhenrixon/kamal-proxy/pulls/<PR_NUMBER>/comments" --paginate
+gh api "repos/zoolutions/dash-proxy/pulls/<PR_NUMBER>/comments" --paginate
 
 # Get all review threads to check resolution status
 gh api graphql -f query='
@@ -160,7 +160,7 @@ For **each** unresolved thread, reply:
 Reply with what was fixed and the commit SHA:
 
 ```bash
-gh api "repos/mhenrixon/kamal-proxy/pulls/<PR>/comments/<COMMENT_ID>/replies" \
+gh api "repos/zoolutions/dash-proxy/pulls/<PR>/comments/<COMMENT_ID>/replies" \
   --method POST \
   -f 'body=Fixed in <SHA>. <Brief description of what changed>.'
 ```
@@ -170,7 +170,7 @@ gh api "repos/mhenrixon/kamal-proxy/pulls/<PR>/comments/<COMMENT_ID>/replies" \
 Reply with technical reasoning:
 
 ```bash
-gh api "repos/mhenrixon/kamal-proxy/pulls/<PR>/comments/<COMMENT_ID>/replies" \
+gh api "repos/zoolutions/dash-proxy/pulls/<PR>/comments/<COMMENT_ID>/replies" \
   --method POST \
   -f 'body=<Technical explanation of why the suggestion was not implemented>'
 ```

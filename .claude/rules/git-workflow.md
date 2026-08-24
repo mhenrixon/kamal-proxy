@@ -25,24 +25,16 @@ Scope = the package or feature area, e.g. `san-cert`, `wildcard-certs`, `router`
 
 ## Branch Model
 
-Branch roles are fixed. `main` still tracks basecamp so their fixes can be merged forward, but nothing here is shaped for their benefit. Full sync mechanics live in `.claude/rules/upstream-sync.md`; this section covers where *your* commits go.
+Since the 2026-08 clean break (zoolutions/dash#115) there is no upstream and no mirror branch.
 
 | Branch | Role | Can you commit here? |
 |---|---|---|
-| `dash` | **This fork's main branch** — every feature lands here | Only via merge from feature branches |
-| `main` | Fast-forward-only mirror of `basecamp/kamal-proxy` | **NEVER** |
-| `san-certificate-batching` | SAN cert batching feature branch | Yes |
-| `wildcard-certs` | DNS-01 wildcard certs feature branch | Yes |
-| `feature/*`, `fix/*` | New work | Yes — root off `dash` |
+| `main` | **The** branch — default, protected by ruleset, releases cut from here | Only via PR merge |
+| `feature/*`, `fix/*` | New work | Yes — root off `main` |
 
-**Root new feature branches off `dash`.** `dash` is this fork's main branch, and upstream
-mergeability is not a constraint on our design — we build what is best for `dash` and diverge
-from basecamp where that is better. (Same call as the `../kamal` fork.) Rooting off `main`
-instead produces PRs that run no CI and conflict on every fork-only file, which is why we
-stopped doing it.
-
-`main` still exists so upstream fixes can be merged *forward* into `dash`. It is a source,
-never a target. Published branches are never rebased.
+Root new feature branches off `main`, open the PR against `main`. Published branches are
+never rebased. The old `dash` branch was fast-forwarded into `main` and deleted; the dormant
+cert feature branches (`san-certificate-batching`, `wildcard-certs`) are merged history.
 
 ## Branch Naming
 
@@ -54,12 +46,12 @@ never a target. Published branches are never rebased.
 
 ## PR Workflow
 
-1. Create branch from `main` (not `dash`)
+1. Create branch from `main`
 2. Make focused, atomic commits
 3. Run all validators before pushing (see checklist below)
-4. Open the PR against **`dash`**, with description and test plan — `main` never receives PRs, it only fast-forwards from upstream
+4. Open the PR against **`main`**, with description and test plan
 5. Request review
-6. Squash merge when approved
+6. Squash merge when approved (the ruleset requires linear history)
 
 ## Pre-Commit Checklist
 
@@ -86,20 +78,20 @@ The shape is unchanged from when this was a fork; the meaning is not. The first 
 Never use suffix forms like `v1.0.0-rc1`: the gem compares the image tag with `Gem::Version`, which reads a hyphen suffix as a prerelease sorting *below* the release it names — a tag that sorts below itself fails the `MINIMUM_VERSION` check.
 
 ```bash
-git checkout dash
+git checkout main
 script/release-dash v1.0.0.0     # validates tag grammar, runs make test, tags, pushes
 ```
 
 - **NEVER** `git push --tags` — single-tag pushes only, `git push origin tag v1.0.0.0`
 - **NEVER** hand-craft the tag — let `script/release-dash` validate the grammar and run the tests first
-- Release the proxy image **before** the gem — the `dash` gem's `MINIMUM_VERSION` must name an already-published `ghcr.io/zoolutions/kamal-proxy` tag. See `../kamal/CLAUDE.md` for gem-side ordering.
+- Release the proxy image **before** the gem — the `dash` gem's `MINIMUM_VERSION` must name an already-published `ghcr.io/zoolutions/dash-proxy` tag. See `../kamal/CLAUDE.md` for gem-side ordering.
 
-Sync mechanics (fetching upstream, merging into feature branches, the conflict playbook) live entirely in `.claude/rules/upstream-sync.md` — don't duplicate them here.
+There is no upstream sync anymore — `.claude/rules/upstream-sync.md` is a historical note.
 
 ## Rules
 
-- **NEVER** commit directly to `main`
-- **NEVER** force push to shared branches (`main`, `dash`, feature branches once pushed)
+- **NEVER** push directly to `main` — everything lands via PR (ruleset-enforced; admin bypass is for migrations, not routine)
+- **NEVER** force push to shared branches (`main`, feature branches once pushed)
 - **NEVER** rebase a published branch — merge forward instead
 - **NEVER** rename the module/binary/RPC service/socket away from `kamal-proxy` — see `CLAUDE.md` Critical Rules
 - **ALWAYS** run `gofmt -l` + `make test` before committing

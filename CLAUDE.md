@@ -1,6 +1,6 @@
-# kamal-proxy (zoolutions fork)
+# dash-proxy
 
-**dash-proxy.** Started as a fork of [basecamp/kamal-proxy](https://github.com/basecamp/kamal-proxy) and still merges their fixes forward via `main`, but the product is ours — their conventions are not constraints on ours. Carries the cert features they don't ship: SAN certificate batching and wildcard certs via DNS-01. Published as `ghcr.io/zoolutions/kamal-proxy`; the Go module, binary, RPC service, and socket all stay `kamal-proxy` on purpose. Consumed by the `dash` gem fork in `../kamal`.
+**dash-proxy** (`zoolutions/dash-proxy`). Started as a fork of [basecamp/kamal-proxy](https://github.com/basecamp/kamal-proxy); the break is now clean — no upstream remote, no sync branch, their code arrives only by deliberate cherry-pick if ever. Carries the cert features they don't ship: SAN certificate batching and wildcard certs via DNS-01. Published as `ghcr.io/zoolutions/dash-proxy`; the Go module, binary, RPC service, socket, and image title label all stay `kamal-proxy` on purpose until the server-artifact rename ships a migration bridge. Consumed by the `dash` gem in `../kamal`.
 
 ## Tech Stack
 
@@ -14,9 +14,9 @@
 ### Never Do
 
 1. **NO renaming of module/binary/RPC/socket** — `kamal-proxy` is load-bearing: the RPC name is registered once in `internal/server/commands.go` and dialed by 9 client call sites; the Dockerfile copies `bin/kamal-proxy`; the kamal gem execs `kamal-proxy run`
-2. **NO commits on `main`** — it tracks basecamp/kamal-proxy so their fixes can be merged forward; it is a source, never a target
+2. **NO upstream syncs** — the fork network is left and the `upstream` remote removed; `main` is this repo's only long-lived branch and everything lands there via PR
 3. **NO suffix tags** like `v1.0.0-rc1` — the gem compares the image tag with `Gem::Version`, which reads a hyphen suffix as a prerelease sorting *below* the release it names
-4. **NO publishing without the `org.opencontainers.image.title=kamal-proxy` label** — kamal prunes proxy images by it (set in `docker-publish.yml`)
+4. **NO publishing without the `org.opencontainers.image.title=kamal-proxy` label** — the dash gem prunes proxy images by it (set in `docker-publish.yml`); it stays `kamal-proxy` until the server-artifact rename ships a bridge
 5. **NO pointing deploys at `:latest`** — kamal parses the image tag as a version; non-numeric tags crash the check
 6. **NO `git push --tags`** — single-tag pushes only (`git push origin tag v1.0.0.0`)
 
@@ -34,8 +34,7 @@ make build                                  # Build bin/kamal-proxy
 make test                                   # go test ./...
 make docker                                 # Local image build (smoke test)
 script/release-dash v1.0.0.0                # Tag + push; CI publishes to ghcr
-docker buildx imagetools inspect ghcr.io/zoolutions/kamal-proxy:v1.0.0.0   # Verify multi-arch
-git fetch upstream --tags --prune           # Start of every sync
+docker buildx imagetools inspect ghcr.io/zoolutions/dash-proxy:v1.0.0.0   # Verify multi-arch
 ```
 
 ## Architecture
@@ -53,37 +52,27 @@ Layer 0: unix socket + state files (~/.config/kamal-proxy, kamal-proxy.sock)
 
 ## Branch map
 
-**`dash` is this fork's main branch.** New work branches off `dash` and PRs back into `dash`.
-Upstream mergeability is **not** a design constraint — we take what is best for `dash` and
-diverge where that is better. `main` still exists as an upstream mirror so we can keep pulling
-basecamp's fixes forward, but nothing is shaped for their benefit. (Decided alongside the same
-call in the `../kamal` fork.)
-
-| Branch | Contents | Conflict surface vs dash |
-|---|---|---|
-| `dash` | **the main branch** — all fork work lands here; publish workflow + cert features merged | — |
-| `main` | basecamp mirror, ff-only — a source to merge *from*, never a target | — |
-| `san-certificate-batching` | SAN cert batching (`internal/server/san_cert_manager.go`), `--acme-email`/`--acme-directory` | run.go, config.go, router.go, go.mod |
-| `wildcard-certs` | DNS-01 wildcard certs (`internal/server/acme/`, cert registry), `--acme-dns-provider` etc. | run.go, config.go, router.go, go.mod |
-| `feat/loadbalancing` | SUPERSEDED — upstream absorbed multi-target LB natively (`load_balancer.go`, reader/writer split); the branch only retains a standalone `TargetPool` module. Not merged into `dash`; candidate for deletion. | — |
-
-The two cert branches deliberately overlap in run.go/config.go/router.go — their union lives on `dash` (single `--acme-email`/`--acme-directory` flag registration feeding both the SAN manager and the certificate registry).
+**`main` is the only long-lived branch** (since the 2026-08 clean break — it carries what the
+`dash` branch used to). New work branches off `main` and PRs back into `main`. The historical
+feature branches (`san-certificate-batching`, `wildcard-certs`) are merged and dormant;
+`feat/loadbalancing` is superseded (upstream absorbed multi-target LB natively) and a candidate
+for deletion.
 
 ## Release & image
 
-Tag push (`vX.Y.Z.N`) → `.github/workflows/docker-publish.yml` → multi-arch build → `ghcr.io/zoolutions/kamal-proxy:vX.Y.Z.N` + `:latest`. `GITHUB_TOKEN` authenticates; the ghcr package must stay PUBLIC (kamal deploys and integration tests pull anonymously). The kamal fork's `MINIMUM_VERSION` must always name a published tag — release here FIRST, then the gem.
+Tag push (`vX.Y.Z.N`) → `.github/workflows/docker-publish.yml` → multi-arch build → `ghcr.io/zoolutions/dash-proxy:vX.Y.Z.N` + `:latest`. `GITHUB_TOKEN` authenticates; the ghcr package must stay PUBLIC (dash deploys and integration tests pull anonymously). The dash gem's `MINIMUM_VERSION` must always name a published tag — release here FIRST, then the gem. The old `ghcr.io/zoolutions/kamal-proxy` package stays published untouched — released gem versions still pull it.
 
 ## Testing
 
 - `make test` — full Go suite, no Docker needed
 - `make docker && docker run --rm kamal-proxy kamal-proxy -h` — image smoke test
-- CI (`ci.yml`): build + test + golangci-lint + actionlint/zizmor on `main` and `dash`
+- CI (`ci.yml`): build + test + golangci-lint + actionlint/zizmor on `main`
 
 ## Slash Commands
 
 | Command | Purpose |
 |---------|---------|
-| `/lfg` | Full autonomous workflow: branch off `dash` → understand → plan → TDD → verify → PR into `dash` |
+| `/lfg` | Full autonomous workflow: branch off `main` → understand → plan → TDD → verify → PR into `main` |
 | `/plan` | Read-only planning → GitHub issue or `docs/plans/` markdown (execute with `/lfg`) |
 | `/architect` | Coordinate work across the cmd → RPC → server layers |
 | `/tdd` | Enforce RED → GREEN → REFACTOR with Go table-driven tests |

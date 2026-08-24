@@ -7,7 +7,7 @@ allowed-tools: Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr diff:*), Bas
 
 # Fix GitHub CI Failures: $ARGUMENTS
 
-You are diagnosing and fixing CI failures on a `mhenrixon/kamal-proxy` pull request. Work systematically: identify failures, read logs, diagnose root causes, fix locally, verify, push.
+You are diagnosing and fixing CI failures on a `zoolutions/dash-proxy` pull request. Work systematically: identify failures, read logs, diagnose root causes, fix locally, verify, push.
 
 **Fork boundary first**: confirm the PR's base branch is `dash` (or a feature branch merging into it), never `main` — `main` is a fast-forward-only mirror of upstream and this command must never push a fix there. See `.claude/rules/upstream-sync.md`.
 
@@ -23,7 +23,7 @@ The user may provide a PR number as `$ARGUMENTS`. Parse it flexibly:
 **If no PR number is provided**, detect it automatically:
 
 ```bash
-gh pr list --repo mhenrixon/kamal-proxy --author=@me --head="$(git branch --show-current)" --state=open --json number,title
+gh pr list --repo zoolutions/dash-proxy --author=@me --head="$(git branch --show-current)" --state=open --json number,title
 ```
 
 If exactly one open PR exists for the current branch, use it. If none or multiple, ask the user.
@@ -31,7 +31,7 @@ If exactly one open PR exists for the current branch, use it. If none or multipl
 Once you have the PR number, confirm it and its base branch:
 
 ```bash
-gh pr view <PR_NUMBER> --repo mhenrixon/kamal-proxy --json title,state,url,baseRefName,mergeable
+gh pr view <PR_NUMBER> --repo zoolutions/dash-proxy --json title,state,url,baseRefName,mergeable
 ```
 
 **Pre-flight: merge conflicts (detection only).** If `mergeable` is `CONFLICTING`, STOP — do not diagnose CI on a conflicted branch (the merge itself may fix or cause the failures). Report the conflict and hand off to `/github-review-pr`, whose Phase A0 owns the resolution runbook (including this fork's merge-forward rules) — this command's toolset deliberately does not include the merge machinery. If `mergeable` is `UNKNOWN`, note it and proceed: the orchestrator resolves the ambiguity; a standalone run shouldn't block on GitHub's recompute.
@@ -41,7 +41,7 @@ gh pr view <PR_NUMBER> --repo mhenrixon/kamal-proxy --json title,state,url,baseR
 ## Phase 1: Identify Failing Checks
 
 ```bash
-gh pr checks <PR_NUMBER> --repo mhenrixon/kamal-proxy
+gh pr checks <PR_NUMBER> --repo zoolutions/dash-proxy
 ```
 
 `ci.yml` runs two jobs per push/PR against `main` and `dash`; `docker-publish.yml` only fires on tag push, so it is never a PR check.
@@ -54,7 +54,7 @@ gh pr checks <PR_NUMBER> --repo mhenrixon/kamal-proxy
 | Lint | `build` (lint step) | `make lint` (`golangci-lint run`, v2.11.3 pinned in CI) | `gh run view <RUN_ID> --job=<JOB_ID> --log-failed` |
 
 Extract the run ID and job IDs from the check URLs. The URL format is:
-`https://github.com/mhenrixon/kamal-proxy/actions/runs/<RUN_ID>/job/<JOB_ID>`
+`https://github.com/zoolutions/dash-proxy/actions/runs/<RUN_ID>/job/<JOB_ID>`
 
 If all checks pass or are pending, report that and stop.
 
@@ -169,7 +169,7 @@ Never push directly to `main`. If the PR's base is `main`, stop and tell the use
 After pushing, check if CI has been re-triggered:
 
 ```bash
-gh pr checks <PR_NUMBER> --repo mhenrixon/kamal-proxy
+gh pr checks <PR_NUMBER> --repo zoolutions/dash-proxy
 ```
 
 If there are still pending checks, report which checks are running and what was fixed. Do NOT poll in a loop — report the status and let the user know.
@@ -179,7 +179,7 @@ If you can identify that certain failures will persist for environmental reasons
 | Known flaky/env failure | Why |
 |---|---|
 | golangci-lint findings that can't be reproduced locally | linter isn't installed in this sandbox; CI is the only source of truth, so expect at least one extra push/verify cycle |
-| Integration-style tests exercising a published proxy image | need `ghcr.io/mhenrixon/kamal-proxy` at a real tag; nothing to fix if the image itself hasn't been released yet — see release ordering in `../kamal/.claude/rules/upstream-sync.md` |
+| Integration-style tests exercising a published proxy image | need `ghcr.io/zoolutions/dash-proxy` at a real tag; nothing to fix if the image itself hasn't been released yet — see release ordering in `../kamal/.claude/rules/upstream-sync.md` |
 | Architecture-dependent test failures surfaced only on `dash`'s multi-arch build | check whether the failure is amd64/arm64-specific before "fixing" logic that's actually fine on the developer's arch |
 
 ---

@@ -16,8 +16,8 @@ Execute a complete engineering workflow with verification at each phase, respect
 1. Check the current branch: `git branch --show-current`
 2. If NOT on `main`, switch: `git checkout main`
 3. Sync with upstream (do not assume `origin/main` is current): `git fetch upstream --tags --prune && git merge --ff-only upstream/main && git push origin main`
-4. Create feature branch **off `dash`** (`dash` is this fork's main branch): `git checkout -b feature/{description}` (or `fix/{description}`, `issue-{number}-{brief-description}`)
-5. The branch merges **forward** into `dash` at PR time — never rebase it once pushed. See `.claude/rules/git-workflow.md` and `.claude/rules/upstream-sync.md`.
+4. Create feature branch **off `main`** (`dash` is this fork's main branch): `git checkout -b feature/{description}` (or `fix/{description}`, `issue-{number}-{brief-description}`)
+5. The branch merges **forward** into `main` at PR time — never rebase it once pushed. See `.claude/rules/git-workflow.md` and `.claude/rules/upstream-sync.md`.
 
 ---
 
@@ -253,7 +253,7 @@ Scope = the package/feature area, e.g. `san-cert`, `wildcard-certs`, `router`, `
 ```bash
 git push -u origin $(git branch --show-current)
 
-gh pr create --base dash --title "feat(scope): brief description" --body "$(cat <<'EOF'
+gh pr create --base main --title "feat(scope): brief description" --body "$(cat <<'EOF'
 ## Summary
 - Key change 1 touching `internal/server/foo.go`
 - Key change 2
@@ -282,7 +282,7 @@ cat > /tmp/pr-body.md << 'EOF'
 ## Summary
 ...any markdown...
 EOF
-gh pr create --base dash --title "..." --body-file /tmp/pr-body.md
+gh pr create --base main --title "..." --body-file /tmp/pr-body.md
 rm /tmp/pr-body.md
 ```
 
@@ -302,8 +302,8 @@ Not part of the default flow — only after a PR is merged to `dash` and a relea
 ```bash
 git checkout dash
 script/release-dash v1.0.0.0     # validates vX.Y.Z.N grammar, runs make test, tags, pushes the tag
-# CI publishes ghcr.io/mhenrixon/kamal-proxy:v1.0.0.0 (+ :latest)
-docker buildx imagetools inspect ghcr.io/mhenrixon/kamal-proxy:v1.0.0.0   # verify amd64+arm64
+# CI publishes ghcr.io/zoolutions/dash-proxy:v1.0.0.0 (+ :latest)
+docker buildx imagetools inspect ghcr.io/zoolutions/dash-proxy:v1.0.0.0   # verify amd64+arm64
 ```
 
 The image has no version command — the tag IS the version. Release the proxy **before** the `dash` gem; the gem's `MINIMUM_VERSION` must name an already-published tag.
@@ -327,7 +327,7 @@ The tests prove the CODE is right; this phase keeps the USER's mental model righ
 - [ ] `make test` passes
 - [ ] `go vet ./...` clean
 - [ ] Backwards compatibility maintained (state files, RPC contract, `kamal-proxy` naming untouched)
-- [ ] Branch rooted off `dash`, PR opened against `dash`
+- [ ] Branch rooted off `main`, PR opened against `main`
 - [ ] PR created with description
 - [ ] PR body ends with `## Deviations & judgment calls` (from implementation-notes.md, since deleted)
 - [ ] Comprehension close-out delivered (decisions + three merge-gate questions)
@@ -339,6 +339,6 @@ The tests prove the CODE is right; this phase keeps the USER's mental model righ
 When complete:
 - All phases executed
 - Verification passed
-- PR created against `dash` and linked
+- PR created against `main` and linked
 
 Now, execute this workflow for the provided issue or feature.

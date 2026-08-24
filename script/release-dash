@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Release dash-proxy as ghcr.io/zoolutions/kamal-proxy.
+# Release dash-proxy as ghcr.io/zoolutions/dash-proxy.
 #
 # Tags are four-segment: vX.Y.Z.N, e.g. v1.0.0.0.
 #
@@ -47,5 +47,5 @@ make test
 git tag -a "${TAG}" -m "dash-proxy ${TAG}"
 git push origin "tag" "${TAG}"
 
-echo "Tag ${TAG} pushed. CI will publish ghcr.io/zoolutions/kamal-proxy:${TAG}"
-echo "Verify with: docker buildx imagetools inspect ghcr.io/zoolutions/kamal-proxy:${TAG}"
+echo "Tag ${TAG} pushed. CI will publish ghcr.io/zoolutions/dash-proxy:${TAG}"
+echo "Verify with: docker buildx imagetools inspect ghcr.io/zoolutions/dash-proxy:${TAG}"

@@ -1,7 +1,7 @@
 ---
 description: Review a GitHub pull request against dash-proxy fork rules, Go idioms, and upstream-sync constraints
 model: opus
-argument-hint: "PR URL or number (e.g., 12 or https://github.com/mhenrixon/kamal-proxy/pull/12)"
+argument-hint: "PR URL or number (e.g., 12 or https://github.com/zoolutions/dash-proxy/pull/12)"
 allowed-tools: mcp__github__pull_request_read, mcp__github__pull_request_review_write, mcp__github__add_comment_to_pending_review, Bash(make test:*), Bash(make build:*), Bash(make lint:*), Bash(gofmt:*), Bash(go vet:*), Bash(git:*)
 ---
 
