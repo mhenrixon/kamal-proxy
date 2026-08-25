@@ -61,6 +61,11 @@ type DynamicDomainConfig struct {
 	// SourceToken, when set, is sent as a bearer token with domain source
 	// polls.
 	SourceToken string
+
+	// ReleaseProbeInterval is how often held domains are re-probed so a hold
+	// can be lifted as soon as the domain routes here again. Zero uses
+	// DefaultReleaseProbeInterval; negative disables release probing.
+	ReleaseProbeInterval time.Duration
 }
 
 // serviceResolver locates a deployed service; implemented by *Router.
@@ -87,6 +92,7 @@ type DynamicDomainManager struct {
 	quarantine *domainQuarantine
 	issuer     *domainIssuer
 	renewer    *certRenewer
+	releaser   *releaseProber
 
 	mu          sync.Mutex
 	sources     map[string]*domainSource
@@ -137,6 +143,14 @@ func NewDynamicDomainManager(config DynamicDomainConfig, manager *SANCertManager
 		OnChange:       dm.saveState,
 	})
 
+	dm.releaser = newReleaseProber(dm.quarantine, releaseProberConfig{
+		Interval:    releaseProbeInterval(config.ReleaseProbeInterval),
+		Preflight:   dm.preflightProbe,
+		Unprobeable: manager.hasDNSProviderFor,
+		Released:    dm.requestIssuanceAfterRelease,
+		OnChange:    dm.saveState,
+	})
+
 	manager.SetDynamicCertRequester(dm.issuer.Request)
 	manager.SetIssuanceGuard(dm.preflightProbe, dm.quarantine, dm.saveState)
 
@@ -145,14 +159,41 @@ func NewDynamicDomainManager(config DynamicDomainConfig, manager *SANCertManager
 	return dm
 }
 
-// Start launches the issuance worker and the renewal loop.
+// releaseProbeInterval maps the configured value onto the prober's contract:
+// zero means "unset, use the default", negative means the operator turned it
+// off, and the prober treats any non-positive interval as disabled.
+func releaseProbeInterval(configured time.Duration) time.Duration {
+	if configured == 0 {
+		return DefaultReleaseProbeInterval
+	}
+	return configured
+}
+
+// requestIssuanceAfterRelease queues a freshly released domain for issuance if
+// it still needs a certificate.
+//
+// Only dynamic domains are queued. A deploy-registered host is issued on its
+// handshake, and that path re-probes the trigger itself, so lifting the hold
+// is all it needs — routing the two through different mechanisms here would
+// risk a background order racing a synchronous one for the same name.
+func (dm *DynamicDomainManager) requestIssuanceAfterRelease(domain string) {
+	if dm.manager.HasValidCertificate(domain) {
+		return
+	}
+	if service, dynamic := dm.manager.dynamicOwner(domain); dynamic {
+		dm.issuer.Request(domain, service)
+	}
+}
+
+// Start launches the issuance worker, the renewal loop, and the release prober.
 func (dm *DynamicDomainManager) Start() {
 	dm.issuer.Start()
 	dm.renewer.Start()
+	dm.releaser.Start()
 }
 
-// Stop shuts down pollers, the issuance worker, and the renewal loop, and
-// persists state.
+// Stop shuts down pollers, the issuance worker, the renewal loop, and the
+// release prober, and persists state.
 func (dm *DynamicDomainManager) Stop() {
 	dm.mu.Lock()
 	sources := make([]*domainSource, 0, len(dm.sources))
@@ -165,6 +206,7 @@ func (dm *DynamicDomainManager) Stop() {
 		source.Stop()
 	}
 
+	dm.releaser.Stop()
 	dm.renewer.Stop()
 	dm.issuer.Stop()
 	dm.saveState()

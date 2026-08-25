@@ -70,6 +70,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().StringSliceVar(&runCommand.acmeDNSProviders, "acme-dns-provider", strings.Split(getEnvString("ACME_DNS_PROVIDER", ""), ","), "DNS provider for DNS-01 challenges (one of: "+providers.ProviderListForHelp()+"). DNS-01 activates only when set: auto detects the provider from environment credentials, none (the default) disables it. Repeatable: zone=provider entries pin a zone to the DNS host that serves it, and one bare entry is the default for unmatched zones")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEPreferWildcard, "acme-prefer-wildcard", getEnvBool("ACME_PREFER_WILDCARD", true), "Prefer wildcard certificates when DNS provider available")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ACMEHTTPFallback, "acme-http-fallback", getEnvBool("ACME_HTTP_FALLBACK", true), "Fall back to HTTP-01 challenge if DNS-01 fails")
+	runCommand.cmd.Flags().DurationVar(&globalConfig.ACMEReleaseProbeInterval, "acme-release-probe-interval", 0, "How often to re-probe domains whose issuance is held, so a hold lifts as soon as the domain points here — a DNS cutover then costs one interval instead of a backoff step (default 1m; negative disables)")
 
 	return runCommand
 }
@@ -160,9 +161,10 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 		router.SetSANCertManager(manager)
 
 		dynamicDomains = server.NewDynamicDomainManager(server.DynamicDomainConfig{
-			StatePath:    globalConfig.DynamicDomainsStatePath(),
-			RefreshToken: os.Getenv("KAMAL_PROXY_REFRESH_TOKEN"),
-			SourceToken:  os.Getenv("KAMAL_PROXY_DOMAINS_TOKEN"),
+			StatePath:            globalConfig.DynamicDomainsStatePath(),
+			RefreshToken:         os.Getenv("KAMAL_PROXY_REFRESH_TOKEN"),
+			SourceToken:          os.Getenv("KAMAL_PROXY_DOMAINS_TOKEN"),
+			ReleaseProbeInterval: globalConfig.ACMEReleaseProbeInterval,
 		}, manager, router)
 
 		router.SetDynamicDomainManager(dynamicDomains)
