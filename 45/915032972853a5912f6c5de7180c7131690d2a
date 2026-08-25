@@ -1,0 +1,36 @@
+internal/server/dynamic_domains.go
+  s_24be431bcb6ce7::t_07e25c8e1de390 328-362
+  s_24be431bcb6ce7::t_782856f1d0eaea 418
+internal/server/commands.go
+  s_24be431bcb6ce7::t_9a262769b6cbe6 294-305
+  s_24be431bcb6ce7::t_46f11526bf7b75 77-81
+  s_24be431bcb6ce7::t_8b9191d9cd828e 123-131,133-137
+internal/server/san_cert_dynamic.go
+  s_24be431bcb6ce7::t_70ea654b535e17 185-208
+internal/cmd/domains.go
+  s_24be431bcb6ce7::t_c7c544c4184a28 163-169,173
+  s_24be431bcb6ce7::t_f7543a168f4221 24
+  s_24be431bcb6ce7::t_c017e1c9ef31bd 30
+  s_24be431bcb6ce7::t_e246236e62a335 99-112,117-129
+  s_24be431bcb6ce7::t_6a7d3803ccc721 4
+  s_24be431bcb6ce7::t_0efbc4762fb503 88
+  s_24be431bcb6ce7::t_3c050101406e51 215-272
+  s_24be431bcb6ce7::t_a2a1b92aab8638 57
+  s_24be431bcb6ce7::t_69e3f9cee008c0 172,174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "45915032972853a5912f6c5de7180c7131690d2a",
+  "prompts": {},
+  "sessions": {
+    "s_24be431bcb6ce7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e9306182-1cce-482e-a8c2-a3fb7faf2804",
+        "model": "claude-opus-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
