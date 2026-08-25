@@ -380,7 +380,7 @@ func (i *domainIssuer) handleObtainFailure(batch []*issueRequest, domains []stri
 		return
 	}
 
-	failed := identifyFailedDomains(err, domains, i.config.Preflight)
+	failed := identifyFailedDomains(err, domains, i.config.Preflight, i.manager.hasDNSProviderFor)
 
 	slog.Warn("Certificate order failed", "domains", domains, "failed", failed, "error", err)
 

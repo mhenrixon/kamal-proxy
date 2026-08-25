@@ -16,7 +16,27 @@ const (
 	// quarantinePreflight marks a failed self-probe: the domain didn't route
 	// back to this proxy. No ACME order was spent, so the first retry is soon.
 	quarantinePreflight
+
+	// quarantineRateLimited marks a hold whose end time the ACME server
+	// dictated. Unlike the other two it is not the proxy's own backoff, so
+	// the release prober must never lift it early: a domain that now routes
+	// here is still inside Let's Encrypt's window, and ordering again both
+	// fails and pushes the window further out.
+	quarantineRateLimited
 )
+
+// String names the kind for operator-facing output. The persisted entry keeps
+// the numeric form; only the status API and the CLI use this.
+func (k quarantineKind) String() string {
+	switch k {
+	case quarantinePreflight:
+		return "preflight"
+	case quarantineRateLimited:
+		return "rate_limited"
+	default:
+		return "acme"
+	}
+}
 
 var (
 	acmeBackoffLadder      = []time.Duration{15 * time.Minute, time.Hour, 4 * time.Hour, 24 * time.Hour}
@@ -24,9 +44,16 @@ var (
 )
 
 // quarantineEntry records a domain's failure history and current hold.
+//
+// Kind names what caused the current hold, so the release prober can tell a
+// backoff it may lift from one the ACME server imposed. A state file written
+// before Kind existed has no "kind" key and decodes as quarantineACME — the
+// conservative default, since an unattributed hold is likelier to have cost a
+// real order than not.
 type quarantineEntry struct {
-	Until    time.Time `json:"until"`
-	Failures int       `json:"failures"`
+	Until    time.Time      `json:"until"`
+	Failures int            `json:"failures"`
+	Kind     quarantineKind `json:"kind"`
 }
 
 // domainQuarantine tracks per-domain issuance failures with escalating
@@ -49,7 +76,7 @@ func (q *domainQuarantine) RecordFailure(domain string, kind quarantineKind) tim
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	entry := q.record(domain)
+	entry := q.record(domain, kind)
 
 	ladder := acmeBackoffLadder
 	if kind == quarantinePreflight {
@@ -70,7 +97,7 @@ func (q *domainQuarantine) RecordRateLimited(domain string, retryAfter time.Time
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	entry := q.record(domain)
+	entry := q.record(domain, quarantineRateLimited)
 
 	now := q.now()
 	until := retryAfter.Add(rateLimitHoldMargin)
@@ -84,16 +111,39 @@ func (q *domainQuarantine) RecordRateLimited(domain string, retryAfter time.Time
 	return until.Sub(now)
 }
 
-// record fetches or creates a domain's entry and counts a failure against it.
+// record fetches or creates a domain's entry, counts a failure against it, and
+// stamps the kind of the hold about to be applied. The newest failure's kind
+// wins: a domain that failed its probe and later burned a real order is held
+// as an ACME failure, which is the more expensive fact about it.
 // Callers must hold q.mu.
-func (q *domainQuarantine) record(domain string) *quarantineEntry {
+func (q *domainQuarantine) record(domain string, kind quarantineKind) *quarantineEntry {
 	entry := q.entries[domain]
 	if entry == nil {
 		entry = &quarantineEntry{}
 		q.entries[domain] = entry
 	}
 	entry.Failures++
+	entry.Kind = kind
 	return entry
+}
+
+// Release lifts a domain's current hold while keeping its failure history, and
+// reports whether it was actually holding. Use it when fresh evidence
+// contradicts the hold — a pre-flight probe that now passes — rather than when
+// the domain has succeeded. Keeping the count matters: a domain that flaps
+// between routing here and not must keep climbing the ladder instead of
+// resetting to the bottom every time it briefly looks healthy.
+func (q *domainQuarantine) Release(domain string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	entry := q.entries[domain]
+	if entry == nil || !q.now().Before(entry.Until) {
+		return false
+	}
+
+	entry.Until = time.Time{}
+	return true
 }
 
 // Clear removes a domain's failure history (successful issuance, or the
@@ -153,6 +203,6 @@ func (q *domainQuarantine) Restore(snapshot map[string]quarantineEntry) {
 
 	q.entries = make(map[string]*quarantineEntry, len(snapshot))
 	for domain, entry := range snapshot {
-		q.entries[domain] = &quarantineEntry{Until: entry.Until, Failures: entry.Failures}
+		q.entries[domain] = &quarantineEntry{Until: entry.Until, Failures: entry.Failures, Kind: entry.Kind}
 	}
 }

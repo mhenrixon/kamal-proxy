@@ -107,6 +107,12 @@ type DomainsServiceStatus struct {
 type QuarantineStatus struct {
 	Until    time.Time `json:"until"`
 	Failures int       `json:"failures"`
+
+	// Kind is why the domain is held: "preflight" (it did not route back to
+	// this proxy, no order spent), "acme" (the CA rejected an order), or
+	// "rate_limited" (the CA dictated the end time). Only the first two are
+	// lifted early when the domain starts routing here again.
+	Kind string `json:"kind"`
 }
 
 type DomainsStatusResponse struct {

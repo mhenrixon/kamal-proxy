@@ -522,7 +522,7 @@ func (r *certRenewer) preflightMembers(domains []string) []string {
 		probeable = append(probeable, domain)
 	}
 
-	unreachable, failures := probeDomains(probeable, r.config.Preflight)
+	unreachable, failures := probeDomains(probeable, r.config.Preflight, r.manager.hasDNSProviderFor)
 	for _, domain := range unreachable {
 		backoff := r.quarantine.RecordFailure(domain, quarantinePreflight)
 		slog.Warn("Renewal member failed pre-flight probe; holding back",
@@ -593,7 +593,7 @@ func (r *certRenewer) handleRenewalFailure(cert *ManagedCert, domains []string, 
 		}
 	}
 
-	failed := identifyFailedDomains(err, domains, probe)
+	failed := identifyFailedDomains(err, domains, probe, r.manager.hasDNSProviderFor)
 
 	slog.Warn("Certificate renewal failed", "certificate", cert.Identifier,
 		"domains", domains, "failed", failed, "error", err)
