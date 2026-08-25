@@ -783,6 +783,45 @@ root path. Services deployed to other paths on the same host will use the same
 TLS settings as those specified for the root path.
 
 
+### Deploying before a DNS cutover
+
+You can deploy a host before its DNS points at the proxy. Nothing is ordered
+from the certificate authority until the first HTTPS request for that hostname
+arrives, and before the domain resolves here, an HTTP-01 challenge cannot
+succeed — so the proxy checks first, with a cheap request to the domain, that
+it actually routes back here. If it does not, the handshake is refused and no
+order is spent. That matters: Let's Encrypt allows only five failed
+authorizations per hostname per hour, and tripping that limit is what would
+otherwise delay the certificate at the moment of the cutover.
+
+Held domains are re-checked every minute (`--acme-release-probe-interval`, or a
+negative value to switch it off). As soon as the domain starts routing here,
+the hold lifts and the certificate is issued — so the cutover costs about a
+minute, not a backoff step.
+
+To watch it happen, or to see why a certificate has not arrived:
+
+    kamal-proxy domains list
+
+    SERVICE   DOMAIN            CERTIFIED  HOLD                             REMOVAL HELD
+    service1  app.example.com   yes
+    service1  new.example.com   no         2026-08-25 14:32:10 (preflight)
+
+A `preflight` hold means the domain does not point here yet — repoint it and
+the proxy will pick it up on its own. An `acme` hold means the certificate
+authority rejected an order, and lifts the same way. A `rate_limited` hold is
+the authority's own window, and waits it out.
+
+If you know the cause is already fixed and do not want to wait:
+
+    kamal-proxy domains retry new.example.com
+
+Domains covered by a DNS-01 provider skip all of this — see [Wildcard
+Certificates](#wildcard-certificates-dns-01-challenge). DNS-01 validation never
+depends on where a domain points, so those certificates can be issued days
+before a cutover with nothing to check and nothing to wait for.
+
+
 ### On-demand TLS
 
 Instead of specifying a static list of hosts, Kamal Proxy can also obtain TLS
@@ -1041,8 +1080,11 @@ per-domain by default, throttled well under Let's Encrypt's account limits
 (burst of 20 orders, then one per 40s, max 3 in flight). Before a domain's
 first order, the proxy probes `http://<domain>/.kamal-proxy/preflight/<nonce>`
 to verify DNS actually routes here — unreachable domains are quarantined
-(5m, then 15m → 1h → 4h → 24h backoff) without burning an order. Failing
-domains quarantine alone; the rest of a batch is retried once. Renewals reuse
+(5m, then 15m → 1h → 4h → 24h backoff) without burning an order. A held
+domain is re-probed every minute and its hold lifts as soon as it routes
+here, so a backoff step is a ceiling rather than a wait; only a hold the
+certificate authority imposed (rate limiting) runs to its own end time.
+Failing domains quarantine alone; the rest of a batch is retried once. Renewals reuse
 the exact same identifier set (exempt from most rate limits) and pass ARI
 `replaces` where supported. Every renewal re-probes its dynamic members
 first, so a tenant whose DNS moved away after issuance is quarantined out of
@@ -1074,10 +1116,15 @@ the app is down.
 **Inspecting:**
 
 ```bash
-kamal-proxy domains list      # every dynamic domain, cert + quarantine + held status
-kamal-proxy domains stats     # counters: domains, certified, queued, quarantined, held
-kamal-proxy domains refresh   # trigger an immediate re-poll of all sources
+kamal-proxy domains list           # every domain, cert + hold + held-removal status
+kamal-proxy domains stats          # counters: domains, certified, queued, quarantined, held
+kamal-proxy domains refresh        # trigger an immediate re-poll of all sources
+kamal-proxy domains retry <domain> # clear an issuance hold and try again now
 ```
+
+Holds lift on their own once a domain routes back to the proxy — see
+[Deploying before a DNS cutover](#deploying-before-a-dns-cutover). `retry` is
+for when you already know the cause is fixed and would rather not wait.
 
 
 ### Wildcard Certificates (DNS-01 Challenge)
