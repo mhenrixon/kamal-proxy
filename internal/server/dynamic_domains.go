@@ -325,6 +325,41 @@ func (dm *DynamicDomainManager) RefreshAll() int {
 	return len(sources)
 }
 
+// Retry clears issuance holds and asks for the affected domains to be issued
+// again, returning how many holds it cleared. An empty domain clears them all.
+//
+// This is the operator's escape hatch, and it is deliberately blunter than the
+// release prober. It clears rate-limit holds, which the prober may never lift:
+// an operator who knows the CA's window has passed should not have to wait on
+// a retry time parsed out of an error string. It also wipes the failure
+// history rather than only the hold, because asking for a retry is a claim
+// that the underlying problem is fixed. The issuance rate limit still applies,
+// so this cannot be used to hammer the CA.
+func (dm *DynamicDomainManager) Retry(domain string) int {
+	held := []string{}
+	for candidate := range dm.quarantine.Snapshot() {
+		if domain == "" || candidate == domain {
+			held = append(held, candidate)
+		}
+	}
+
+	for _, candidate := range held {
+		dm.quarantine.Clear(candidate)
+	}
+
+	if len(held) == 0 {
+		return 0
+	}
+
+	slog.Info("Cleared issuance holds on request", "domains", held)
+	dm.saveState()
+
+	for _, candidate := range held {
+		dm.requestIssuanceAfterRelease(candidate)
+	}
+	return len(held)
+}
+
 // HasSources reports whether any service has a domain source configured.
 func (dm *DynamicDomainManager) HasSources() bool {
 	dm.mu.Lock()
@@ -380,6 +415,7 @@ func (dm *DynamicDomainManager) Status() DomainsStatusResponse {
 		QueueLength:  dm.issuer.QueueLen(),
 		Quarantine:   quarantine,
 		Certificates: len(dm.manager.ManagedCertificates()),
+		Registered:   dm.manager.RegisteredDomains(),
 	}
 }
 
