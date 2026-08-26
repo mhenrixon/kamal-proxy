@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -32,7 +33,7 @@ func newDomainsCommand() *domainsCommand {
 	return domainsCommand
 }
 
-func fetchDomainsStatus(fn func(response server.DomainsStatusResponse)) error {
+func fetchDomainsStatus(fn func(response server.DomainsStatusResponse) error) error {
 	return withRPCClient(globalConfig.SocketPath(), func(client *rpc.Client) error {
 		var response server.DomainsStatusResponse
 
@@ -41,13 +42,23 @@ func fetchDomainsStatus(fn func(response server.DomainsStatusResponse)) error {
 			return err
 		}
 
-		fn(response)
-		return nil
+		return fn(response)
 	})
 }
 
+func printJSON(value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(string(data))
+	return nil
+}
+
 type domainsListCommand struct {
-	cmd *cobra.Command
+	cmd  *cobra.Command
+	json bool
 }
 
 func newDomainsListCommand() *domainsListCommand {
@@ -60,58 +71,69 @@ func newDomainsListCommand() *domainsListCommand {
 		Aliases: []string{"ls"},
 	}
 
+	domainsListCommand.cmd.Flags().BoolVar(&domainsListCommand.json, "json", false, "Output the domain list as JSON")
+
 	return domainsListCommand
 }
 
 func (c *domainsListCommand) run(cmd *cobra.Command, args []string) error {
-	return fetchDomainsStatus(func(response server.DomainsStatusResponse) {
-		table := NewTable()
-		table.AddRow([]string{"Service", "Domain", "Certified", "Quarantined until", "Removal held"})
-
-		for _, name := range slices.Sorted(maps.Keys(response.Services)) {
-			service := response.Services[name]
-			domains := slices.SortedFunc(slices.Values(service.Domains), func(a, b server.DomainStatus) int {
-				return strings.Compare(a.Domain, b.Domain)
-			})
-
-			heldRemovals := make(map[string]struct{}, len(service.HeldRemovals))
-			for _, domain := range service.HeldRemovals {
-				heldRemovals[domain] = struct{}{}
-			}
-
-			for _, domain := range domains {
-				certified := "no"
-				if domain.Certified {
-					certified = "yes"
-				}
-
-				quarantined := holdDescription(response.Quarantine, domain.Domain)
-
-				held := ""
-				if _, ok := heldRemovals[domain.Domain]; ok {
-					held = "yes"
-				}
-
-				table.AddRow([]string{name, domain.Domain, certified, quarantined, held})
-			}
+	return fetchDomainsStatus(func(response server.DomainsStatusResponse) error {
+		if c.json {
+			return printJSON(response)
 		}
 
-		// Deploy-registered hosts have no domain source to group them under,
-		// but they are the common case — and the one an operator is staring at
-		// during a DNS cutover, wondering why the certificate has not arrived.
-		for _, domain := range slices.Sorted(maps.Keys(response.Registered)) {
-			entry := response.Registered[domain]
+		c.displayTable(response)
+		return nil
+	})
+}
 
+func (c *domainsListCommand) displayTable(response server.DomainsStatusResponse) {
+	table := NewTable()
+	table.AddRow([]string{"Service", "Domain", "Certified", "Quarantined until", "Removal held"})
+
+	for _, name := range slices.Sorted(maps.Keys(response.Services)) {
+		service := response.Services[name]
+		domains := slices.SortedFunc(slices.Values(service.Domains), func(a, b server.DomainStatus) int {
+			return strings.Compare(a.Domain, b.Domain)
+		})
+
+		heldRemovals := make(map[string]struct{}, len(service.HeldRemovals))
+		for _, domain := range service.HeldRemovals {
+			heldRemovals[domain] = struct{}{}
+		}
+
+		for _, domain := range domains {
 			certified := "no"
-			if entry.Certified {
+			if domain.Certified {
 				certified = "yes"
 			}
 
-			table.AddRow([]string{entry.Service, domain, certified, holdDescription(response.Quarantine, domain), ""})
+			quarantined := holdDescription(response.Quarantine, domain.Domain)
+
+			held := ""
+			if _, ok := heldRemovals[domain.Domain]; ok {
+				held = "yes"
+			}
+
+			table.AddRow([]string{name, domain.Domain, certified, quarantined, held})
+		}
+	}
+
+	// Deploy-registered hosts have no domain source to group them under,
+	// but they are the common case — and the one an operator is staring at
+	// during a DNS cutover, wondering why the certificate has not arrived.
+	for _, domain := range slices.Sorted(maps.Keys(response.Registered)) {
+		entry := response.Registered[domain]
+
+		certified := "no"
+		if entry.Certified {
+			certified = "yes"
 		}
 
-		table.Print()
-	})
+		table.AddRow([]string{entry.Service, domain, certified, holdDescription(response.Quarantine, domain), ""})
+	}
+
+	table.Print()
 }
 
 // holdDescription renders a domain's issuance hold for the listing: when it
@@ -130,7 +152,21 @@ func holdDescription(quarantine map[string]server.QuarantineStatus, domain strin
 }
 
 type domainsStatsCommand struct {
-	cmd *cobra.Command
+	cmd  *cobra.Command
+	json bool
+}
+
+// DomainsStatsSummary is the machine-readable form of `domains stats`.
+type DomainsStatsSummary struct {
+	Services            int `json:"services"`
+	DynamicDomains      int `json:"dynamic_domains"`
+	DynamicCertified    int `json:"dynamic_certified"`
+	RegisteredHosts     int `json:"registered_hosts"`
+	RegisteredCertified int `json:"registered_certified"`
+	Queued              int `json:"queued"`
+	Quarantined         int `json:"quarantined"`
+	HeldRemovals        int `json:"held_removals"`
+	Certificates        int `json:"certificates"`
 }
 
 func newDomainsStatsCommand() *domainsStatsCommand {
@@ -142,41 +178,58 @@ func newDomainsStatsCommand() *domainsStatsCommand {
 		Args:  cobra.NoArgs,
 	}
 
+	domainsStatsCommand.cmd.Flags().BoolVar(&domainsStatsCommand.json, "json", false, "Output the counters as JSON")
+
 	return domainsStatsCommand
 }
 
 func (c *domainsStatsCommand) run(cmd *cobra.Command, args []string) error {
-	return fetchDomainsStatus(func(response server.DomainsStatusResponse) {
-		domains := 0
-		certified := 0
-		held := 0
-		for _, service := range response.Services {
-			domains += len(service.Domains)
-			held += len(service.HeldRemovals)
-			for _, domain := range service.Domains {
-				if domain.Certified {
-					certified++
-				}
-			}
+	return fetchDomainsStatus(func(response server.DomainsStatusResponse) error {
+		summary := summarizeDomains(response)
+
+		if c.json {
+			return printJSON(summary)
 		}
 
-		registeredCertified := 0
-		for _, entry := range response.Registered {
-			if entry.Certified {
-				registeredCertified++
-			}
-		}
-
-		fmt.Printf("Services with domain sources: %d\n", len(response.Services))
-		fmt.Printf("Dynamic domains:              %d\n", domains)
-		fmt.Printf("Dynamic certified:            %d\n", certified)
-		fmt.Printf("Registered hosts:             %d\n", len(response.Registered))
-		fmt.Printf("Registered certified:         %d\n", registeredCertified)
-		fmt.Printf("Queued for issuance:          %d\n", response.QueueLength)
-		fmt.Printf("Quarantined:                  %d\n", len(response.Quarantine))
-		fmt.Printf("Held removals:                %d\n", held)
-		fmt.Printf("Managed certificates:         %d\n", response.Certificates)
+		fmt.Printf("Services with domain sources: %d\n", summary.Services)
+		fmt.Printf("Dynamic domains:              %d\n", summary.DynamicDomains)
+		fmt.Printf("Dynamic certified:            %d\n", summary.DynamicCertified)
+		fmt.Printf("Registered hosts:             %d\n", summary.RegisteredHosts)
+		fmt.Printf("Registered certified:         %d\n", summary.RegisteredCertified)
+		fmt.Printf("Queued for issuance:          %d\n", summary.Queued)
+		fmt.Printf("Quarantined:                  %d\n", summary.Quarantined)
+		fmt.Printf("Held removals:                %d\n", summary.HeldRemovals)
+		fmt.Printf("Managed certificates:         %d\n", summary.Certificates)
+		return nil
 	})
+}
+
+func summarizeDomains(response server.DomainsStatusResponse) DomainsStatsSummary {
+	summary := DomainsStatsSummary{
+		Services:        len(response.Services),
+		RegisteredHosts: len(response.Registered),
+		Queued:          response.QueueLength,
+		Quarantined:     len(response.Quarantine),
+		Certificates:    response.Certificates,
+	}
+
+	for _, service := range response.Services {
+		summary.DynamicDomains += len(service.Domains)
+		summary.HeldRemovals += len(service.HeldRemovals)
+		for _, domain := range service.Domains {
+			if domain.Certified {
+				summary.DynamicCertified++
+			}
+		}
+	}
+
+	for _, entry := range response.Registered {
+		if entry.Certified {
+			summary.RegisteredCertified++
+		}
+	}
+
+	return summary
 }
 
 type domainsRefreshCommand struct {

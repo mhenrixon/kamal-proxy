@@ -812,6 +812,10 @@ the proxy will pick it up on its own. An `acme` hold means the certificate
 authority rejected an order, and lifts the same way. A `rate_limited` hold is
 the authority's own window, and waits it out.
 
+Both `domains list` and `domains stats` take `--json` for scripts and the `dash`
+gem; the hold shows up under `quarantine.<domain>` with `until`, `failures` and
+`kind`.
+
 If you know the cause is already fixed and do not want to wait:
 
     kamal-proxy domains retry new.example.com

@@ -1,10 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -148,4 +150,31 @@ func TestCommandHandler_CertsExport(t *testing.T) {
 	router.SetSANCertManager(testSANCertManager(t))
 	require.NoError(t, handler.CertsExport(CertsExportArgs{Path: outputPath}, &summary))
 	assert.Equal(t, 1, summary.Certificates)
+}
+
+func TestDomainsStatusResponse_JSONOmitsZeroTimes(t *testing.T) {
+	expires := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	response := DomainsStatusResponse{
+		Services: map[string]DomainsServiceStatus{
+			"tenants": {Source: "http://source", Domains: []DomainStatus{}},
+		},
+		Quarantine: map[string]QuarantineStatus{},
+		Registered: map[string]RegisteredDomainStatus{
+			"pending.example.com": {Service: "web"},
+			"live.example.com":    {Service: "web", Certified: true, ExpiresAt: expires},
+		},
+	}
+
+	data, err := json.Marshal(response)
+	require.NoError(t, err)
+
+	var decoded struct {
+		Services   map[string]map[string]any `json:"services"`
+		Registered map[string]map[string]any `json:"registered"`
+	}
+	require.NoError(t, json.Unmarshal(data, &decoded))
+
+	assert.NotContains(t, decoded.Services["tenants"], "fetched_at")
+	assert.NotContains(t, decoded.Registered["pending.example.com"], "expires_at")
+	assert.Equal(t, "2026-09-01T12:00:00Z", decoded.Registered["live.example.com"]["expires_at"])
 }
