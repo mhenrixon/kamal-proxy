@@ -37,6 +37,7 @@ Proxy-side roadmap for the dash fork. The cross-repo release sequencing, strateg
 | ~~**On-demand TLS with `ask` endpoint**~~ | DONE (PR #50) | `internal/server/tls_on_demand.go`; per-handshake gate in `Router.GetCertificate`, which asks the on-demand endpoint before any shared manager sees the name |
 | Min-TLS version / ciphers (no `MinVersion` today → TLS 1.2 default) | port PR #199 | `server.go:158` TLS config; `run` flag |
 | Cert observability — dashboards/alerts on the R1-wired metrics | — | `internal/metrics` |
+| Machine-readable domain status for the gem | #121 | DONE — `domains list --json` emits `DomainsStatusResponse` verbatim (`internal/cmd/domains.go`), the same struct the RPC already carries, so there is one contract, not a CLI-only copy of it; `domains stats --json` emits a CLI-side `DomainsStatsSummary` folded from the same response. The JSON tags on the status structs (`internal/server/commands.go`) are now a public surface: `quarantine.<domain>.{until,failures,kind}` is what `dash doctor` reads to name a hold. `expires_at`/`fetched_at` switched from `omitempty` (a no-op on `time.Time`) to `omitzero`, so an uncertified host no longer reports a year-0001 expiry. The "dynamic domains are not enabled" RPC error stays a non-zero exit in JSON mode — the gem degrades on exit status, not on parsing `{}` |
 
 ## R5 — Traffic shaping & headers
 
