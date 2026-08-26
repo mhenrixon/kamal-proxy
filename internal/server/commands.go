@@ -74,6 +74,11 @@ type CertsExportArgs struct {
 	Path string
 }
 
+type DomainsRetryArgs struct {
+	// Domain to clear the hold on. Empty clears every hold.
+	Domain string
+}
+
 type CachePurgeArgs struct {
 	Service    string
 	PathPrefix string
@@ -107,13 +112,29 @@ type DomainsServiceStatus struct {
 type QuarantineStatus struct {
 	Until    time.Time `json:"until"`
 	Failures int       `json:"failures"`
+
+	// Kind is why the domain is held: "preflight" (it did not route back to
+	// this proxy, no order spent), "acme" (the CA rejected an order), or
+	// "rate_limited" (the CA dictated the end time). Only the first two are
+	// lifted early when the domain starts routing here again.
+	Kind string `json:"kind"`
+}
+
+// RegisteredDomainStatus reports the certificate state of a deploy-registered
+// host — one named by `deploy --host`, as opposed to a tenant domain learned
+// from a source.
+type RegisteredDomainStatus struct {
+	Service   string    `json:"service"`
+	Certified bool      `json:"certified"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
 type DomainsStatusResponse struct {
-	Services     map[string]DomainsServiceStatus `json:"services"`
-	QueueLength  int                             `json:"queue_length"`
-	Quarantine   map[string]QuarantineStatus     `json:"quarantine"`
-	Certificates int                             `json:"certificates"`
+	Services     map[string]DomainsServiceStatus   `json:"services"`
+	QueueLength  int                               `json:"queue_length"`
+	Quarantine   map[string]QuarantineStatus       `json:"quarantine"`
+	Certificates int                               `json:"certificates"`
+	Registered   map[string]RegisteredDomainStatus `json:"registered"`
 }
 
 func NewCommandHandler(router *Router) *CommandHandler {
@@ -267,6 +288,18 @@ func (h *CommandHandler) DomainsStatus(args bool, reply *DomainsStatusResponse) 
 	}
 
 	*reply = dynamicDomains.Status()
+	return nil
+}
+
+// DomainsRetry clears issuance holds so a domain can be tried again now. An
+// empty Domain clears every hold.
+func (h *CommandHandler) DomainsRetry(args DomainsRetryArgs, reply *int) error {
+	dynamicDomains := h.router.DynamicDomainManager()
+	if dynamicDomains == nil {
+		return errors.New("dynamic domains are not enabled (start the proxy with --acme-email)")
+	}
+
+	*reply = dynamicDomains.Retry(args.Domain)
 	return nil
 }
 

@@ -182,6 +182,30 @@ func (m *SANCertManager) certIDForDomain(domain string) string {
 }
 
 // ManagedCertificates returns a snapshot of the managed certificates.
+// RegisteredDomains reports every deploy-registered host and the state of its
+// certificate. Unlike the dynamic domain sets, these are not grouped by a
+// domain source — an operator named them directly — so they need their own
+// place in the status response.
+func (m *SANCertManager) RegisteredDomains() map[string]RegisteredDomainStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	registered := make(map[string]RegisteredDomainStatus, len(m.registeredDomains))
+	for domain, service := range m.registeredDomains {
+		status := RegisteredDomainStatus{Service: service}
+
+		if certID := m.certIDCovering(domain); certID != "" {
+			if cert := m.certificates[certID]; cert != nil && cert.Certificate != nil {
+				status.Certified = true
+				status.ExpiresAt = cert.NotAfter
+			}
+		}
+
+		registered[domain] = status
+	}
+	return registered
+}
+
 func (m *SANCertManager) ManagedCertificates() []*ManagedCert {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

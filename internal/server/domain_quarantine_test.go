@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -118,4 +119,76 @@ func TestDomainQuarantine_SnapshotRestore(t *testing.T) {
 	restored.Restore(snapshot)
 	assert.True(t, restored.IsQuarantined("bad.example.com"))
 	assert.Equal(t, 4*time.Hour, restored.RecordFailure("bad.example.com", quarantineACME))
+}
+
+func TestDomainQuarantine_ReleaseLiftsTheHoldButKeepsTheLadder(t *testing.T) {
+	q, _ := testQuarantineAt(time.Now())
+
+	q.RecordFailure("bad.example.com", quarantineACME)
+	q.RecordFailure("bad.example.com", quarantineACME)
+	require.True(t, q.IsQuarantined("bad.example.com"))
+
+	assert.True(t, q.Release("bad.example.com"))
+	assert.False(t, q.IsQuarantined("bad.example.com"))
+
+	// History survives: the next failure is the third rung, not the first.
+	assert.Equal(t, 4*time.Hour, q.RecordFailure("bad.example.com", quarantineACME))
+}
+
+func TestDomainQuarantine_ReleaseReportsWhetherItHeld(t *testing.T) {
+	start := time.Now()
+	q, current := testQuarantineAt(start)
+
+	assert.False(t, q.Release("unknown.example.com"), "never held")
+
+	q.RecordFailure("bad.example.com", quarantineACME)
+	*current = start.Add(time.Hour)
+	assert.False(t, q.Release("bad.example.com"), "hold already expired")
+}
+
+func TestDomainQuarantine_RecordsTheKindOfHold(t *testing.T) {
+	q, _ := testQuarantineAt(time.Now())
+
+	q.RecordFailure("acme.example.com", quarantineACME)
+	q.RecordFailure("probe.example.com", quarantinePreflight)
+	q.RecordRateLimited("limited.example.com", time.Now().Add(time.Hour))
+
+	snapshot := q.Snapshot()
+	assert.Equal(t, quarantineACME, snapshot["acme.example.com"].Kind)
+	assert.Equal(t, quarantinePreflight, snapshot["probe.example.com"].Kind)
+	assert.Equal(t, quarantineRateLimited, snapshot["limited.example.com"].Kind,
+		"a rate-limit hold must be distinguishable: the release prober may never lift it")
+}
+
+func TestDomainQuarantine_KindReflectsTheMostRecentFailure(t *testing.T) {
+	q, _ := testQuarantineAt(time.Now())
+
+	// A domain that first failed its probe and later burned a real order is
+	// held as an ACME failure — the newer, more expensive fact wins.
+	q.RecordFailure("flappy.example.com", quarantinePreflight)
+	q.RecordFailure("flappy.example.com", quarantineACME)
+
+	assert.Equal(t, quarantineACME, q.Snapshot()["flappy.example.com"].Kind)
+}
+
+func TestDomainQuarantine_KindSurvivesSnapshotRestore(t *testing.T) {
+	q, _ := testQuarantineAt(time.Now())
+
+	q.RecordRateLimited("limited.example.com", time.Now().Add(time.Hour))
+
+	restored, _ := testQuarantineAt(time.Now())
+	restored.Restore(q.Snapshot())
+
+	assert.Equal(t, quarantineRateLimited, restored.Snapshot()["limited.example.com"].Kind)
+}
+
+// A state file written before holds carried a kind has no "kind" key. It must
+// decode as quarantineACME — the conservative default, since an unknown hold
+// is more likely to have cost a real order than not.
+func TestDomainQuarantine_LegacyEntryWithoutKindDecodesAsACME(t *testing.T) {
+	var entry quarantineEntry
+	require.NoError(t, json.Unmarshal([]byte(`{"until":"2026-08-25T10:00:00Z","failures":2}`), &entry))
+
+	assert.Equal(t, quarantineACME, entry.Kind)
+	assert.Equal(t, 2, entry.Failures)
 }

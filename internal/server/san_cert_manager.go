@@ -523,6 +523,12 @@ func (m *SANCertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certif
 // has already been consulted. The rate limit has not, and this path is
 // handshake-driven, so it takes a token before ordering.
 func (m *SANCertManager) provisionCertificate(ctx context.Context, domain string) (*tls.Certificate, error) {
+	// Before the lock and before the order: the probe does network I/O, and a
+	// domain that cannot answer must cost nothing.
+	if err := m.preflightTrigger(domain); err != nil {
+		return nil, err
+	}
+
 	m.mu.Lock()
 	// One in-flight batch per service. The single-flight exists to stop the
 	// SAME batch being ordered twice by concurrent handshakes; batches never

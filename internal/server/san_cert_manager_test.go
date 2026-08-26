@@ -642,3 +642,30 @@ func TestSANCertManager_GetCertificate_WaiterRefusesExpiredCert(t *testing.T) {
 	require.ErrorIs(t, r.err, ErrCertNotFound)
 	assert.Nil(t, r.cert)
 }
+
+// Deploy-registered hosts are the common case and the one in every DNS
+// cutover, but the status surface only ever reported services with a domain
+// source — so the hosts an operator actually named in `deploy --host` were
+// invisible while their issuance was held.
+func TestSANCertManager_RegisteredDomainsReportsCertificateState(t *testing.T) {
+	obtainer := successfulObtainer(t)
+	manager, quarantine := testGuardedManager(t, obtainer)
+	manager.SetIssuanceGuard(func(string) error { return nil }, quarantine, nil)
+
+	require.NoError(t, manager.RegisterDomain("app.example.com", "service1"))
+	require.NoError(t, manager.RegisterDomain("pending.example.com", "service2"))
+
+	_, err := manager.provisionCertificate(context.Background(), "app.example.com")
+	require.NoError(t, err)
+
+	registered := manager.RegisteredDomains()
+	require.Len(t, registered, 2)
+
+	assert.Equal(t, "service1", registered["app.example.com"].Service)
+	assert.True(t, registered["app.example.com"].Certified)
+	assert.False(t, registered["app.example.com"].ExpiresAt.IsZero())
+
+	assert.Equal(t, "service2", registered["pending.example.com"].Service)
+	assert.False(t, registered["pending.example.com"].Certified)
+	assert.True(t, registered["pending.example.com"].ExpiresAt.IsZero())
+}

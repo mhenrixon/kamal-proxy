@@ -116,6 +116,12 @@ type Config struct {
 	ACMEPreferWildcard bool
 	ACMEHTTPFallback   bool
 
+	// ACMEReleaseProbeInterval is how often a held domain is re-probed so its
+	// hold can be lifted as soon as it routes here again — the difference
+	// between a DNS cutover costing a probe interval and costing a backoff
+	// step. Zero uses the default; negative disables release probing.
+	ACMEReleaseProbeInterval time.Duration
+
 	// ACMEDNSProviderZones maps DNS zones to the provider answering DNS-01
 	// for them, for fleets whose zones live at different DNS hosts.
 	// ACMEDNSProvider stays the default for unmatched zones.

@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"slices"
+	"strings"
 )
 
 // Guarding of the handshake-driven provisioning batch.
@@ -45,6 +46,53 @@ func (m *SANCertManager) issuanceGuardSnapshot() issuanceGuard {
 	return m.guard
 }
 
+// preflightTrigger probes the domain whose handshake is asking for a
+// certificate, before any order is assembled for it. Callers must NOT hold
+// m.mu — the probe does network I/O.
+//
+// This is what makes preparing a DNS cutover in advance free. Until the domain
+// resolves to this proxy an HTTP-01 order cannot succeed, and spending one
+// anyway burns the CA's failed-authorization budget (Let's Encrypt allows five
+// per hostname per hour); the rate-limit hold that follows is precisely what
+// delays the certificate at the cutover itself. A probe answers the same
+// question for nothing.
+//
+// The probe, not the quarantine, is the gate. That keeps the property the old
+// unconditional pass existed to protect — a domain whose DNS was just fixed
+// gets its certificate on the very next handshake rather than waiting out a
+// stale ladder entry — while removing the order burn that a quarantine check
+// could never have prevented, because the burn happens on the first attempt,
+// before any hold exists.
+//
+// A wildcard has no name to answer on, and a domain in a zone with a DNS-01
+// provider does not need to route anywhere, so neither is probed.
+func (m *SANCertManager) preflightTrigger(domain string) error {
+	guard := m.issuanceGuardSnapshot()
+	if guard.preflight == nil || guard.quarantine == nil {
+		return nil
+	}
+	if strings.HasPrefix(domain, "*.") || m.hasDNSProviderFor(domain) {
+		return nil
+	}
+
+	if err := guard.preflight(domain); err != nil {
+		backoff := guard.quarantine.RecordFailure(domain, quarantinePreflight)
+		guard.notifyChange()
+		slog.Warn("Handshake domain failed pre-flight probe; refusing without spending an order",
+			"domain", domain, "backoff", backoff, "error", err)
+		return ErrCertNotFound
+	}
+
+	// A passing probe is direct evidence that whatever the ladder is holding
+	// against is no longer true. Lift the hold but keep the failure count, so
+	// a domain that flaps keeps climbing instead of resetting.
+	if guard.quarantine.Release(domain) {
+		guard.notifyChange()
+		slog.Info("Pre-flight probe passed; lifting hold ahead of issuance", "domain", domain)
+	}
+	return nil
+}
+
 // filterBatchMates drops quarantined or unreachable domains from a handshake
 // batch, quarantining fresh probe failures. Every mate is probed, even one
 // that held a certificate before — an expiring host whose DNS moved away must
@@ -70,7 +118,7 @@ func (m *SANCertManager) filterBatchMates(trigger string, domains []string) []st
 		mates = append(mates, domain)
 	}
 
-	unreachable, failures := probeDomains(mates, guard.preflight)
+	unreachable, failures := probeDomains(mates, guard.preflight, m.hasDNSProviderFor)
 	for _, domain := range unreachable {
 		backoff := guard.quarantine.RecordFailure(domain, quarantinePreflight)
 		slog.Warn("Batch domain failed pre-flight probe; holding back",
@@ -122,7 +170,7 @@ func (m *SANCertManager) attributeBatchFailure(err error, ordered, requested []s
 
 	culprits := failedDomainsFromError(err, ordered)
 	if len(culprits) == 0 {
-		culprits, _ = probeDomains(ordered, guard.preflight)
+		culprits, _ = probeDomains(ordered, guard.preflight, m.hasDNSProviderFor)
 	}
 	if len(culprits) == 0 {
 		return requested

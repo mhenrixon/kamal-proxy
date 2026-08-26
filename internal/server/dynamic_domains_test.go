@@ -455,3 +455,50 @@ func TestDynamicDomainManager_LoadStateSkipsNilEntries(t *testing.T) {
 	assert.NotContains(t, status.Services, "broken")
 	assert.Contains(t, status.Services, "ok")
 }
+
+// The escape hatch: an operator who knows the cause is fixed should not have
+// to wait on the ladder, and before this there was no way to clear a hold
+// short of a proxy restart — which did not help either, since quarantine is
+// persisted.
+func TestDynamicDomainManager_RetryClearsAHoldAndResetsTheLadder(t *testing.T) {
+	dm, _ := testDynamicDomainManager(t, DynamicDomainConfig{})
+
+	dm.quarantine.RecordFailure("app.example.com", quarantineACME)
+	dm.quarantine.RecordFailure("app.example.com", quarantineACME)
+	require.True(t, dm.quarantine.IsQuarantined("app.example.com"))
+
+	assert.Equal(t, 1, dm.Retry("app.example.com"))
+	assert.False(t, dm.quarantine.IsQuarantined("app.example.com"))
+
+	// Explicit operator intent resets the history, unlike the prober's Release.
+	assert.Equal(t, 15*time.Minute, dm.quarantine.RecordFailure("app.example.com", quarantineACME))
+}
+
+// The release prober may never lift a rate-limit hold, but an operator who
+// knows the CA's window has passed may.
+func TestDynamicDomainManager_RetryClearsRateLimitHoldsToo(t *testing.T) {
+	dm, _ := testDynamicDomainManager(t, DynamicDomainConfig{})
+
+	dm.quarantine.RecordRateLimited("limited.example.com", time.Now().Add(4*time.Hour))
+	require.True(t, dm.quarantine.IsQuarantined("limited.example.com"))
+
+	assert.Equal(t, 1, dm.Retry("limited.example.com"))
+	assert.False(t, dm.quarantine.IsQuarantined("limited.example.com"))
+}
+
+func TestDynamicDomainManager_RetryWithoutADomainClearsEveryHold(t *testing.T) {
+	dm, _ := testDynamicDomainManager(t, DynamicDomainConfig{})
+
+	dm.quarantine.RecordFailure("a.example.com", quarantineACME)
+	dm.quarantine.RecordFailure("b.example.com", quarantinePreflight)
+	dm.quarantine.RecordRateLimited("c.example.com", time.Now().Add(time.Hour))
+
+	assert.Equal(t, 3, dm.Retry(""))
+	assert.Zero(t, dm.quarantine.Len())
+}
+
+func TestDynamicDomainManager_RetryReportsNothingForAnUnheldDomain(t *testing.T) {
+	dm, _ := testDynamicDomainManager(t, DynamicDomainConfig{})
+
+	assert.Zero(t, dm.Retry("unknown.example.com"))
+}

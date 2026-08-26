@@ -24,12 +24,12 @@ const maxConcurrentProbes = 16
 // member otherwise, and the whole set when neither can tell — an
 // unattributable failure holds the entire batch on the quarantine ladder so
 // retries back off instead of looping against ACME rate limits.
-func identifyFailedDomains(err error, domains []string, preflight func(string) error) []string {
+func identifyFailedDomains(err error, domains []string, preflight func(string) error, unprobeable func(string) bool) []string {
 	if failed := failedDomainsFromError(err, domains); len(failed) > 0 {
 		return failed
 	}
 
-	if failed, _ := probeDomains(domains, preflight); len(failed) > 0 {
+	if failed, _ := probeDomains(domains, preflight, unprobeable); len(failed) > 0 {
 		return failed
 	}
 
@@ -38,9 +38,15 @@ func identifyFailedDomains(err error, domains []string, preflight func(string) e
 
 // probeDomains runs the pre-flight probe over a set of domains with bounded
 // concurrency and returns the ones that failed, in input order, with each
-// failure's error. Wildcards are skipped — there is no name to answer on one.
-// A nil probe reports nothing.
-func probeDomains(domains []string, preflight func(string) error) ([]string, map[string]error) {
+// failure's error. A nil probe reports nothing.
+//
+// Domains the probe cannot speak for are skipped rather than failed: a
+// wildcard, which has no name to answer on, and anything unprobeable reports
+// — in practice a zone with a DNS-01 provider, whose order never depends on
+// where the domain points. Probing those and holding them back on failure
+// would punish exactly the case DNS-01 exists to make safe: issuing a
+// certificate before a DNS cutover.
+func probeDomains(domains []string, preflight func(string) error, unprobeable func(string) bool) ([]string, map[string]error) {
 	if preflight == nil {
 		return nil, nil
 	}
@@ -49,7 +55,7 @@ func probeDomains(domains []string, preflight func(string) error) ([]string, map
 	sem := make(chan struct{}, maxConcurrentProbes)
 	var wg sync.WaitGroup
 	for idx, domain := range domains {
-		if strings.HasPrefix(domain, "*.") {
+		if strings.HasPrefix(domain, "*.") || (unprobeable != nil && unprobeable(domain)) {
 			continue
 		}
 		wg.Add(1)
