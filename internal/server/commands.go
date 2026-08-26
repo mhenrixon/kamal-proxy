@@ -102,7 +102,7 @@ type DomainStatus struct {
 type DomainsServiceStatus struct {
 	Source    string         `json:"source"`
 	Domains   []DomainStatus `json:"domains"`
-	FetchedAt time.Time      `json:"fetched_at"`
+	FetchedAt time.Time      `json:"fetched_at,omitzero"`
 
 	// HeldRemovals lists domains the source stopped reporting but whose
 	// removal is held by the shrink guard, pending confirmation.
@@ -126,7 +126,7 @@ type QuarantineStatus struct {
 type RegisteredDomainStatus struct {
 	Service   string    `json:"service"`
 	Certified bool      `json:"certified"`
-	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 type DomainsStatusResponse struct {
