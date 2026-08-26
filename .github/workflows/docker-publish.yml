@@ -57,10 +57,11 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          # The dash gem prunes proxy images by this label - keep it kamal-proxy
-          # until the server-artifact rename ships a migration bridge.
+          # The dash gem prunes proxy images by this label. It matches both this
+          # and the legacy kamal-proxy title for the duration of the rename, so
+          # `dash proxy remove` still cleans up a pre-rename image.
           labels: |
-            org.opencontainers.image.title=kamal-proxy
+            org.opencontainers.image.title=dash-proxy
           tags: |
             ghcr.io/zoolutions/dash-proxy:latest
             ghcr.io/zoolutions/dash-proxy:${{ steps.version-tag.outputs.value }}

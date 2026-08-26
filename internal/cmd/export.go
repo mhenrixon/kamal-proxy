@@ -52,7 +52,7 @@ func newExportCertsCommand() *exportCertsCommand {
 		Args: cobra.ExactArgs(1),
 	}
 
-	exportCertsCommand.cmd.Flags().StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/kamal-proxy)")
+	exportCertsCommand.cmd.Flags().StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/dash-proxy)")
 
 	return exportCertsCommand
 }

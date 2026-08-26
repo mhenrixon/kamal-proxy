@@ -17,15 +17,15 @@ of other deployment tooling.
 
 ## A quick overview
 
-To run an instance of the proxy, use the `kamal-proxy run` command. There's no
+To run an instance of the proxy, use the `dash-proxy run` command. There's no
 configuration file, but there are some options you can specify if the defaults
 aren't right for your application.
 
 For example, to run the proxy on a port other than 80 (the default) you could:
 
-    kamal-proxy run --http-port 8080
+    dash-proxy run --http-port 8080
 
-Run `kamal-proxy help run` to see the full list of options.
+Run `dash-proxy help run` to see the full list of options.
 
 To route traffic through the proxy to a web application, you `deploy` instances
 of the application to the proxy. Deploying an instance makes it available to the
@@ -35,7 +35,7 @@ Use the format `hostname:port` when specifying the instance to deploy.
 
 For example:
 
-    kamal-proxy deploy service1 --target web-1:3000
+    dash-proxy deploy service1 --target web-1:3000
 
 This will instruct the proxy to register `web-1:3000` to receive traffic under
 the service name `service1`. It will immediately begin running HTTP health
@@ -70,12 +70,12 @@ few `deploy` flags you can use. See the help for `--health-check-path`,
 For example, to change the health check path to something other than `/up`, you
 could:
 
-    kamal-proxy deploy service1 --target web-1:3000 --health-check-path web/index.html
+    dash-proxy deploy service1 --target web-1:3000 --health-check-path web/index.html
 
 To configure health checks to run on a different port than your main service
 (useful when your app exposes health endpoints on a dedicated port), you could:
 
-    kamal-proxy deploy service1 --target web-1:3000 --health-check-port 8080
+    dash-proxy deploy service1 --target web-1:3000 --health-check-port 8080
 
 ### Monitoring the proxy itself
 
@@ -99,7 +99,7 @@ Things worth knowing:
   is never forwarded upstream. `/.kamal-proxy/` is reserved by the proxy, so an
   app cannot serve its own page there.
 * **It is not authenticated and not rate limited.** It reveals only that a
-  kamal-proxy is running on the port, which anyone connecting to the port can
+  dash-proxy is running on the port, which anyone connecting to the port can
   already tell. If you would rather it not be reachable from the internet,
   block the path at your edge.
 * **It is not in the access log** and carries `Cache-Control: no-store`, so
@@ -117,7 +117,7 @@ using a single instance of Kamal Proxy to route traffic to all of them.
 When deploying an instance, you can specify a host that it should serve traffic
 for:
 
-    kamal-proxy deploy service1 --target web-1:3000 --host app1.example.com
+    dash-proxy deploy service1 --target web-1:3000 --host app1.example.com
 
 When deployed in this way, the instance will only receive traffic for the
 specified host. By deploying multiple instances, each with their own host, you
@@ -125,10 +125,10 @@ can run multiple applications on the same server without port conflicts.
 
 Only one service at a time can route a specific host:
 
-    kamal-proxy deploy service1 --target web-1:3000 --host app1.example.com
-    kamal-proxy deploy service2 --target web-2:3000 --host app1.example.com # returns "Error: host is used by another service"
-    kamal-proxy remove service1
-    kamal-proxy deploy service2 --target web-2:3000 --host app1.example.com # succeeds
+    dash-proxy deploy service1 --target web-1:3000 --host app1.example.com
+    dash-proxy deploy service2 --target web-2:3000 --host app1.example.com # returns "Error: host is used by another service"
+    dash-proxy remove service1
+    dash-proxy deploy service2 --target web-2:3000 --host app1.example.com # succeeds
 
 
 ### Path-based routing
@@ -140,15 +140,15 @@ path prefixes.
 For example, to send all the requests for paths begining with `/api` to web-1,
 and the rest to web-2:
 
-    kamal-proxy deploy service1 --target web-1:3000 --path-prefix=/api
-    kamal-proxy deploy service2 --target web-2:3000
+    dash-proxy deploy service1 --target web-1:3000 --path-prefix=/api
+    dash-proxy deploy service2 --target web-2:3000
 
 By default, the path prefix will be stripped from the request before it is
 forwarded upstream. So in the example above, a request to `/api/users/123` will
 be forwarded to `web-1` as `/users/123`. To instead forward the request with
 the original path (including the prefix), specify `--strip-path-prefix=false`:
 
-    kamal-proxy deploy service1 --target web-1:3000 --path-prefix=/api --strip-path-prefix=false
+    dash-proxy deploy service1 --target web-1:3000 --path-prefix=/api --strip-path-prefix=false
 
 
 ### Excluding paths from metrics
@@ -164,7 +164,7 @@ To exclude one or more paths from the metrics for a service, use
 `--exclude-metrics-path` when deploying. The flag may be repeated, and
 matches are exact:
 
-    kamal-proxy deploy service1 --target web-1:3000 --exclude-metrics-path /up --exclude-metrics-path /healthz
+    dash-proxy deploy service1 --target web-1:3000 --exclude-metrics-path /up --exclude-metrics-path /healthz
 
 Excluded requests are still logged; only the Prometheus counters and
 in-flight gauge are skipped.
@@ -179,7 +179,7 @@ form.
 Logs are written as JSON by default. To write logfmt instead, start the proxy
 with `--log-format` (or the `LOG_FORMAT` environment variable):
 
-    kamal-proxy run --log-format text
+    dash-proxy run --log-format text
 
 Accepted values are `json` and `text`; `logfmt` is accepted as a synonym for
 `text`. The setting covers the whole process — the per-request access log and
@@ -198,7 +198,7 @@ header itself is forwarded byte for byte.
 This is on by default. Control it with `--trace-context` (or the
 `TRACE_CONTEXT` environment variable):
 
-    kamal-proxy run --trace-context generate
+    dash-proxy run --trace-context generate
 
 | Value | Behaviour |
 | --- | --- |
@@ -232,7 +232,7 @@ trace that was just discarded.
 To put a service behind an HTTP Basic password prompt, deploy it with
 `--basic-auth`:
 
-    kamal-proxy deploy service1 --target web-1:3000 --tls --host app.example.com --basic-auth admin:s3cr3t
+    dash-proxy deploy service1 --target web-1:3000 --tls --host app.example.com --basic-auth admin:s3cr3t
 
 Requests without valid credentials get a `401` and a browser password prompt.
 The password is hashed by the CLI before it is sent to the proxy, so neither
@@ -255,7 +255,7 @@ Things worth knowing:
 * **The credential is removed before forwarding.** Your application never sees
   the proxy's `Authorization` header, so it cannot be logged by
   `--log-request-header authorization` or read by the upstream.
-* **Rollout targets inherit it.** `kamal-proxy rollout deploy` reuses the
+* **Rollout targets inherit it.** `dash-proxy rollout deploy` reuses the
   service's stored options, so rollout traffic stays protected.
 * **Redeploying without the flag removes protection.** The credential is not
   sticky; a deploy that omits `--basic-auth` leaves the service open.
@@ -279,12 +279,12 @@ challenge falls back to the proxy's built-in plain response.
 
 To serve a service only to certain networks, deploy it with `--allow-ip`:
 
-    kamal-proxy deploy service1 --target web-1:3000 --allow-ip 10.0.0.0/8,203.0.113.7
+    dash-proxy deploy service1 --target web-1:3000 --allow-ip 10.0.0.0/8,203.0.113.7
 
 Requests from anywhere else get a `403`. The flag takes addresses or CIDR
 ranges, and may be repeated or comma-separated. Metrics have their own list:
 
-    kamal-proxy run --metrics-port 9090 --metrics-allow-ip 10.0.0.0/8
+    dash-proxy run --metrics-port 9090 --metrics-allow-ip 10.0.0.0/8
 
 Things worth knowing:
 
@@ -295,7 +295,7 @@ Things worth knowing:
   the connecting address is inside one of those ranges is the forwarded chain
   consulted, and then the client is the nearest address in the chain that none
   of your proxies wrote. **List every hop, not just the one that connects to
-  kamal-proxy** — behind a CDN in front of a load balancer, list both, or the
+  dash-proxy** — behind a CDN in front of a load balancer, list both, or the
   CDN's edge address becomes the one matched against `--allow-ip`.
 * **If the chain cannot be resolved, the request is denied.** A trusted edge
   that stops sending the header denies everything rather than silently falling
@@ -330,8 +330,8 @@ An allow list is the wrong shape for a service the whole internet is meant to
 reach. When a scraper or a misbehaving bot is hammering a public service right
 now, deploy it with deny rules instead:
 
-    kamal-proxy deploy service1 --target web-1:3000 --deny-ip 203.0.113.0/24
-    kamal-proxy deploy service1 --target web-1:3000 --deny-user-agent 'BadBot/.*'
+    dash-proxy deploy service1 --target web-1:3000 --deny-ip 203.0.113.0/24
+    dash-proxy deploy service1 --target web-1:3000 --deny-user-agent 'BadBot/.*'
 
 Matching requests get a `403`. `--deny-ip` takes addresses or CIDR ranges and
 may be repeated or comma-separated. `--deny-user-agent` takes an RE2 pattern
@@ -370,18 +370,18 @@ If you use `--error-pages`, add a `403.html` to that directory.
 To cap how fast a single client may hit a service, deploy it with
 `--rate-limit`:
 
-    kamal-proxy deploy service1 --target web-1:3000 --rate-limit 20
+    dash-proxy deploy service1 --target web-1:3000 --rate-limit 20
 
 Requests over the limit get a `429` with a `Retry-After` header. The limit is
 requests per second and may be fractional (`--rate-limit 0.5` is one request
 every two seconds). Clients may also spend a burst back to back before the rate
 applies — by default the rate rounded up, or set it explicitly:
 
-    kamal-proxy deploy service1 --target web-1:3000 --rate-limit 20 --rate-limit-burst 100
+    dash-proxy deploy service1 --target web-1:3000 --rate-limit 20 --rate-limit-burst 100
 
 Monitoring and internal networks can be exempted:
 
-    kamal-proxy deploy service1 --target web-1:3000 --rate-limit 20 --rate-limit-exempt 10.0.0.0/8
+    dash-proxy deploy service1 --target web-1:3000 --rate-limit 20 --rate-limit-exempt 10.0.0.0/8
 
 Things worth knowing:
 
@@ -424,7 +424,7 @@ connection's source address with its own, which blinds the access log,
 protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt), run the
 proxy with `--proxy-protocol` to read the client address it forwards:
 
-    kamal-proxy run --proxy-protocol --proxy-protocol-allow-ip 10.0.0.0/8
+    dash-proxy run --proxy-protocol --proxy-protocol-allow-ip 10.0.0.0/8
 
 Things worth knowing:
 
@@ -457,7 +457,7 @@ Security headers, CORS, and anything else your app would otherwise have to ship
 itself can be set at the proxy. Each direction has three verbs, and every flag
 may be given more than once:
 
-    kamal-proxy deploy service1 --target web-1:3000 \
+    dash-proxy deploy service1 --target web-1:3000 \
       --set-response-header 'Strict-Transport-Security: max-age=63072000; includeSubDomains' \
       --set-response-header "Content-Security-Policy: default-src 'self'" \
       --remove-response-header Server \
@@ -501,7 +501,7 @@ its own routes — use `--redirect` and `--rewrite`. A redirect answers the clie
 with a `Location`; a rewrite changes only the path your app receives, leaving
 the browser's URL alone. Both may be given more than once:
 
-    kamal-proxy deploy service1 --target web-1:3000 \
+    dash-proxy deploy service1 --target web-1:3000 \
       --redirect '/old-page=/new-page' \
       --redirect '/blog/(.*)=/news/$1' \
       --redirect '/shop/(.*)=https://shop.example.com/$1;status=302' \
@@ -539,7 +539,7 @@ Things worth knowing:
 The proxy can encode responses on their way back to the client, so your app does
 not have to. Name the encodings you want to offer, most preferred first:
 
-    kamal-proxy deploy service1 --target web-1:3000 --compress zstd,br,gzip
+    dash-proxy deploy service1 --target web-1:3000 --compress zstd,br,gzip
 
 `gzip`, `br` (brotli) and `zstd` are supported. Only responses the client asked
 to have encoded are touched, and the client's `q` values win — the order you give
@@ -547,7 +547,7 @@ is the tie-breaker between encodings it likes equally.
 
 Two flags tune what qualifies:
 
-    kamal-proxy deploy service1 --target web-1:3000 --compress gzip \
+    dash-proxy deploy service1 --target web-1:3000 --compress gzip \
       --compress-min-length 2048 \
       --compress-content-type 'text/*,application/json,application/wasm'
 
@@ -580,7 +580,7 @@ The proxy can hold on to the responses your app marks as shareable and answer
 later requests from them, so a hot URL costs the app one request per lifetime
 instead of one per client. It is opt-in per service:
 
-    kamal-proxy deploy service1 --target web-1:3000 --cache
+    dash-proxy deploy service1 --target web-1:3000 --cache
 
 Nothing is stored until your app says so, twice over: the response must carry an
 explicit `public` directive **and** a lifetime.
@@ -596,7 +596,7 @@ for, telling a shared cache something different from the browser.
 By default each proxy keeps its own cache in memory. Point them all at one Redis
 and a single fetch warms every node:
 
-    kamal-proxy run --cache-store redis://cache-1:6379/0
+    dash-proxy run --cache-store redis://cache-1:6379/0
 
 `--cache-store-timeout` (100ms by default) bounds every read and write. A store
 that is slow or down costs you a cache, never a failed request: the lookup reads
@@ -613,7 +613,7 @@ re-serve a file that has not changed in a year.
 
 A `file://` store keeps entries on disk instead:
 
-    kamal-proxy run --cache-store file:///var/lib/kamal-proxy/cache
+    dash-proxy run --cache-store file:///var/lib/dash-proxy/cache
 
 The directory must be a volume that outlives the container, or this does nothing
 a restart will notice. `--cache-memory-size` caps it, the same as it caps the
@@ -649,9 +649,9 @@ reuse, and the proxy has no way to do that on the way out.
 
 #### Seeing what it is holding
 
-    kamal-proxy cache stats
-    kamal-proxy cache stats --count       # measure entries and bytes
-    kamal-proxy cache stats --json
+    dash-proxy cache stats
+    dash-proxy cache stats --count       # measure entries and bytes
+    dash-proxy cache stats --json
 
 ```
 Store        memory (per node)
@@ -687,8 +687,8 @@ rather than `0`, so nothing is ever sized against a number the server never gave
 
 #### Purging
 
-    kamal-proxy cache purge service1
-    kamal-proxy cache purge service1 --path-prefix /assets
+    dash-proxy cache purge service1
+    dash-proxy cache purge service1 --path-prefix /assets
 
 Things worth knowing:
 
@@ -773,7 +773,7 @@ Things worth knowing:
 Kamal Proxy can automatically obtain and renew TLS certificates for your
 applications. To enable this, add the `--tls` flag when deploying an instance:
 
-    kamal-proxy deploy service1 --target web-1:3000 --host app1.example.com --tls
+    dash-proxy deploy service1 --target web-1:3000 --host app1.example.com --tls
 
 Automatic TLS requires that hosts are specified (to ensure that certificates
 are not maliciously requests for arbitrary hostnames).
@@ -801,7 +801,7 @@ minute, not a backoff step.
 
 To watch it happen, or to see why a certificate has not arrived:
 
-    kamal-proxy domains list
+    dash-proxy domains list
 
     SERVICE   DOMAIN            CERTIFIED  HOLD                             REMOVAL HELD
     service1  app.example.com   yes
@@ -814,7 +814,7 @@ the authority's own window, and waits it out.
 
 If you know the cause is already fixed and do not want to wait:
 
-    kamal-proxy domains retry new.example.com
+    dash-proxy domains retry new.example.com
 
 Domains covered by a DNS-01 provider skip all of this — see [Wildcard
 Certificates](#wildcard-certificates-dns-01-challenge). DNS-01 validation never
@@ -832,7 +832,7 @@ such as when serving customer domains.
 To enable this, specify `--tls-on-demand-url` (instead of `--host`) when
 deploying:
 
-    kamal-proxy deploy service1 --target web-1:3000 --tls --tls-on-demand-url="http://localhost:4567/check"
+    dash-proxy deploy service1 --target web-1:3000 --tls --tls-on-demand-url="http://localhost:4567/check"
 
 The URL may be:
 
@@ -862,7 +862,7 @@ When you obtained your TLS certificate manually, manage your own certificate aut
 or need to install Cloudflare origin certificate, you can manually specify path to
 your certificate file and the corresponding private key:
 
-    kamal-proxy deploy service1 --target web-1:3000 --host app1.example.com --tls --tls-certificate-path cert.pem --tls-private-key-path key.pem
+    dash-proxy deploy service1 --target web-1:3000 --host app1.example.com --tls --tls-certificate-path cert.pem --tls-private-key-path key.pem
 
 
 ### Mutual TLS (mTLS)
@@ -872,7 +872,7 @@ certificate authorities they must chain to with `--tls-client-ca-path`.
 Connections that present no certificate, or one signed by any other authority,
 are rejected during the TLS handshake:
 
-    kamal-proxy deploy service1 --target web-1:3000 --host app1.example.com --tls --tls-certificate-path cert.pem --tls-private-key-path key.pem --tls-client-ca-path ca.pem
+    dash-proxy deploy service1 --target web-1:3000 --host app1.example.com --tls --tls-certificate-path cert.pem --tls-private-key-path key.pem --tls-client-ca-path ca.pem
 
 The requirement is per-service and applies to the hosts that service serves, so
 services on the same proxy can have different client certificate rules. This is
@@ -895,8 +895,8 @@ using.
 
 Start the proxy with a container runtime socket, then deploy with `--sleep-after`:
 
-    kamal-proxy run --docker-socket /var/run/docker.sock
-    kamal-proxy deploy service1 --target web-1:3000 --host app.example.com --sleep-after 30m
+    dash-proxy run --docker-socket /var/run/docker.sock
+    dash-proxy deploy service1 --target web-1:3000 --host app.example.com --sleep-after 30m
 
 The first request after the containers stop is held while they start and pass a
 health check, then forwarded — body intact, including a chunked POST. Concurrent
@@ -928,11 +928,11 @@ which is the container id under Kamal and the container name under Compose. When
 a target names something else — a Compose service alias, or an IP address — say
 so explicitly:
 
-    kamal-proxy deploy service1 --target web:3000 --host app.example.com --sleep-after 30m --sleep-container myapp-web-1
+    dash-proxy deploy service1 --target web:3000 --host app.example.com --sleep-after 30m --sleep-container myapp-web-1
 
 The deploy checks the reference against the runtime and fails immediately if it
 names nothing, rather than accepting the deploy and failing at the first idle
-timeout an hour later. `kamal-proxy list` shows `sleeping` or `waking` in the
+timeout an hour later. `dash-proxy list` shows `sleeping` or `waking` in the
 state column, and the state survives a proxy restart.
 
 **Known limitation.** `kamal deploy` prunes stopped containers, and a sleeping
@@ -946,13 +946,13 @@ The HTTPS listener negotiates TLS 1.2 and above by default. To refuse TLS 1.2 as
 well and serve only TLS 1.3, start the proxy with `--min-tls` (or the `MIN_TLS`
 environment variable):
 
-    kamal-proxy run --min-tls 1.3
+    dash-proxy run --min-tls 1.3
 
 Accepted values are `1.2` and `1.3`. TLS 1.0 and 1.1 cannot be enabled — they are
 deprecated by [RFC 8996](https://www.rfc-editor.org/rfc/rfc8996) and Go's TLS
 stack already declines to serve them, so the proxy refuses to start rather than
 pretend the setting took effect. The `tls1_2` / `tls1_3` spellings are accepted
-too, so a configuration written against upstream kamal-proxy keeps working.
+too, so a configuration written against upstream dash-proxy keeps working.
 
 This is a listener-wide setting: it applies to every service, including hosts
 that require client certificates. The HTTP/3 listener is always TLS 1.3, since
@@ -988,9 +988,9 @@ per service using the standard autocert flow.
 **Example:**
 
 ```bash
-kamal-proxy deploy app1 --target web-1:3000 --host app.example.com --tls
-kamal-proxy deploy app2 --target web-2:3000 --host api.other.org --tls
-kamal-proxy deploy app3 --target web-3:3000 --host mysite.net --tls
+dash-proxy deploy app1 --target web-1:3000 --host app.example.com --tls
+dash-proxy deploy app2 --target web-2:3000 --host api.other.org --tls
+dash-proxy deploy app3 --target web-3:3000 --host mysite.net --tls
 # → All three services share a single certificate with SANs:
 #   app.example.com, api.other.org, mysite.net
 ```
@@ -1022,7 +1022,7 @@ kamal-proxy deploy app3 --target web-3:3000 --host mysite.net --tls
 For testing, use the staging environment to avoid rate limits:
 
 ```bash
-kamal-proxy run --acme-email admin@example.com \
+dash-proxy run --acme-email admin@example.com \
   --acme-directory https://acme-staging-v02.api.letsencrypt.org/directory
 ```
 
@@ -1039,7 +1039,7 @@ serves HTTPS within minutes — no deploys, config edits, or restarts.
 Requires running with `--acme-email`. Enable per service at deploy time:
 
 ```bash
-kamal-proxy deploy service1 --target web-1:3000 --tls \
+dash-proxy deploy service1 --target web-1:3000 --tls \
   --tls-domains-source /api/v1/domains
 ```
 
@@ -1096,7 +1096,7 @@ from the source itself. A poll that removes more than 30% of the applied
 domain set has its removals *held*: the previous set stays allowed (additions
 still apply), and only three consecutive shrunken polls confirm and apply the
 removal — a single (or transient) empty or truncated response from the app
-evicts nothing. Held removals are visible in `kamal-proxy domains list`
+evicts nothing. Held removals are visible in `dash-proxy domains list`
 (Removal held column) and logged at Warn on every held poll. Independently, a
 certificate whose domains were all evicted is never deleted before its own
 expiry: it stops renewing but keeps serving, and can be reused immediately if
@@ -1116,10 +1116,10 @@ the app is down.
 **Inspecting:**
 
 ```bash
-kamal-proxy domains list           # every domain, cert + hold + held-removal status
-kamal-proxy domains stats          # counters: domains, certified, queued, quarantined, held
-kamal-proxy domains refresh        # trigger an immediate re-poll of all sources
-kamal-proxy domains retry <domain> # clear an issuance hold and try again now
+dash-proxy domains list           # every domain, cert + hold + held-removal status
+dash-proxy domains stats          # counters: domains, certified, queued, quarantined, held
+dash-proxy domains refresh        # trigger an immediate re-poll of all sources
+dash-proxy domains retry <domain> # clear an issuance hold and try again now
 ```
 
 Holds lift on their own once a domain routes back to the proxy — see
@@ -1151,24 +1151,24 @@ needs access to your DNS provider's API.
 **Enabling wildcard certificates:**
 
 1. Set DNS provider credentials as environment variables
-2. Start kamal-proxy with ACME email configured:
+2. Start dash-proxy with ACME email configured:
 
 ```bash
 export CF_DNS_API_TOKEN=your-cloudflare-token
-kamal-proxy run --acme-email admin@example.com --acme-dns-provider cloudflare
+dash-proxy run --acme-email admin@example.com --acme-dns-provider cloudflare
 ```
 
 3. Deploy services as normal - wildcards are provisioned automatically:
 
 ```bash
-kamal-proxy deploy app --target web-1:3000 --host app.example.com --tls
-kamal-proxy deploy api --target web-2:3000 --host api.example.com --tls
+dash-proxy deploy app --target web-1:3000 --host app.example.com --tls
+dash-proxy deploy api --target web-2:3000 --host api.example.com --tls
 # → Both services share a *.example.com wildcard certificate
 ```
 
 **How certificate grouping works:**
 
-When you deploy services with TLS enabled, kamal-proxy automatically:
+When you deploy services with TLS enabled, dash-proxy automatically:
 
 1. Groups domains by their root domain (e.g., `app.example.com` and `api.example.com` → `example.com`)
 2. When 2+ subdomains share a root domain, provisions a wildcard certificate (`*.example.com`)
@@ -1198,7 +1198,7 @@ default for anything no zone matches.
 ```bash
 export CF_DNS_API_TOKEN=your-cloudflare-token
 export HETZNER_API_KEY=your-hetzner-key
-kamal-proxy run --acme-email admin@example.com \
+dash-proxy run --acme-email admin@example.com \
   --acme-dns-provider platform.example=cloudflare \
   --acme-dns-provider legacy.example=hetzner
 ```
@@ -1216,7 +1216,7 @@ comma-separated: `ACME_DNS_PROVIDER=platform.example=cloudflare,hetzner`.
 For testing, use the staging environment to avoid rate limits:
 
 ```bash
-kamal-proxy run --acme-email admin@example.com --acme-dns-provider cloudflare \
+dash-proxy run --acme-email admin@example.com --acme-dns-provider cloudflare \
   --acme-directory https://acme-staging-v02.api.letsencrypt.org/directory
 ```
 
@@ -1253,7 +1253,7 @@ for a large estate, hours of hard TLS failures. Export makes node loss a
 restore instead of an outage:
 
 ```bash
-kamal-proxy export certs /backup/certs-$(date +%F).tar.gz
+dash-proxy export certs /backup/certs-$(date +%F).tar.gz
 ```
 
 With the proxy running, the snapshot is taken through the proxy, under the
@@ -1270,16 +1270,16 @@ certificate in an archive and reports domains and expiries without touching
 the store, so a cron job or CI can check each backup as it is taken:
 
 ```bash
-kamal-proxy import certs --archive /backup/certs-2026-08-09.tar.gz --verify
+dash-proxy import certs --archive /backup/certs-2026-08-09.tar.gz --verify
 ```
 
 **Restore runbook** (new node, rebuilt host, or a volume mistake):
 
 1. Stop the proxy.
-2. Restore the estate: `kamal-proxy import certs --archive /backup/certs-2026-08-09.tar.gz`
+2. Restore the estate: `dash-proxy import certs --archive /backup/certs-2026-08-09.tar.gz`
    (add `--data-dir` if the proxy runs with one). The import refuses to
    overwrite a non-empty certificate store unless you pass `--force`.
-3. If you keep a backup of the routing state (`kamal-proxy.state`), restore
+3. If you keep a backup of the routing state (`dash-proxy.state`), restore
    it now, while the proxy is still stopped — the proxy saves routing state
    on changes, so a copy restored after startup would be overwritten.
 4. Start the proxy. If no routing state was restored, redeploy your TLS
@@ -1287,7 +1287,7 @@ kamal-proxy import certs --archive /backup/certs-2026-08-09.tar.gz --verify
    refuses a TLS handshake for a host no service is deployed for.
 5. Verify a restored static host with a TLS handshake; the certificate expiry
    metrics should show the restored estate, with no new ACME orders.
-   (`kamal-proxy domains list` covers only dynamic `--tls-domains-source`
+   (`dash-proxy domains list` covers only dynamic `--tls-domains-source`
    domains.)
 
 Restores run offline against the data directory, sharing their writing path
@@ -1304,25 +1304,25 @@ an outage.
 In some environments, like when running a Docker container, it can be convenient
 to specify `run` options using environment variables. This avoids having to
 update the `CMD` in the Dockerfile to change the options. To support this,
-`kamal-proxy run` will read each of its options from environment variables if they
+`dash-proxy run` will read each of its options from environment variables if they
 are set. For example, setting the HTTP port can be done with either:
 
-    kamal-proxy run --http-port 8080
+    dash-proxy run --http-port 8080
 
 or:
 
-    HTTP_PORT=8080 kamal-proxy run
+    HTTP_PORT=8080 dash-proxy run
 
 If any of the environment variables conflict with something else in your
 environment, you can prefix them with `KAMAL_PROXY_` to disambiguate them. For
 example:
 
-    KAMAL_PROXY_HTTP_PORT=8080 kamal-proxy run
+    KAMAL_PROXY_HTTP_PORT=8080 dash-proxy run
 
 
 ## Configuring with Kamal
 
-When using kamal-proxy with [Kamal](https://kamal-deploy.org/), you can configure
+When using dash-proxy with [Kamal](https://kamal-deploy.org/), you can configure
 the proxy through your `deploy.yml` file.
 
 ### Enabling Wildcard Certificates in Kamal
@@ -1341,7 +1341,7 @@ proxy:
   #   - api.example.com
   #   - admin.example.com
 
-# Pass environment variables to the kamal-proxy container
+# Pass environment variables to the dash-proxy container
 env:
   clear:
     # ACME configuration (required for wildcard certs)
@@ -1411,7 +1411,7 @@ With this configuration:
 **Certificate not provisioning:**
 - Check DNS provider credentials are correct
 - Ensure the DNS API can create TXT records in your zone
-- Check kamal-proxy logs: `docker logs kamal-proxy`
+- Check dash-proxy logs: `docker logs dash-proxy`
 
 **Using staging environment for testing:**
 ```yaml

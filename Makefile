@@ -13,4 +13,4 @@ bench:
 	go test -bench=. -benchmem -run=^# ./...
 
 docker:
-	docker build -t kamal-proxy .
+	docker build -t dash-proxy .
