@@ -42,7 +42,7 @@ func newRunCommand() *runCommand {
 	runCommand.cmd.Flags().BoolVar(&globalConfig.HTTP3Enabled, "http3", false, "Enable HTTP/3")
 	runCommand.cmd.Flags().BoolVar(&runCommand.ignoreRestoreErrors, "ignore-restore-errors", getEnvBool("IGNORE_RESTORE_ERRORS", false), "Boot with an empty routing state when restoring the saved state fails")
 	runCommand.cmd.Flags().BoolVar(&runCommand.recheckTargetsOnRestore, "recheck-targets-on-restore", getEnvBool("RECHECK_TARGETS_ON_RESTORE", false), "Re-verify restored targets with health checks instead of assuming they are healthy")
-	runCommand.cmd.Flags().StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/kamal-proxy)")
+	runCommand.cmd.Flags().StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/dash-proxy)")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ReusePort, "reuse-port", getEnvBool("REUSE_PORT", false), "Bind listeners with SO_REUSEPORT so an overlapping proxy generation can share the ports during a handoff")
 	runCommand.cmd.Flags().BoolVar(&globalConfig.ProxyProtocol, "proxy-protocol", getEnvBool("PROXY_PROTOCOL", false), "Accept PROXY protocol v1/v2 headers on the HTTP and HTTPS listeners, preserving client addresses behind an L4 load balancer")
 	runCommand.cmd.Flags().StringSliceVar(&globalConfig.ProxyProtocolAllowIPs, "proxy-protocol-allow-ip", nil, "Honor PROXY protocol headers only from these addresses or CIDR ranges (default empty, trust every peer that can reach the port)")
@@ -111,6 +111,12 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := ensureDataDir(); err != nil {
+		return err
+	}
+
+	// Before the router reads it: a volume copied from a pre-rename proxy holds
+	// the routing table under the old file name.
+	if err := globalConfig.AdoptLegacyState(); err != nil {
 		return err
 	}
 
@@ -206,7 +212,7 @@ func (c *runCommand) run(cmd *cobra.Command, args []string) error {
 
 	select {
 	case <-ch:
-		// Converge on the drain path so SIGTERM and `kamal-proxy drain`
+		// Converge on the drain path so SIGTERM and `dash-proxy drain`
 		// behave identically; the deferred Stop finishes the teardown.
 		_ = s.BeginDrain(0)
 	case <-s.ShutdownRequested():

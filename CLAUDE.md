@@ -13,7 +13,7 @@
 
 ### Never Do
 
-1. **NO renaming of module/binary/RPC/socket** — `kamal-proxy` is load-bearing: the RPC name is registered once in `internal/server/commands.go` and dialed by 9 client call sites; the Dockerfile copies `bin/kamal-proxy`; the kamal gem execs `kamal-proxy run`
+1. **NO renaming of the Go module path or the RPC service name** — the RPC name `kamal-proxy` is registered once in `internal/server/commands.go` and dialed by 9 client call sites; it is internal, spoken over a unix socket inside one container, and renaming it buys nothing. The module path `github.com/basecamp/kamal-proxy` is likewise deferred. Both have their own follow-up issue. The **binary, socket, image label, user and data directory DID move to `dash-proxy`** in stage 3c (zoolutions/dash#124) — do not "fix" those back
 2. **NO upstream syncs** — the fork network is left and the `upstream` remote removed; `main` is this repo's only long-lived branch and everything lands there via PR
 3. **NO suffix tags** like `v1.0.0-rc1` — the gem compares the image tag with `Gem::Version`, which reads a hyphen suffix as a prerelease sorting *below* the release it names
 4. **NO publishing without the `org.opencontainers.image.title=kamal-proxy` label** — the dash gem prunes proxy images by it (set in `docker-publish.yml`); it stays `kamal-proxy` until the server-artifact rename ships a bridge

@@ -57,7 +57,7 @@ func newImportCertsCommand() *importCertsCommand {
 	flags.StringVar(&importCertsCommand.archivePath, "archive", "", "Path to a certificate store archive written by `export certs`")
 	flags.BoolVar(&importCertsCommand.force, "force", false, "Overwrite a non-empty certificate store when restoring an archive")
 	flags.BoolVar(&importCertsCommand.verify, "verify", false, "Only verify the archive: parse every certificate and report domains and expiries, without touching the store")
-	flags.StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/kamal-proxy)")
+	flags.StringVar(&globalConfig.AlternateConfigDir, "data-dir", getEnvString("DATA_DIR", ""), "Directory for state and certificate storage (default $HOME/.config/dash-proxy)")
 
 	importCertsCommand.cmd.MarkFlagsOneRequired("traefik-acme", "archive")
 	importCertsCommand.cmd.MarkFlagsMutuallyExclusive("traefik-acme", "archive")

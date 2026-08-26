@@ -2,6 +2,8 @@ package server
 
 import (
 	"cmp"
+	"errors"
+	"log/slog"
 	"os"
 	"path"
 	"syscall"
@@ -128,12 +130,66 @@ type Config struct {
 	ACMEDNSProviderZones map[string]acme.ProviderName
 }
 
+// SocketPath is recreated on every boot, so the name is free to move. The
+// legacy environment override is still honored: the gem sets KAMAL_PROXY_SOCKET
+// on containers it booted before the rename, and a running proxy is reached
+// over whatever socket it opened.
 func (c Config) SocketPath() string {
-	return cmp.Or(os.Getenv("KAMAL_PROXY_SOCKET"), path.Join(c.runtimeDirectory(), "kamal-proxy.sock"))
+	return cmp.Or(
+		os.Getenv("DASH_PROXY_SOCKET"),
+		os.Getenv("KAMAL_PROXY_SOCKET"),
+		path.Join(c.runtimeDirectory(), "dash-proxy.sock"),
+	)
 }
 
+// StatePath is the routing table, always under the current name. Recovering a
+// pre-rename table is AdoptLegacyState's job, called once at boot.
 func (c Config) StatePath() string {
+	return path.Join(c.dataDirectory(), "dash-proxy.state")
+}
+
+// LegacyStatePath is the pre-rename routing table, which the gem's volume copy
+// carries into the new volume verbatim.
+func (c Config) LegacyStatePath() string {
 	return path.Join(c.dataDirectory(), "kamal-proxy.state")
+}
+
+// AdoptLegacyState seeds the current state file from the pre-rename one when
+// the data directory has only the old name — the shape the gem's volume copy
+// leaves behind. Without it the proxy boots with an empty routing table and
+// every service has to be re-registered by a deploy, which is an outage rather
+// than a migration.
+//
+// It copies rather than renames, so the legacy file survives: an operator who
+// rolls back to a pre-rename image must still find the table where that image
+// looks for it. Stage 3d removes both the copy and the leftover.
+//
+// Doing this once at boot, rather than teaching StatePath to return whichever
+// file exists, is what makes the host converge. Reading *and writing* the old
+// name would leave every upgraded host on the legacy filename forever, and the
+// fallback could never be retired.
+func (c Config) AdoptLegacyState() error {
+	current, legacy := c.StatePath(), c.LegacyStatePath()
+
+	if _, err := os.Stat(current); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	contents, err := os.ReadFile(legacy)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // A first boot, not an upgrade.
+	} else if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(current, contents, 0o600); err != nil {
+		return err
+	}
+
+	slog.Info("Adopted the pre-rename routing table", "from", legacy, "to", current)
+	return nil
 }
 
 // StateBackupPath is the last-known-good copy of StatePath, written after each
@@ -217,7 +273,7 @@ func (c Config) defaultDataDirectory() string {
 		home = os.TempDir()
 	}
 
-	dir := path.Join(home, ".config", "kamal-proxy")
+	dir := path.Join(home, ".config", "dash-proxy")
 
 	err = os.MkdirAll(dir, syscall.S_IRUSR|syscall.S_IWUSR|syscall.S_IXUSR)
 	if err != nil {
