@@ -30,6 +30,14 @@ type HealthCheckConsumer interface {
 // immediately is noticed almost immediately.
 const initialHealthCheckDelay = 50 * time.Millisecond
 
+// maxPreHealthyDelay caps the backoff before the first success. Two regimes:
+// pre-healthy, nothing is routed to the target and a probe is cheap, so the
+// delay doubles from initialHealthCheckDelay but never past this ceiling; once
+// healthy, the configured interval governs. Without the cap a 20s interval let
+// the pre-healthy gap grow to 12.75s and then 25.55s, so a target ready at 13s
+// was not noticed until 25.55s.
+const maxPreHealthyDelay = 2 * time.Second
+
 type HealthCheck struct {
 	consumer HealthCheckConsumer
 	endpoint *url.URL
@@ -99,7 +107,7 @@ func (hc *HealthCheck) run() {
 			if hc.becameHealthy.Load() {
 				delay = hc.interval
 			} else {
-				delay = min(delay*2, hc.interval)
+				delay = min(delay*2, maxPreHealthyDelay, hc.interval)
 			}
 
 			timer.Reset(hc.nextDelay(delay))

@@ -142,3 +142,52 @@ func TestHealthCheck_BackoffIsBoundedByTheConfiguredInterval(t *testing.T) {
 	assert.Less(t, probes.Load(), int64(12),
 		"the retry must back off rather than hammer a container that is not coming up")
 }
+
+// The steady-state interval says how often to re-check a target that is in
+// service. Before the first success nothing is routed to the target, so the
+// backoff must not be allowed to grow to a large interval: with a 20s interval
+// the uncapped schedule is 0.05, 0.15, 0.35, 0.75, 1.55, 3.15, 6.35, 12.75,
+// 25.55s, and a Rails app ready at 13s is not noticed until 25.55s.
+func TestHealthCheck_PreHealthyBackoffIsCappedBelowTheInterval(t *testing.T) {
+	var ready atomic.Bool
+	var probes atomic.Int64
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes.Add(1)
+		if !ready.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(backend.Close)
+
+	endpoint, err := url.Parse(backend.URL)
+	require.NoError(t, err)
+
+	consumer := newRecordingConsumer()
+	start := time.Now()
+
+	hc := NewHealthCheck(consumer, endpoint, 20*time.Second, time.Second, "")
+	t.Cleanup(hc.Close)
+
+	// Ready after the 3.15s probe. Capped at 2s the next probe lands at 5.15s;
+	// uncapped it would be 6.35s.
+	time.Sleep(3500 * time.Millisecond)
+	ready.Store(true)
+
+	select {
+	case <-consumer.healthy:
+	case <-time.After(6*time.Second - time.Since(start)):
+		t.Fatal("readiness waited for the uncapped backoff instead of the 2s ceiling")
+	}
+
+	assert.Less(t, time.Since(start), 6*time.Second,
+		"a target that became ready must be noticed within the pre-healthy ceiling")
+
+	// After the first success the configured interval governs again.
+	settled := probes.Load()
+	time.Sleep(500 * time.Millisecond)
+	assert.Equal(t, settled, probes.Load(),
+		"a healthy target must be probed at its configured interval, not the pre-healthy cadence")
+}
