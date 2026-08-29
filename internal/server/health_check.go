@@ -30,12 +30,30 @@ type HealthCheckConsumer interface {
 // immediately is noticed almost immediately.
 const initialHealthCheckDelay = 50 * time.Millisecond
 
+// maxPreHealthyDelay caps the backoff before the first success. Two regimes:
+// pre-healthy, nothing is routed to the target and a probe is cheap, so the
+// delay doubles from initialHealthCheckDelay but never past this ceiling; once
+// healthy, the configured interval governs. Without the cap a 20s interval let
+// the pre-healthy gap grow to 12.75s and then 25.55s, so a target ready at 13s
+// was not noticed until 25.55s.
+const maxPreHealthyDelay = 2 * time.Second
+
+// preHealthyFastWindow bounds how long the ceiling applies. A normal deploy
+// disposes a target that misses its deploy timeout, but `deploy --force` skips
+// that wait, and a target that never comes up must not be probed at boot
+// cadence forever. Past the window the backoff resumes doubling toward the
+// configured interval.
+const preHealthyFastWindow = 60 * time.Second
+
 type HealthCheck struct {
 	consumer HealthCheckConsumer
 	endpoint *url.URL
 	interval time.Duration
 	timeout  time.Duration
 	host     string
+
+	maxPreHealthyDelay   time.Duration
+	preHealthyFastWindow time.Duration
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -46,6 +64,10 @@ type HealthCheck struct {
 }
 
 func NewHealthCheck(consumer HealthCheckConsumer, endpoint *url.URL, interval time.Duration, timeout time.Duration, host string) *HealthCheck {
+	return newHealthCheck(consumer, endpoint, interval, timeout, host, maxPreHealthyDelay, preHealthyFastWindow)
+}
+
+func newHealthCheck(consumer HealthCheckConsumer, endpoint *url.URL, interval time.Duration, timeout time.Duration, host string, maxPreHealthyDelay time.Duration, preHealthyFastWindow time.Duration) *HealthCheck {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	hc := &HealthCheck{
@@ -54,6 +76,9 @@ func NewHealthCheck(consumer HealthCheckConsumer, endpoint *url.URL, interval ti
 		interval: interval,
 		timeout:  timeout,
 		host:     host,
+
+		maxPreHealthyDelay:   maxPreHealthyDelay,
+		preHealthyFastWindow: preHealthyFastWindow,
 
 		ctx:    ctx,
 		cancel: cancel,
@@ -82,6 +107,7 @@ func (hc *HealthCheck) Close() {
 // Once a target is healthy the configured interval governs, so a running target
 // is not probed any harder than before.
 func (hc *HealthCheck) run() {
+	started := time.Now()
 	hc.check()
 
 	timer := time.NewTimer(hc.nextDelay(initialHealthCheckDelay))
@@ -96,9 +122,12 @@ func (hc *HealthCheck) run() {
 		case <-timer.C:
 			hc.check()
 
-			if hc.becameHealthy.Load() {
+			switch {
+			case hc.becameHealthy.Load():
 				delay = hc.interval
-			} else {
+			case time.Since(started) < hc.preHealthyFastWindow:
+				delay = min(delay*2, hc.maxPreHealthyDelay, hc.interval)
+			default:
 				delay = min(delay*2, hc.interval)
 			}
 
