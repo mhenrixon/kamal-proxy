@@ -191,3 +191,34 @@ func TestHealthCheck_PreHealthyBackoffIsCappedBelowTheInterval(t *testing.T) {
 	assert.Equal(t, settled, probes.Load(),
 		"a healthy target must be probed at its configured interval, not the pre-healthy cadence")
 }
+
+// The 2s ceiling is for catching a boot. A target that never comes up -- a
+// `--force` deploy skips the wait that would otherwise dispose it -- must not be
+// probed at boot cadence forever, so after the fast window the backoff resumes
+// doubling toward the configured interval.
+func TestHealthCheck_FastWindowExpiresForATargetThatNeverBecomesHealthy(t *testing.T) {
+	var probes atomic.Int64
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(backend.Close)
+
+	endpoint, err := url.Parse(backend.URL)
+	require.NoError(t, err)
+
+	// Cap 100ms, window 300ms, interval 5s. Inside the window: 0, 50, 150, 250,
+	// 350ms. Past it the delay doubles: 550, 950, 1750ms. A cap that never
+	// expired would keep firing every 100ms -- ~15 probes in 1.5s instead of ~7.
+	hc := newHealthCheck(newRecordingConsumer(), endpoint, 5*time.Second, time.Second, "",
+		100*time.Millisecond, 300*time.Millisecond)
+	t.Cleanup(hc.Close)
+
+	time.Sleep(1500 * time.Millisecond)
+
+	assert.Less(t, probes.Load(), int64(10),
+		"once the fast window has passed the backoff must resume growing toward the interval")
+	assert.Greater(t, probes.Load(), int64(3),
+		"the fast window must still have applied at the start")
+}
