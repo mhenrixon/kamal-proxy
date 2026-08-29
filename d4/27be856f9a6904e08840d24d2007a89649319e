@@ -1,0 +1,21 @@
+internal/server/health_check_backoff_test.go
+  s_251da27d95041f::t_dfa022551e5e7f 194-224
+internal/server/health_check.go
+  s_251da27d95041f::t_e765bc2481377c 41-47,55-57,67-70,80-82,110,125-126,128-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d427be856f9a6904e08840d24d2007a89649319e",
+  "prompts": {},
+  "sessions": {
+    "s_251da27d95041f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff63624e-0bb2-41cd-ad22-eaef300a9d32",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mhenrixon <mikael@mhenrixon.com>"
+    }
+  }
+}
